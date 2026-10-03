@@ -9,6 +9,8 @@ on:
       - "tests/**"
       - "adobe-xd-plugin/**"
       - "pyproject.toml"
+      - "manifest.json"
+      - ".mcpbignore"
       - ".github/workflows/adobe-windows-e2e.yml"
   workflow_dispatch:
     inputs:
@@ -166,6 +168,24 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           uv run python -m unittest discover -s tests -v
+
+      - name: Claude Desktop MCPB validate and pack
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          powershell -ExecutionPolicy Bypass -File scripts/build_mcpb.ps1
+          if (-not (Test-Path 'dist\mcp-adobe-creative-gateway.mcpb')) {
+            throw 'MCPB artifact was not created'
+          }
+          Get-Item 'dist\mcp-adobe-creative-gateway.mcpb' | Select-Object FullName,Length,LastWriteTime
+
+      - name: Upload Claude Desktop MCPB
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-adobe-claude-desktop
+          path: dist/mcp-adobe-creative-gateway.mcpb
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Adobe XD plugin static validation
         shell: powershell
