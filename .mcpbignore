@@ -1,0 +1,21 @@
+# Development and CI files are not needed by the installed local extension.
+.git/
+.github/
+.venv/
+__pycache__/
+*.pyc
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Source required at runtime is src/ plus pyproject.toml.
+tests/
+docs/
+examples/
+scripts/
+dist/
+
+# Repository prose is linked from the manifest instead of bundled.
+README.md
+Pasted text*
