@@ -8,6 +8,13 @@ from .core import (
     PolicyError,
     RiskClass,
 )
+from .mcp_stdio import (
+    McpSubprocessToolClient,
+    SubprocessMcpConfig,
+    UpstreamToolError,
+    illustrator_stdio_config,
+    photoshop_stdio_config,
+)
 from .photoshop import OperationUnknownError, PhotoshopAdapter, UpstreamToolClient
 
 __all__ = [
@@ -15,9 +22,14 @@ __all__ = [
     "CapabilityRegistry",
     "CreativeAdapter",
     "ExecutionPolicy",
+    "McpSubprocessToolClient",
     "OperationUnknownError",
     "PhotoshopAdapter",
     "PolicyError",
     "RiskClass",
+    "SubprocessMcpConfig",
     "UpstreamToolClient",
+    "UpstreamToolError",
+    "illustrator_stdio_config",
+    "photoshop_stdio_config",
 ]
