@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from typing import Any, Mapping
 
 from mcp_adobe.core import (
@@ -65,14 +67,10 @@ class CapabilityRegistryTests(unittest.TestCase):
 
     def test_disconnected_application_is_rejected(self) -> None:
         registry = CapabilityRegistry()
-        registry.register(
-            FakeAdapter(
-                adapter_info(
-                    connected=False,
-                    capabilities={"creative.document.save": RiskClass.FILE_WRITE},
-                )
-            )
-        )
+        registry.register(FakeAdapter(adapter_info(
+            connected=False,
+            capabilities={"creative.document.save": RiskClass.FILE_WRITE},
+        )))
         with self.assertRaises(RuntimeError):
             registry.resolve("photoshop", "creative.document.save")
 
@@ -84,117 +82,105 @@ class CapabilityRegistryTests(unittest.TestCase):
 
     def test_read_capability_is_allowed_when_writes_disabled(self) -> None:
         registry = CapabilityRegistry()
-        adapter = FakeAdapter(
-            adapter_info(
-                capabilities={"creative.document.info": RiskClass.READ},
-                writes_enabled=False,
-            )
-        )
-        registry.register(adapter)
-        result = registry.execute("photoshop", "creative.document.info")
-        self.assertTrue(result["ok"])
+        registry.register(FakeAdapter(adapter_info(
+            capabilities={"creative.document.info": RiskClass.READ},
+            writes_enabled=False,
+        )))
+        self.assertTrue(registry.execute("photoshop", "creative.document.info")["ok"])
 
     def test_write_is_denied_when_adapter_writes_disabled(self) -> None:
         registry = CapabilityRegistry()
-        registry.register(
-            FakeAdapter(
-                adapter_info(
-                    capabilities={"creative.object.update": RiskClass.WRITE_REVERSIBLE},
-                    writes_enabled=False,
-                )
-            )
-        )
+        registry.register(FakeAdapter(adapter_info(
+            capabilities={"creative.object.update": RiskClass.WRITE_REVERSIBLE},
+            writes_enabled=False,
+        )))
         with self.assertRaises(PolicyError):
             registry.execute("photoshop", "creative.object.update")
 
     def test_unclassified_capability_fails_closed(self) -> None:
         registry = CapabilityRegistry()
-        registry.register(
-            FakeAdapter(
-                AdapterInfo(
-                    application="photoshop",
-                    connected=True,
-                    common_capabilities=frozenset({"creative.object.update"}),
-                    writes_enabled=True,
-                )
-            )
-        )
+        registry.register(FakeAdapter(AdapterInfo(
+            application="photoshop",
+            connected=True,
+            common_capabilities=frozenset({"creative.object.update"}),
+            writes_enabled=True,
+        )))
         with self.assertRaises(PolicyError):
             registry.execute("photoshop", "creative.object.update")
 
     def test_native_script_is_default_deny(self) -> None:
         registry = CapabilityRegistry()
-        adapter = FakeAdapter(
-            adapter_info(capabilities={"photoshop.execute_script": RiskClass.NATIVE_SCRIPT})
-        )
-        registry.register(adapter)
+        registry.register(FakeAdapter(adapter_info(
+            capabilities={"photoshop.execute_script": RiskClass.NATIVE_SCRIPT}
+        )))
         with self.assertRaises(PolicyError):
             registry.execute("photoshop", "photoshop.execute_script", {"code": "alert('x')"})
-
-        result = registry.execute(
+        self.assertTrue(registry.execute(
             "photoshop",
             "photoshop.execute_script",
             {"code": "alert('x')"},
             policy=ExecutionPolicy(allow_native_script=True),
-        )
-        self.assertTrue(result["ok"])
+        )["ok"])
 
     def test_destructive_requires_explicit_authorization(self) -> None:
         registry = CapabilityRegistry()
-        registry.register(
-            FakeAdapter(adapter_info(capabilities={"creative.document.flatten": RiskClass.DESTRUCTIVE}))
-        )
+        registry.register(FakeAdapter(adapter_info(
+            capabilities={"creative.document.flatten": RiskClass.DESTRUCTIVE}
+        )))
         with self.assertRaises(PolicyError):
             registry.execute("photoshop", "creative.document.flatten")
-        self.assertTrue(
-            registry.execute(
-                "photoshop",
-                "creative.document.flatten",
-                policy=ExecutionPolicy(allow_destructive=True),
-            )["ok"]
-        )
+        self.assertTrue(registry.execute(
+            "photoshop",
+            "creative.document.flatten",
+            policy=ExecutionPolicy(allow_destructive=True),
+        )["ok"])
 
     def test_file_overwrite_is_default_deny(self) -> None:
         registry = CapabilityRegistry()
-        registry.register(
-            FakeAdapter(adapter_info(capabilities={"creative.document.export": RiskClass.FILE_WRITE}))
-        )
-        self.assertTrue(
-            registry.execute(
-                "photoshop",
-                "creative.document.export",
-                {"path": "new.png", "overwrite": False},
-            )["ok"]
-        )
+        registry.register(FakeAdapter(adapter_info(
+            capabilities={"creative.document.export": RiskClass.FILE_WRITE}
+        )))
+        self.assertTrue(registry.execute(
+            "photoshop",
+            "creative.document.export",
+            {"path": "new.png", "overwrite": False},
+        )["ok"])
         with self.assertRaises(PolicyError):
             registry.execute(
                 "photoshop",
                 "creative.document.export",
                 {"path": "existing.png", "overwrite": True},
             )
-        self.assertTrue(
-            registry.execute(
+
+    def test_existing_output_is_detected_even_without_overwrite_flag(self) -> None:
+        registry = CapabilityRegistry()
+        registry.register(FakeAdapter(adapter_info(
+            capabilities={"creative.document.export": RiskClass.FILE_WRITE}
+        )))
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "existing.png"
+            path.write_bytes(b"x")
+            with self.assertRaises(PolicyError):
+                registry.execute("photoshop", "creative.document.export", {"path": str(path)})
+            self.assertTrue(registry.execute(
                 "photoshop",
                 "creative.document.export",
-                {"path": "existing.png", "overwrite": True},
+                {"path": str(path)},
                 policy=ExecutionPolicy(allow_overwrite=True),
-            )["ok"]
-        )
+            )["ok"])
 
     def test_external_ai_requires_explicit_authorization(self) -> None:
         registry = CapabilityRegistry()
-        registry.register(
-            FakeAdapter(adapter_info(capabilities={"photoshop.generative_fill": RiskClass.EXTERNAL_AI}))
-        )
+        registry.register(FakeAdapter(adapter_info(
+            capabilities={"photoshop.generative_fill": RiskClass.EXTERNAL_AI}
+        )))
         with self.assertRaises(PolicyError):
             registry.execute("photoshop", "photoshop.generative_fill")
-        self.assertTrue(
-            registry.execute(
-                "photoshop",
-                "photoshop.generative_fill",
-                policy=ExecutionPolicy(allow_external_ai=True),
-            )["ok"]
-        )
+        self.assertTrue(registry.execute(
+            "photoshop",
+            "photoshop.generative_fill",
+            policy=ExecutionPolicy(allow_external_ai=True),
+        )["ok"])
 
 
 if __name__ == "__main__":

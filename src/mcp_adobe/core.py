@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Mapping, Protocol
 
 
@@ -121,8 +122,12 @@ class CapabilityRegistry:
         if risk is RiskClass.EXTERNAL_AI and not policy.allow_external_ai:
             raise PolicyError("external AI operation requires explicit authorization")
 
-        if risk is RiskClass.FILE_WRITE and arguments.get("overwrite") is True and not policy.allow_overwrite:
-            raise PolicyError("overwriting an existing output requires explicit authorization")
+        if risk is RiskClass.FILE_WRITE:
+            output_path = arguments.get("path")
+            wants_overwrite = arguments.get("overwrite") is True
+            path_exists = isinstance(output_path, str) and Path(output_path).expanduser().exists()
+            if (wants_overwrite or path_exists) and not policy.allow_overwrite:
+                raise PolicyError("overwriting an existing output requires explicit authorization")
 
     def execute(
         self,
