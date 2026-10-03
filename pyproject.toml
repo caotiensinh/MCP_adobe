@@ -12,6 +12,9 @@ dependencies = [
   "websockets>=15,<16",
 ]
 
+[project.scripts]
+mcp-adobe = "mcp_adobe.server:main"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
