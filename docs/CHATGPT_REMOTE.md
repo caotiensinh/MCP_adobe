@@ -117,6 +117,66 @@ The preflight checks the authorization-server discovery metadata for:
 
 Any hard incompatibility returns a non-zero exit code. Warnings do not fail the command.
 
+## Safe deployed-endpoint probe
+
+After the HTTPS/tunnel/reverse-proxy boundary exists, verify it before attempting any Adobe operation:
+
+```powershell
+uv run mcp-adobe-remote-probe --url https://creative.example.com/mcp
+```
+
+Boundary-only mode verifies:
+
+1. an anonymous MCP POST is rejected with HTTP `401`;
+2. `WWW-Authenticate` contains a Protected Resource Metadata pointer;
+3. the metadata pointer stays on the same MCP resource origin;
+4. Protected Resource Metadata returns HTTP `200`;
+5. metadata `resource` matches the probed MCP URL;
+6. authorization-server and scope metadata are present.
+
+The probe does **not** execute `creative_read`, `creative_write`, or `creative_authorized_write`.
+
+To additionally verify authenticated MCP `tools/list`, provide a temporary bearer token through an environment variable rather than a command-line argument:
+
+```powershell
+$env:MCP_ADOBE_PROBE_TOKEN = "<temporary bearer token>"
+uv run mcp-adobe-remote-probe --url https://creative.example.com/mcp --require-token
+```
+
+Machine-readable mode:
+
+```powershell
+uv run mcp-adobe-remote-probe --url https://creative.example.com/mcp --require-token --json
+```
+
+The token is never printed or returned in probe output. A cross-origin `resource_metadata` pointer is rejected before it is fetched.
+
+For local test-only verification:
+
+```powershell
+uv run mcp-adobe-remote-probe --url http://127.0.0.1:8787/mcp --allow-loopback-http
+```
+
+Non-loopback plain HTTP is rejected.
+
+## Remote security audit
+
+OAuth-protected Streamable HTTP automatically enables the JSONL security audit sink. Local stdio and unauthenticated loopback development use the null sink.
+
+Each audit event records only the security decision context:
+
+- tool name;
+- decision (`allowed` or `denied`);
+- application and capability when present;
+- a bounded reason code for profile denials;
+- OAuth subject, client ID, and scopes when an authenticated principal exists.
+
+The raw bearer token and tool arguments are intentionally not accepted by the audit payload builder, so they cannot be serialized accidentally. Regression tests explicitly use sentinel bearer-token and secret argument values and verify that neither appears in the emitted JSONL.
+
+`decision=allowed` means the gateway/profile policy allowed the request to proceed. It is **not** a claim that the downstream Adobe operation completed successfully; runtime/postcondition verification remains the source of operation outcome.
+
+For write paths, the security decision is emitted before invoking the Adobe runtime. This keeps audit availability on the pre-side-effect boundary instead of creating a situation where an Adobe mutation succeeds but a later audit-write failure makes the client believe the operation failed and retry it.
+
 ## What the MCP endpoint publishes
 
 When OAuth is configured, the MCP SDK publishes Protected Resource Metadata at:
@@ -140,7 +200,7 @@ The full-profile regression additionally verifies:
 ```text
 metadata scopes -> creative:access creative:write creative:high-risk
 access-only token against full-profile endpoint -> 403 insufficient_scope
-full-scope token                              -> 200 + MCP tools/list
+full-scope token                                -> 200 + MCP tools/list
 ```
 
 ## ChatGPT connection checklist
@@ -153,9 +213,10 @@ full-scope token                              -> 200 + MCP tools/list
 6. Run `mcp-adobe-oauth-preflight`; do not continue if it reports a FAIL.
 7. Start `mcp-adobe` on loopback with Streamable HTTP.
 8. Expose the loopback MCP URL through Secure MCP Tunnel or a TLS reverse proxy so the remote client sees the exact HTTPS `MCP_ADOBE_OAUTH_RESOURCE_URL`.
-9. Add that HTTPS MCP URL in the supported ChatGPT MCP/custom-app flow and complete OAuth authorization.
-10. Inspect `creative_discover.oauth_policy` and the discovered tool list before enabling any write-capable workflow.
-11. Keep `creative_authorized_write` subject to explicit high-risk flags; remote OAuth authentication does not bypass gateway write policy.
+9. Run `mcp-adobe-remote-probe` against the public URL; when a temporary token is available, require authenticated `tools/list` before a production client is enabled.
+10. Add that HTTPS MCP URL in the supported ChatGPT MCP/custom-app flow and complete OAuth authorization.
+11. Inspect `creative_discover.oauth_policy` and the discovered tool list before enabling any write-capable workflow.
+12. Keep `creative_authorized_write` subject to explicit high-risk flags; remote OAuth authentication does not bypass gateway write policy.
 
 ## Local Claude / Codex / Cursor use
 
@@ -169,6 +230,8 @@ The stdio process boundary and the local OS user are the security boundary for t
 
 ## Verification boundary
 
-Software verification now covers the MCP transport, OAuth challenge, Protected Resource Metadata, RFC 7662 introspection, audience/resource validation, deployment-profile scopes, `403 insufficient_scope`, and provider-metadata preflight.
+GitHub Actions run `#39` on code head `fc85fe0d088bde892ffc57687b32c96f50cf4050` completed the Windows test suite with **79/79 tests PASS** and XD static validation PASS.
+
+Software verification now covers MCP transports, OAuth challenge and Protected Resource Metadata, RFC 7662 introspection, audience/resource validation, deployment-profile scopes, `403 insufficient_scope`, provider preflight, the safe remote deployment probe, and redacted authenticated security-decision auditing.
 
 It does not prove a specific ChatGPT account/workspace connection or a real Adobe desktop write. Those require the actual external account/provider and an interactive Adobe desktop session respectively.
