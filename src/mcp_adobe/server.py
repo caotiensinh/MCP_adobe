@@ -11,7 +11,7 @@ from mcp.server import MCPServer
 from mcp.server.auth.provider import TokenVerifier
 from mcp.types import ToolAnnotations
 
-from .auth import IntrospectionTokenVerifier, OAuthResourceConfig
+from .auth import HIGH_RISK_SCOPE, WRITE_SCOPE, IntrospectionTokenVerifier, OAuthResourceConfig
 from .core import AdapterInfo, CapabilityRegistry, ExecutionPolicy, PolicyError, RiskClass
 from .illustrator import IllustratorAdapter
 from .mcp_stdio import McpSubprocessToolClient, illustrator_stdio_config, photoshop_stdio_config
@@ -215,6 +215,15 @@ def build_server(
     def current_runtime() -> GatewayRuntimeProtocol:
         return runtime if runtime is not None else _get_default_runtime()
 
+    def require_oauth_profile_scope(scope: str, tool_name: str) -> None:
+        if oauth_config is None:
+            return
+        if scope not in oauth_config.required_scopes:
+            raise PolicyError(
+                f"{tool_name} is disabled for this OAuth deployment; add {scope} to "
+                "MCP_ADOBE_OAUTH_REQUIRED_SCOPES and obtain a token carrying that scope"
+            )
+
     @mcp.tool(
         title="Discover Adobe applications and capabilities",
         annotations=ToolAnnotations(
@@ -225,12 +234,24 @@ def build_server(
     )
     def creative_discover() -> dict[str, Any]:
         """List Adobe adapters, connection state, capability names and risk classes."""
+        oauth_policy = None
+        if oauth_config is not None:
+            required = list(oauth_config.required_scopes)
+            oauth_policy = {
+                "required_scopes": required,
+                "normal_write_enabled": WRITE_SCOPE in oauth_config.required_scopes,
+                "high_risk_write_enabled": (
+                    WRITE_SCOPE in oauth_config.required_scopes
+                    and HIGH_RISK_SCOPE in oauth_config.required_scopes
+                ),
+            }
         return {
             "applications": [
                 _adapter_info_payload(info) for info in current_runtime().describe()
             ],
             "transports": ["stdio", "streamable-http"],
             "oauth_protected": oauth_config is not None,
+            "oauth_policy": oauth_policy,
         }
 
     @mcp.tool(
@@ -265,6 +286,7 @@ def build_server(
         allow_overwrite: bool = False,
     ) -> dict[str, Any]:
         """Execute only reversible or file-write capabilities; overwrite is opt-in."""
+        require_oauth_profile_scope(WRITE_SCOPE, "creative_write")
         return dict(
             current_runtime().write(
                 application,
@@ -293,6 +315,8 @@ def build_server(
         allow_external_ai: bool = False,
     ) -> dict[str, Any]:
         """Execute a higher-risk capability only with the corresponding explicit flags."""
+        require_oauth_profile_scope(WRITE_SCOPE, "creative_authorized_write")
+        require_oauth_profile_scope(HIGH_RISK_SCOPE, "creative_authorized_write")
         return dict(
             current_runtime().authorized_write(
                 application,
