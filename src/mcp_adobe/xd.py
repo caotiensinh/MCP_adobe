@@ -20,19 +20,21 @@ _BINDINGS: dict[str, ToolBinding] = {
     "creative.health": ToolBinding("xd.health", RiskClass.READ),
     "creative.document.info": ToolBinding("xd.document.info", RiskClass.READ),
     "creative.selection.get": ToolBinding("xd.selection.get", RiskClass.READ),
-    "creative.object.rectangle.create": ToolBinding("xd.rectangle.create", RiskClass.WRITE_REVERSIBLE),
-    "creative.object.text.create": ToolBinding("xd.text.create", RiskClass.WRITE_REVERSIBLE),
-    "creative.selection.resize": ToolBinding("xd.selection.resize", RiskClass.WRITE_REVERSIBLE),
-    "creative.selection.fill": ToolBinding("xd.selection.fill", RiskClass.WRITE_REVERSIBLE),
+    "xd.queue.status": ToolBinding("xd.queue.status", RiskClass.READ),
+    "xd.queue.rectangle_create": ToolBinding("xd.queue.rectangle_create", RiskClass.WRITE_REVERSIBLE),
+    "xd.queue.text_create": ToolBinding("xd.queue.text_create", RiskClass.WRITE_REVERSIBLE),
+    "xd.queue.selection_resize": ToolBinding("xd.queue.selection_resize", RiskClass.WRITE_REVERSIBLE),
+    "xd.queue.selection_fill": ToolBinding("xd.queue.selection_fill", RiskClass.WRITE_REVERSIBLE),
 }
 
 
 class XdAdapter:
-    """Live Adobe XD adapter backed by the local UXP WebSocket bridge.
+    """Adobe XD adapter backed by the local UXP WebSocket bridge.
 
-    The bridge is intentionally small: the UXP plugin owns all XD API calls and
-    this adapter only normalizes the gateway capability surface. XD mutations are
-    issued by the plugin inside ``application.editDocument()`` edit operations.
+    Adobe XD only permits ``application.editDocument()`` from explicit user UI
+    actions. Therefore bridge-triggered mutations are queued, not applied in the
+    WebSocket callback. The user approves the pending batch from the XD panel,
+    where the plugin applies it atomically inside ``editDocument()``.
     """
 
     def __init__(
@@ -47,17 +49,20 @@ class XdAdapter:
         self._writes_enabled = writes_enabled
 
     def info(self) -> AdapterInfo:
+        common = frozenset(name for name in _BINDINGS if name.startswith("creative."))
+        native = frozenset(name for name in _BINDINGS if name.startswith("xd."))
         return AdapterInfo(
             application="xd",
             connected=self._client.connected,
             version=self._version,
-            common_capabilities=frozenset(_BINDINGS),
+            common_capabilities=common,
+            native_capabilities=native,
             capability_risks={name: binding.risk for name, binding in _BINDINGS.items()},
             writes_enabled=self._writes_enabled,
-            # Adobe XD exposes atomic edit operations, but the audited API surface
-            # does not expose a documented programmatic undo primitive.
+            # Each approved batch is an atomic XD edit operation / Undo step, but
+            # no documented programmatic undo primitive was found in the audited API.
             undo_supported=False,
-            transport="uxp-websocket",
+            transport="uxp-websocket-approval",
             upstream_repository=OFFICIAL_API_REPOSITORY,
             upstream_snapshot=OFFICIAL_API_SNAPSHOT,
         )
