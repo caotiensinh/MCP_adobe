@@ -8,8 +8,10 @@ from threading import Lock
 from typing import Any, Mapping, Protocol
 
 from mcp.server import MCPServer
+from mcp.server.auth.provider import TokenVerifier
 from mcp.types import ToolAnnotations
 
+from .auth import IntrospectionTokenVerifier, OAuthResourceConfig
 from .core import AdapterInfo, CapabilityRegistry, ExecutionPolicy, PolicyError, RiskClass
 from .illustrator import IllustratorAdapter
 from .mcp_stdio import McpSubprocessToolClient, illustrator_stdio_config, photoshop_stdio_config
@@ -192,10 +194,23 @@ def _adapter_info_payload(info: AdapterInfo) -> dict[str, Any]:
     }
 
 
-def build_server(runtime: GatewayRuntimeProtocol | None = None) -> MCPServer:
+def build_server(
+    runtime: GatewayRuntimeProtocol | None = None,
+    *,
+    oauth_config: OAuthResourceConfig | None = None,
+    token_verifier: TokenVerifier | None = None,
+) -> MCPServer:
     """Build one MCP surface usable over stdio or Streamable HTTP."""
 
-    mcp = MCPServer("MCP Adobe Creative Gateway")
+    if bool(oauth_config) != bool(token_verifier):
+        raise ValueError("oauth_config and token_verifier must be supplied together")
+
+    server_kwargs: dict[str, Any] = {}
+    if oauth_config is not None and token_verifier is not None:
+        server_kwargs["auth"] = oauth_config.auth_settings()
+        server_kwargs["token_verifier"] = token_verifier
+
+    mcp = MCPServer("MCP Adobe Creative Gateway", **server_kwargs)
 
     def current_runtime() -> GatewayRuntimeProtocol:
         return runtime if runtime is not None else _get_default_runtime()
@@ -215,6 +230,7 @@ def build_server(runtime: GatewayRuntimeProtocol | None = None) -> MCPServer:
                 _adapter_info_payload(info) for info in current_runtime().describe()
             ],
             "transports": ["stdio", "streamable-http"],
+            "oauth_protected": oauth_config is not None,
         }
 
     @mcp.tool(
@@ -305,9 +321,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--allow-non-loopback",
         action="store_true",
-        help="Allow direct non-loopback binding. Prefer a secure tunnel/reverse proxy instead.",
+        help="Allow an OAuth-protected non-loopback bind. Prefer Secure MCP Tunnel/reverse proxy.",
     )
     return parser.parse_args()
+
+
+def _load_oauth_config() -> OAuthResourceConfig | None:
+    try:
+        return OAuthResourceConfig.from_env()
+    except ValueError as exc:
+        raise SystemExit(f"Invalid MCP Adobe OAuth configuration: {exc}") from exc
 
 
 def main() -> None:
@@ -316,13 +339,29 @@ def main() -> None:
         raise SystemExit("--port must be between 1 and 65535")
     if not args.path.startswith("/"):
         raise SystemExit("--path must start with /")
-    if args.host not in {"127.0.0.1", "localhost", "::1"} and not args.allow_non_loopback:
-        raise SystemExit(
-            "Refusing non-loopback bind without --allow-non-loopback. "
-            "Use a secure tunnel/reverse proxy for remote MCP access."
-        )
 
-    mcp = build_server()
+    oauth_config: OAuthResourceConfig | None = None
+    token_verifier: TokenVerifier | None = None
+    if args.transport == "streamable-http":
+        oauth_config = _load_oauth_config()
+        if oauth_config is not None:
+            token_verifier = IntrospectionTokenVerifier(oauth_config)
+
+        loopback = args.host in {"127.0.0.1", "localhost", "::1"}
+        if not loopback and not args.allow_non_loopback:
+            raise SystemExit(
+                "Refusing non-loopback bind without --allow-non-loopback. "
+                "Prefer Secure MCP Tunnel or an authenticated HTTPS reverse proxy."
+            )
+        if not loopback and oauth_config is None:
+            raise SystemExit(
+                "Refusing unauthenticated non-loopback MCP HTTP. Configure OAuth resource-server "
+                "environment variables before using --allow-non-loopback."
+            )
+        if not loopback and not oauth_config.resource_url.startswith("https://"):
+            raise SystemExit("Non-loopback OAuth resource URL must use https")
+
+    mcp = build_server(oauth_config=oauth_config, token_verifier=token_verifier)
     try:
         if args.transport == "stdio":
             mcp.run(transport="stdio")
