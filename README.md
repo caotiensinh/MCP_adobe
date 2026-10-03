@@ -233,7 +233,7 @@ MCP_ADOBE_AUDIT_MAX_BYTES=10485760
 MCP_ADOBE_AUDIT_BACKUP_COUNT=5
 ```
 
-The file sink creates parent directories as needed, rotates to numbered backups, caps the number of retained backups, flushes every line, and remains token/argument-redacted. See `docs/CHATGPT_REMOTE.md` for deployment guidance.
+The file sink creates parent directories as needed, rotates to numbered backups, caps the number of retained backups, flushes every line, and remains token/argument-redacted. Invalid audit size/count values or filesystem setup failures stop OAuth HTTP startup with a concise `Invalid MCP Adobe audit configuration` error instead of an unhandled traceback. See `docs/CHATGPT_REMOTE.md` for deployment guidance.
 
 ## Adobe XD bridge
 
@@ -268,6 +268,7 @@ No documented programmatic XD undo primitive was found in the audited API surfac
 - undo/rollback capability is explicit metadata;
 - high-risk actions use a separate top-level tool and explicit authorization flags;
 - remote security audit never serializes bearer tokens or tool arguments;
+- invalid audit persistence configuration fails closed before the remote MCP server starts;
 - packaged smoke does not substitute package bootstrap for live Adobe desktop connectivity;
 - normal push CI never writes into a real Adobe desktop application.
 
@@ -283,9 +284,9 @@ uv run python -m unittest discover -s tests -v
 Latest verified software baseline:
 
 ```text
-GitHub Actions run #51
-code head: 5442e3da78e834fa6f78e4718c39c68aa8d7e3e5
-84/84 tests PASS
+GitHub Actions run #53
+code head: 4b538bec4afe32f584f7960b9828dfb876294c6b
+87/87 tests PASS
 Claude Desktop MCPB validate/pack PASS
 packaged MCP tools/list PASS
 packaged Photoshop/Illustrator/XD adapter discovery PASS
@@ -311,7 +312,7 @@ Coverage includes:
 - RFC 7662 introspection behavior;
 - OAuth/OIDC provider compatibility preflight and installed console entrypoint;
 - safe remote endpoint probe, deterministic same-origin metadata enforcement, installed probe command, and token non-leak checks;
-- authenticated security audit redaction, persistent JSONL rotation, and bounded backup checks;
+- authenticated security audit redaction, persistent JSONL rotation, bounded backup checks, and clean fail-closed startup for invalid audit configuration/filesystem failures;
 - Windows bootstrap/config generation tests;
 - Claude Desktop MCPB manifest validation, package creation, packaged runtime smoke, adapter discovery, and artifact upload;
 - XD loopback WebSocket handshake/request/response;
@@ -369,11 +370,11 @@ Software-verified now:
 - remote OAuth permission profiles with HTTP scope enforcement;
 - remote-provider compatibility preflight;
 - safe deployed-endpoint boundary probe;
-- redacted OAuth security-decision audit with optional bounded rotating persistence;
+- redacted OAuth security-decision audit with optional bounded rotating persistence and fail-closed configuration validation;
 - Claude Desktop MCPB package validation and packaged runtime smoke;
 - Photoshop and Illustrator adapters over pinned upstream MCPs;
 - XD local UXP/WebSocket bridge;
-- **84/84 Windows tests passing on run #51**.
+- **87/87 Windows tests passing on run #53**.
 
 Still not claimed:
 
