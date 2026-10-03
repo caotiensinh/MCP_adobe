@@ -8,9 +8,16 @@ from threading import Lock
 from typing import Any, Mapping, Protocol
 
 from mcp.server import MCPServer
+from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import TokenVerifier
 from mcp.types import ToolAnnotations
 
+from .audit import (
+    JsonLineSecurityAuditSink,
+    NullSecurityAuditSink,
+    SecurityAuditEvent,
+    SecurityAuditSink,
+)
 from .auth import HIGH_RISK_SCOPE, WRITE_SCOPE, IntrospectionTokenVerifier, OAuthResourceConfig
 from .core import AdapterInfo, CapabilityRegistry, ExecutionPolicy, PolicyError, RiskClass
 from .illustrator import IllustratorAdapter
@@ -199,6 +206,7 @@ def build_server(
     *,
     oauth_config: OAuthResourceConfig | None = None,
     token_verifier: TokenVerifier | None = None,
+    audit_sink: SecurityAuditSink | None = None,
 ) -> MCPServer:
     """Build one MCP surface usable over stdio or Streamable HTTP."""
 
@@ -211,14 +219,47 @@ def build_server(
         server_kwargs["token_verifier"] = token_verifier
 
     mcp = MCPServer("MCP Adobe Creative Gateway", **server_kwargs)
+    security_audit = audit_sink if audit_sink is not None else NullSecurityAuditSink()
 
     def current_runtime() -> GatewayRuntimeProtocol:
         return runtime if runtime is not None else _get_default_runtime()
 
-    def require_oauth_profile_scope(scope: str, tool_name: str) -> None:
+    def audit(
+        tool: str,
+        decision: str,
+        *,
+        application: str | None = None,
+        capability: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        security_audit.emit(
+            SecurityAuditEvent(
+                tool=tool,
+                decision=decision,
+                application=application,
+                capability=capability,
+                reason=reason,
+            ),
+            get_access_token(),
+        )
+
+    def require_oauth_profile_scope(
+        scope: str,
+        tool_name: str,
+        *,
+        application: str,
+        capability: str,
+    ) -> None:
         if oauth_config is None:
             return
         if scope not in oauth_config.required_scopes:
+            audit(
+                tool_name,
+                "denied",
+                application=application,
+                capability=capability,
+                reason=f"deployment-profile-missing:{scope}",
+            )
             raise PolicyError(
                 f"{tool_name} is disabled for this OAuth deployment; add {scope} to "
                 "MCP_ADOBE_OAUTH_REQUIRED_SCOPES and obtain a token carrying that scope"
@@ -234,6 +275,7 @@ def build_server(
     )
     def creative_discover() -> dict[str, Any]:
         """List Adobe adapters, connection state, capability names and risk classes."""
+        audit("creative_discover", "allowed")
         oauth_policy = None
         if oauth_config is not None:
             required = list(oauth_config.required_scopes)
@@ -268,6 +310,7 @@ def build_server(
         arguments: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Execute a capability only when its gateway risk class is read-only."""
+        audit("creative_read", "allowed", application=application, capability=capability)
         return dict(current_runtime().read(application, capability, arguments or {}))
 
     @mcp.tool(
@@ -286,7 +329,13 @@ def build_server(
         allow_overwrite: bool = False,
     ) -> dict[str, Any]:
         """Execute only reversible or file-write capabilities; overwrite is opt-in."""
-        require_oauth_profile_scope(WRITE_SCOPE, "creative_write")
+        require_oauth_profile_scope(
+            WRITE_SCOPE,
+            "creative_write",
+            application=application,
+            capability=capability,
+        )
+        audit("creative_write", "allowed", application=application, capability=capability)
         return dict(
             current_runtime().write(
                 application,
@@ -315,8 +364,24 @@ def build_server(
         allow_external_ai: bool = False,
     ) -> dict[str, Any]:
         """Execute a higher-risk capability only with the corresponding explicit flags."""
-        require_oauth_profile_scope(WRITE_SCOPE, "creative_authorized_write")
-        require_oauth_profile_scope(HIGH_RISK_SCOPE, "creative_authorized_write")
+        require_oauth_profile_scope(
+            WRITE_SCOPE,
+            "creative_authorized_write",
+            application=application,
+            capability=capability,
+        )
+        require_oauth_profile_scope(
+            HIGH_RISK_SCOPE,
+            "creative_authorized_write",
+            application=application,
+            capability=capability,
+        )
+        audit(
+            "creative_authorized_write",
+            "allowed",
+            application=application,
+            capability=capability,
+        )
         return dict(
             current_runtime().authorized_write(
                 application,
@@ -366,10 +431,12 @@ def main() -> None:
 
     oauth_config: OAuthResourceConfig | None = None
     token_verifier: TokenVerifier | None = None
+    audit_sink: SecurityAuditSink | None = None
     if args.transport == "streamable-http":
         oauth_config = _load_oauth_config()
         if oauth_config is not None:
             token_verifier = IntrospectionTokenVerifier(oauth_config)
+            audit_sink = JsonLineSecurityAuditSink()
 
         loopback = args.host in {"127.0.0.1", "localhost", "::1"}
         if not loopback and not args.allow_non_loopback:
@@ -385,7 +452,11 @@ def main() -> None:
         if not loopback and not oauth_config.resource_url.startswith("https://"):
             raise SystemExit("Non-loopback OAuth resource URL must use https")
 
-    mcp = build_server(oauth_config=oauth_config, token_verifier=token_verifier)
+    mcp = build_server(
+        oauth_config=oauth_config,
+        token_verifier=token_verifier,
+        audit_sink=audit_sink,
+    )
     try:
         if args.transport == "stdio":
             mcp.run(transport="stdio")
