@@ -101,7 +101,7 @@ http://127.0.0.1:8787/mcp
 
 ## OAuth-protected remote MCP
 
-The gateway now implements the MCP resource-server side using the official MCP Python SDK's `TokenVerifier` and `AuthSettings` support.
+The gateway implements the MCP resource-server side using the official MCP Python SDK's `TokenVerifier` and `AuthSettings` support.
 
 It does **not** implement its own login page or token issuer. Use an existing OAuth/OIDC authorization server and configure RFC 7662 token introspection.
 
@@ -122,6 +122,25 @@ MCP_ADOBE_OAUTH_CLIENT_SECRET=<store outside Git>
 ```
 
 A placeholder-only example is available at `examples/oauth.env.example`.
+
+### Remote OAuth permission profiles
+
+Remote permissions are configured as an explicit deployment profile so the scopes advertised in MCP Protected Resource Metadata match the scopes that clients must request:
+
+```text
+read-only remote:
+creative:access
+
+normal remote writes:
+creative:access creative:write
+
+full high-risk remote surface:
+creative:access creative:write creative:high-risk
+```
+
+`creative:access` is the recommended default. A read-only profile blocks both write tools before the Adobe runtime is invoked. The normal-write profile enables `creative_write` while keeping `creative_authorized_write` disabled. The full profile enables the high-risk route, but destructive/native-script/external-AI operations still require their existing explicit operation flags.
+
+A token missing any scope required by the deployed profile is rejected by the MCP HTTP bearer middleware with `403 insufficient_scope` before tool execution.
 
 When OAuth is enabled, the MCP SDK publishes Protected Resource Metadata and rejects unauthenticated MCP requests before any tool executes.
 
@@ -188,6 +207,7 @@ No documented programmatic XD undo primitive was found in the audited API surfac
 
 - application bridges stay local by default;
 - remote HTTP is OAuth-protected before non-loopback exposure;
+- remote permissions use explicit read/write/high-risk deployment profiles;
 - inspect state/capabilities before mutation;
 - arbitrary native script execution is default-deny;
 - save/export never overwrites implicitly;
@@ -209,9 +229,9 @@ uv run python -m unittest discover -s tests -v
 Latest verified software baseline:
 
 ```text
-GitHub Actions run #30
-code head: 986336e150b0751eed3b3cad11d25d0eebae80f1
-66/66 tests PASS
+GitHub Actions run #36
+code head: 42e50743ad05d3c974f04a23b49a825d90a07f08
+76/76 tests PASS
 XD manifest/main.js static validation PASS
 ```
 
@@ -225,6 +245,10 @@ Coverage includes:
 - OAuth Protected Resource Metadata HTTP `200`;
 - anonymous protected MCP request HTTP `401`;
 - active audience-bound bearer token -> HTTP `200` + MCP `tools/list`;
+- full-profile metadata advertising `creative:access creative:write creative:high-risk`;
+- insufficient-scope token -> HTTP `403 insufficient_scope`;
+- full-scope token -> HTTP `200` + MCP `tools/list`;
+- read-only / normal-write / full high-risk server profile gates;
 - fail-closed non-loopback HTTP without OAuth;
 - RFC 7662 introspection behavior;
 - OAuth/OIDC provider compatibility preflight;
@@ -281,10 +305,11 @@ Software-verified now:
 - unified MCP gateway;
 - stdio and Streamable HTTP transports;
 - OAuth resource-server protection and token introspection;
+- remote OAuth permission profiles with HTTP scope enforcement;
 - remote-provider compatibility preflight;
 - Photoshop and Illustrator adapters over pinned upstream MCPs;
 - XD local UXP/WebSocket bridge;
-- **66/66 Windows tests passing**.
+- **76/76 Windows tests passing**.
 
 Still not claimed:
 
