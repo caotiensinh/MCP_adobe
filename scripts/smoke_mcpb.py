@@ -19,6 +19,7 @@ EXPECTED_TOOLS = {
     "creative_authorized_write",
 }
 EXPECTED_APPLICATIONS = {"photoshop", "illustrator", "xd"}
+DEFAULT_TIMEOUT_SECONDS = 180.0
 
 
 def _emit(status: str, step: str, detail: object | None = None) -> None:
@@ -46,7 +47,12 @@ def _validate_archive(package: Path) -> None:
     _emit("PASS", "archive_contents", {"files": len(names)})
 
 
-async def _exercise_bundle(extracted: Path, *, exercise_adapters: bool) -> None:
+async def _exercise_bundle(
+    extracted: Path,
+    *,
+    exercise_adapters: bool,
+    require_connected: frozenset[str],
+) -> None:
     env = dict(os.environ)
     # A packaged Claude Desktop extension is local stdio. Ignore any remote OAuth
     # variables inherited by CI or a developer shell.
@@ -74,7 +80,7 @@ async def _exercise_bundle(extracted: Path, *, exercise_adapters: bool) -> None:
             raise AssertionError(f"unexpected packaged MCP tool surface: {sorted(tools)}")
         _emit("PASS", "packaged_tools_list", sorted(tools))
 
-        if not exercise_adapters:
+        if not exercise_adapters and not require_connected:
             return
 
         discovered = await client.call_tool("creative_discover", {})
@@ -92,24 +98,51 @@ async def _exercise_bundle(extracted: Path, *, exercise_adapters: bool) -> None:
         if set(by_name) != EXPECTED_APPLICATIONS:
             raise AssertionError(f"unexpected packaged applications: {sorted(by_name)}")
 
-        # Photoshop and Illustrator are subprocess MCP adapters. Requiring them
-        # to report connected proves the packaged UV process can resolve and
-        # launch the pinned npx upstream servers. Adobe itself does not need to
-        # be interactive merely to initialize/list the upstream MCP tools.
-        for application in ("photoshop", "illustrator"):
-            if by_name[application].get("connected") is not True:
-                raise AssertionError(
-                    f"packaged {application} upstream MCP did not initialize via npx: {by_name[application]}"
-                )
+        connection_state = {
+            application: bool(by_name[application].get("connected"))
+            for application in sorted(EXPECTED_APPLICATIONS)
+        }
+        upstreams = {
+            application: {
+                "repository": by_name[application].get("upstream_repository"),
+                "snapshot": by_name[application].get("upstream_snapshot"),
+                "transport": by_name[application].get("transport"),
+            }
+            for application in sorted(EXPECTED_APPLICATIONS)
+        }
         _emit(
             "PASS",
-            "packaged_adapter_bootstrap",
+            "packaged_adapter_discovery",
             {
-                "photoshop_connected": by_name["photoshop"].get("connected"),
-                "illustrator_connected": by_name["illustrator"].get("connected"),
-                "xd_connected": by_name["xd"].get("connected"),
+                "applications": sorted(by_name),
+                "connected": connection_state,
+                "upstreams": upstreams,
             },
         )
+
+        # Connectivity is a separate live-environment assertion. In particular,
+        # the pinned Photoshop MCP documents that Photoshop itself must be running.
+        # A non-interactive packaging runner therefore must not manufacture a
+        # desktop-connectivity PASS. Callers that have the required applications
+        # running may opt into an explicit connected requirement per application.
+        for application in sorted(require_connected):
+            if not connection_state[application]:
+                raise AssertionError(
+                    f"packaged {application} adapter was required to be connected but reported disconnected: "
+                    f"{by_name[application]}"
+                )
+        if require_connected:
+            _emit("PASS", "packaged_required_connectivity", sorted(require_connected))
+
+
+def _positive_timeout(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("timeout must be a positive number") from exc
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("timeout must be a positive number")
+    return parsed
 
 
 def main() -> int:
@@ -118,7 +151,23 @@ def main() -> int:
     parser.add_argument(
         "--exercise-adapters",
         action="store_true",
-        help="Also call creative_discover and require packaged Photoshop/Illustrator npx upstreams to initialize.",
+        help="Call creative_discover and verify the packaged Photoshop/Illustrator/XD adapter metadata surface.",
+    )
+    parser.add_argument(
+        "--require-connected",
+        action="append",
+        choices=sorted(EXPECTED_APPLICATIONS),
+        default=[],
+        help=(
+            "Additionally require one application adapter to report connected. Repeat for multiple apps. "
+            "Use only when the corresponding desktop/bridge prerequisite is actually running."
+        ),
+    )
+    parser.add_argument(
+        "--timeout-seconds",
+        type=_positive_timeout,
+        default=DEFAULT_TIMEOUT_SECONDS,
+        help="Bound the complete packaged runtime exercise so an upstream process cannot hang CI indefinitely.",
     )
     args = parser.parse_args()
 
@@ -132,8 +181,32 @@ def main() -> int:
         with zipfile.ZipFile(package) as archive:
             archive.extractall(temp_root)
         _emit("PASS", "archive_extract", str(temp_root))
-        asyncio.run(_exercise_bundle(temp_root, exercise_adapters=args.exercise_adapters))
-        _emit("PASS", "mcpb_runtime", {"package": package.name})
+        try:
+            asyncio.run(
+                asyncio.wait_for(
+                    _exercise_bundle(
+                        temp_root,
+                        exercise_adapters=args.exercise_adapters,
+                        require_connected=frozenset(args.require_connected),
+                    ),
+                    timeout=args.timeout_seconds,
+                )
+            )
+        except TimeoutError:
+            _emit(
+                "FAIL",
+                "mcpb_runtime_timeout",
+                {"timeout_seconds": args.timeout_seconds},
+            )
+            return 1
+        _emit(
+            "PASS",
+            "mcpb_runtime",
+            {
+                "package": package.name,
+                "required_connected": sorted(set(args.require_connected)),
+            },
+        )
         return 0
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
