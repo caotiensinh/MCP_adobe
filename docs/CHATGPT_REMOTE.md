@@ -171,11 +171,29 @@ Each audit event records only the security decision context:
 - a bounded reason code for profile denials;
 - OAuth subject, client ID, and scopes when an authenticated principal exists.
 
-The raw bearer token and tool arguments are intentionally not accepted by the audit payload builder, so they cannot be serialized accidentally. Regression tests explicitly use sentinel bearer-token and secret argument values and verify that neither appears in the emitted JSONL.
+The raw bearer token and tool arguments are intentionally not accepted by the audit payload builder, so they cannot be serialized accidentally. Regression tests explicitly use sentinel bearer-token and secret argument values and verify that neither appears in emitted JSONL.
 
 `decision=allowed` means the gateway/profile policy allowed the request to proceed. It is **not** a claim that the downstream Adobe operation completed successfully; runtime/postcondition verification remains the source of operation outcome.
 
 For write paths, the security decision is emitted before invoking the Adobe runtime. This keeps audit availability on the pre-side-effect boundary instead of creating a situation where an Adobe mutation succeeds but a later audit-write failure makes the client believe the operation failed and retry it.
+
+### Persistent rotating audit files
+
+By default, the OAuth security audit is emitted to process `stderr`, which works well with service managers, container logging, and centralized log collectors.
+
+For a standalone Windows/service deployment, set a persistent path:
+
+```text
+MCP_ADOBE_AUDIT_PATH=C:\ProgramData\MCPAdobe\security-audit.jsonl
+MCP_ADOBE_AUDIT_MAX_BYTES=10485760
+MCP_ADOBE_AUDIT_BACKUP_COUNT=5
+```
+
+`MCP_ADOBE_AUDIT_MAX_BYTES` defaults to `10485760` bytes (10 MiB) and `MCP_ADOBE_AUDIT_BACKUP_COUNT` defaults to `5`. Parent directories are created as needed. When the active JSONL file would exceed the configured bound, the sink rotates it to `.1`, shifts older backups upward, and deletes the oldest file beyond the configured backup count.
+
+The rotating file path does not change the audit payload: bearer-token values and tool arguments remain excluded. The file sink is thread-safe and flushes each audit line after writing so a long-running service does not depend on process shutdown to persist the security decision.
+
+Choose the audit directory and retention values according to the host's access-control, backup, and privacy requirements. Do not place the audit file inside a public web root or a source checkout that is routinely committed/uploaded.
 
 ## What the MCP endpoint publishes
 
@@ -210,13 +228,14 @@ full-scope token                                -> 200 + MCP tools/list
 3. Make sure the provider supports authorization code + PKCE with `S256` and a compatible client-registration mode.
 4. Prefer refresh-token support (`offline_access`) for a persistent connection.
 5. Set the `MCP_ADOBE_OAUTH_*` environment variables on the gateway host.
-6. Run `mcp-adobe-oauth-preflight`; do not continue if it reports a FAIL.
-7. Start `mcp-adobe` on loopback with Streamable HTTP.
-8. Expose the loopback MCP URL through Secure MCP Tunnel or a TLS reverse proxy so the remote client sees the exact HTTPS `MCP_ADOBE_OAUTH_RESOURCE_URL`.
-9. Run `mcp-adobe-remote-probe` against the public URL; when a temporary token is available, require authenticated `tools/list` before a production client is enabled.
-10. Add that HTTPS MCP URL in the supported ChatGPT MCP/custom-app flow and complete OAuth authorization.
-11. Inspect `creative_discover.oauth_policy` and the discovered tool list before enabling any write-capable workflow.
-12. Keep `creative_authorized_write` subject to explicit high-risk flags; remote OAuth authentication does not bypass gateway write policy.
+6. Configure `MCP_ADOBE_AUDIT_PATH` when local persistent security logs are required; otherwise collect process `stderr` with the service/logging platform.
+7. Run `mcp-adobe-oauth-preflight`; do not continue if it reports a FAIL.
+8. Start `mcp-adobe` on loopback with Streamable HTTP.
+9. Expose the loopback MCP URL through Secure MCP Tunnel or a TLS reverse proxy so the remote client sees the exact HTTPS `MCP_ADOBE_OAUTH_RESOURCE_URL`.
+10. Run `mcp-adobe-remote-probe` against the public URL; when a temporary token is available, require authenticated `tools/list` before a production client is enabled.
+11. Add that HTTPS MCP URL in the supported ChatGPT MCP/custom-app flow and complete OAuth authorization.
+12. Inspect `creative_discover.oauth_policy` and the discovered tool list before enabling any write-capable workflow.
+13. Keep `creative_authorized_write` subject to explicit high-risk flags; remote OAuth authentication does not bypass gateway write policy.
 
 ## Local Claude / Codex / Cursor use
 
@@ -230,8 +249,8 @@ The stdio process boundary and the local OS user are the security boundary for t
 
 ## Verification boundary
 
-GitHub Actions run `#39` on code head `fc85fe0d088bde892ffc57687b32c96f50cf4050` completed the Windows test suite with **79/79 tests PASS** and XD static validation PASS.
+GitHub Actions run `#51` on code head `5442e3da78e834fa6f78e4718c39c68aa8d7e3e5` completed the Windows test suite with **84/84 tests PASS**. The same exact-head run also passed MCPB manifest validation/packaging, packaged MCP runtime `tools/list`, packaged adapter discovery, artifact upload, and XD static validation.
 
-Software verification now covers MCP transports, OAuth challenge and Protected Resource Metadata, RFC 7662 introspection, audience/resource validation, deployment-profile scopes, `403 insufficient_scope`, provider preflight, the safe remote deployment probe, and redacted authenticated security-decision auditing.
+Software verification now covers MCP transports, OAuth challenge and Protected Resource Metadata, RFC 7662 introspection, audience/resource validation, deployment-profile scopes, `403 insufficient_scope`, provider preflight, the safe remote deployment probe, redacted authenticated security-decision auditing, bounded rotating audit persistence, and packaged Claude Desktop MCP runtime smoke verification.
 
 It does not prove a specific ChatGPT account/workspace connection or a real Adobe desktop write. Those require the actual external account/provider and an interactive Adobe desktop session respectively.
