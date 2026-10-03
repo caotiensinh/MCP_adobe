@@ -422,6 +422,15 @@ def _load_oauth_config() -> OAuthResourceConfig | None:
         raise SystemExit(f"Invalid MCP Adobe OAuth configuration: {exc}") from exc
 
 
+def _load_audit_sink(oauth_config: OAuthResourceConfig | None) -> SecurityAuditSink | None:
+    if oauth_config is None:
+        return None
+    try:
+        return JsonLineSecurityAuditSink()
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"Invalid MCP Adobe audit configuration: {exc}") from exc
+
+
 def main() -> None:
     args = _parse_args()
     if not (1 <= args.port <= 65535):
@@ -436,7 +445,7 @@ def main() -> None:
         oauth_config = _load_oauth_config()
         if oauth_config is not None:
             token_verifier = IntrospectionTokenVerifier(oauth_config)
-            audit_sink = JsonLineSecurityAuditSink()
+            audit_sink = _load_audit_sink(oauth_config)
 
         loopback = args.host in {"127.0.0.1", "localhost", "::1"}
         if not loopback and not args.allow_non_loopback:
