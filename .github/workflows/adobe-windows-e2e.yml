@@ -1,4 +1,4 @@
-name: Adobe Windows E2E
+name: Adobe Windows CI and E2E
 
 on:
   push:
@@ -7,9 +7,26 @@ on:
       - "src/**"
       - "scripts/**"
       - "tests/**"
+      - "adobe-xd-plugin/**"
       - "pyproject.toml"
       - ".github/workflows/adobe-windows-e2e.yml"
   workflow_dispatch:
+    inputs:
+      run_adobe_live:
+        description: "Run live Photoshop/Illustrator E2E against the interactive Windows desktop"
+        required: false
+        default: false
+        type: boolean
+      xd_live:
+        description: "Run live Adobe XD bridge read E2E (XD + MCP Adobe Bridge panel must be open)"
+        required: false
+        default: false
+        type: boolean
+      xd_write:
+        description: "Queue an XD test rectangle and require an Apply pending click"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -20,12 +37,13 @@ concurrency:
 
 jobs:
   adobe-real-e2e:
-    name: Windows Adobe real E2E
+    name: Windows Adobe CI and optional live E2E
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 30
     env:
       PYTHONUTF8: "1"
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      UV_LINK_MODE: copy
 
     steps:
       - name: Checkout
@@ -149,8 +167,21 @@ jobs:
           $ErrorActionPreference = 'Stop'
           uv run python -m unittest discover -s tests -v
 
+      - name: Adobe XD plugin static validation
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          node --check adobe-xd-plugin/main.js
+          $manifest = Get-Content adobe-xd-plugin/manifest.json -Raw | ConvertFrom-Json
+          if ($manifest.manifestVersion -ne 4) { throw "XD manifestVersion must be 4" }
+          if ($manifest.host.app -ne 'XD') { throw "XD manifest host must be XD" }
+          if (-not ($manifest.entrypoints | Where-Object { $_.type -eq 'panel' -and $_.id -eq 'mcpAdobeBridge' })) {
+            throw 'XD manifest is missing mcpAdobeBridge panel entrypoint'
+          }
+          Write-Host "PASS: XD plugin manifest/main.js static validation"
+
       - name: Photoshop real write E2E
-        if: steps.inventory.outputs.interactive == 'true' && steps.inventory.outputs.photoshop_found == 'true'
+        if: github.event_name == 'workflow_dispatch' && inputs.run_adobe_live && steps.inventory.outputs.interactive == 'true' && steps.inventory.outputs.photoshop_found == 'true'
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -161,7 +192,7 @@ jobs:
           Get-ChildItem -Path $out -File | Select-Object Name,Length,LastWriteTime
 
       - name: Illustrator real write E2E
-        if: steps.inventory.outputs.interactive == 'true' && steps.inventory.outputs.illustrator_found == 'true'
+        if: github.event_name == 'workflow_dispatch' && inputs.run_adobe_live && steps.inventory.outputs.interactive == 'true' && steps.inventory.outputs.illustrator_found == 'true'
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -171,19 +202,38 @@ jobs:
           uv run python scripts/real_e2e.py illustrator --write --output-dir $out
           Get-ChildItem -Path $out -File | Select-Object Name,Length,LastWriteTime
 
-      - name: XD status
+      - name: Adobe XD live bridge E2E
+        if: github.event_name == 'workflow_dispatch' && inputs.run_adobe_live && inputs.xd_live && steps.inventory.outputs.interactive == 'true' && steps.inventory.outputs.xd_found == 'true'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $args = @('--connect-timeout', '30')
+          if ('${{ inputs.xd_write }}' -eq 'true') {
+            $args += @('--write', '--approval-timeout', '90')
+          }
+          uv run python scripts/xd_real_e2e.py @args
+
+      - name: Adobe environment status
         if: always()
         shell: powershell
         run: |
+          Write-Host "INTERACTIVE=${{ steps.inventory.outputs.interactive }}"
+          Write-Host "PHOTOSHOP_FOUND=${{ steps.inventory.outputs.photoshop_found }}"
+          Write-Host "ILLUSTRATOR_FOUND=${{ steps.inventory.outputs.illustrator_found }}"
           Write-Host "XD_INSTALLATION=${{ steps.inventory.outputs.xd_found }}"
-          Write-Host 'XD_LIVE_CONTROL=BLOCKED: current adopted XD upstreams are parser/reference implementations, not a desktop-control adapter.'
+          Write-Host 'XD_BRIDGE=IMPLEMENTED: local UXP WebSocket bridge with explicit Apply pending approval for mutations.'
+          if ('${{ github.event_name }}' -ne 'workflow_dispatch' -or '${{ inputs.run_adobe_live }}' -ne 'true') {
+            Write-Host 'LIVE_E2E=SKIPPED: push CI never writes to Adobe applications. Use workflow_dispatch with run_adobe_live=true.'
+          }
 
-      - name: Adobe interactive E2E gate
-        if: always()
+      - name: Live Adobe prerequisite gate
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.run_adobe_live
         shell: powershell
         run: |
           if ('${{ steps.inventory.outputs.interactive }}' -ne 'true') {
-            throw 'BLOCKED: the Adobe runner is running as a non-interactive Windows service account. Run scripts/start_adobe_runner_interactive.ps1 -StopService from an elevated logged-in desktop PowerShell, keep the new runner console open, then rerun this workflow.'
+            throw 'BLOCKED: Adobe live E2E requires the repository runner in an interactive desktop session. Run scripts/start_adobe_runner_interactive.ps1 -StopService from an elevated logged-in PowerShell, keep the runner console open, then dispatch this workflow again.'
           }
           if ('${{ steps.inventory.outputs.photoshop_found }}' -ne 'true') { throw 'BLOCKED: Photoshop installation is not visible to the interactive runner account.' }
           if ('${{ steps.inventory.outputs.illustrator_found }}' -ne 'true') { throw 'BLOCKED: Illustrator installation is not visible to the interactive runner account.' }
+          if ('${{ inputs.xd_live }}' -eq 'true' -and '${{ steps.inventory.outputs.xd_found }}' -ne 'true') { throw 'BLOCKED: Adobe XD installation is not visible to the interactive runner account.' }
+          if ('${{ inputs.xd_write }}' -eq 'true' -and '${{ inputs.xd_live }}' -ne 'true') { throw 'Invalid dispatch: xd_write=true requires xd_live=true.' }
