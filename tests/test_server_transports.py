@@ -76,14 +76,21 @@ async def _get_json(url: str) -> tuple[int, dict[str, object], dict[str, str]]:
         return response.status_code, payload, dict(response.headers)
 
 
-async def _post_unauthenticated(url: str) -> tuple[int, dict[str, str]]:
+async def _post_tool_request(url: str, *, token: str | None = None) -> tuple[int, dict[str, str], dict[str, object]]:
+    headers = {"Accept": "application/json, text/event-stream"}
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
     async with httpx2.AsyncClient(timeout=10.0) as client:
         response = await client.post(
             url,
             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
-            headers={"Accept": "application/json, text/event-stream"},
+            headers=headers,
         )
-        return response.status_code, dict(response.headers)
+        try:
+            payload = response.json() if response.content else {}
+        except Exception:
+            payload = {}
+        return response.status_code, dict(response.headers), payload
 
 
 def _free_loopback_port() -> int:
@@ -130,10 +137,15 @@ def _start_introspection_server(resource_url: str) -> tuple[ThreadingHTTPServer,
             length = int(self.headers.get("Content-Length", "0"))
             body = self.rfile.read(length).decode("utf-8")
             token = parse_qs(body).get("token", [""])[0]
+            scopes = {
+                "good-token": "creative:access offline_access",
+                "write-token": "creative:access creative:write offline_access",
+                "full-token": "creative:access creative:write creative:high-risk offline_access",
+            }
             payload = {
-                "active": token == "good-token",
+                "active": token in scopes,
                 "client_id": "chatgpt-test-client",
-                "scope": "creative:access offline_access",
+                "scope": scopes.get(token, ""),
                 "aud": resource_url,
                 "sub": "test-user",
                 "exp": 1900000000,
@@ -154,6 +166,41 @@ def _start_introspection_server(resource_url: str) -> tuple[ThreadingHTTPServer,
     return server, thread
 
 
+def _oauth_env(resource_url: str, introspection_port: int, scopes: str) -> dict[str, str]:
+    env = _clean_env()
+    env.update(
+        {
+            "MCP_ADOBE_OAUTH_ISSUER_URL": f"http://127.0.0.1:{introspection_port}",
+            "MCP_ADOBE_OAUTH_RESOURCE_URL": resource_url,
+            "MCP_ADOBE_OAUTH_INTROSPECTION_ENDPOINT": f"http://127.0.0.1:{introspection_port}/introspect",
+            "MCP_ADOBE_OAUTH_REQUIRED_SCOPES": scopes,
+        }
+    )
+    return env
+
+
+def _start_gateway(port: int, env: dict[str, str]) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "mcp_adobe.server",
+            "--transport",
+            "streamable-http",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--path",
+            "/mcp",
+        ],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
 class McpServerTransportTests(unittest.TestCase):
     def test_stdio_cli_lists_gateway_tools(self) -> None:
         tools = asyncio.run(_list_stdio_tools())
@@ -161,25 +208,7 @@ class McpServerTransportTests(unittest.TestCase):
 
     def test_streamable_http_cli_lists_gateway_tools(self) -> None:
         port = _free_loopback_port()
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "mcp_adobe.server",
-                "--transport",
-                "streamable-http",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                str(port),
-                "--path",
-                "/mcp",
-            ],
-            env=_clean_env(),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+        process = _start_gateway(port, _clean_env())
         try:
             _wait_for_tcp(port, process)
             tools = asyncio.run(_list_http_tools(f"http://127.0.0.1:{port}/mcp"))
@@ -218,33 +247,9 @@ class McpServerTransportTests(unittest.TestCase):
         resource_url = f"http://127.0.0.1:{port}/mcp"
         introspection, thread = _start_introspection_server(resource_url)
         introspection_port = int(introspection.server_address[1])
-        env = _clean_env()
-        env.update(
-            {
-                "MCP_ADOBE_OAUTH_ISSUER_URL": f"http://127.0.0.1:{introspection_port}",
-                "MCP_ADOBE_OAUTH_RESOURCE_URL": resource_url,
-                "MCP_ADOBE_OAUTH_INTROSPECTION_ENDPOINT": f"http://127.0.0.1:{introspection_port}/introspect",
-                "MCP_ADOBE_OAUTH_REQUIRED_SCOPES": "creative:access",
-            }
-        )
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "mcp_adobe.server",
-                "--transport",
-                "streamable-http",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                str(port),
-                "--path",
-                "/mcp",
-            ],
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
+        process = _start_gateway(
+            port,
+            _oauth_env(resource_url, introspection_port, "creative:access"),
         )
         try:
             _wait_for_tcp(port, process)
@@ -255,11 +260,41 @@ class McpServerTransportTests(unittest.TestCase):
             self.assertEqual(metadata["resource"], resource_url)
             self.assertEqual(metadata["scopes_supported"], ["creative:access"])
 
-            status, headers = asyncio.run(_post_unauthenticated(resource_url))
+            status, headers, _ = asyncio.run(_post_tool_request(resource_url))
             self.assertEqual(status, 401)
             self.assertIn("resource_metadata=", headers.get("www-authenticate", ""))
 
             tools = asyncio.run(_list_http_tools_with_token(resource_url, "good-token"))
+            self.assertEqual(tools, _EXPECTED_TOOLS)
+        finally:
+            _stop_process(process)
+            introspection.shutdown()
+            introspection.server_close()
+            thread.join(timeout=5)
+
+    def test_oauth_full_profile_advertises_and_requires_all_scopes(self) -> None:
+        port = _free_loopback_port()
+        resource_url = f"http://127.0.0.1:{port}/mcp"
+        introspection, thread = _start_introspection_server(resource_url)
+        introspection_port = int(introspection.server_address[1])
+        required = "creative:access creative:write creative:high-risk"
+        process = _start_gateway(port, _oauth_env(resource_url, introspection_port, required))
+        try:
+            _wait_for_tcp(port, process)
+            status, metadata, _ = asyncio.run(
+                _get_json(f"http://127.0.0.1:{port}/.well-known/oauth-protected-resource/mcp")
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                metadata["scopes_supported"],
+                ["creative:access", "creative:write", "creative:high-risk"],
+            )
+
+            status, _, payload = asyncio.run(_post_tool_request(resource_url, token="good-token"))
+            self.assertEqual(status, 403)
+            self.assertEqual(payload.get("error"), "insufficient_scope")
+
+            tools = asyncio.run(_list_http_tools_with_token(resource_url, "full-token"))
             self.assertEqual(tools, _EXPECTED_TOOLS)
         finally:
             _stop_process(process)
