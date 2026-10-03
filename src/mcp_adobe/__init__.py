@@ -8,6 +8,7 @@ from .core import (
     PolicyError,
     RiskClass,
 )
+from .illustrator import IllustratorAdapter
 from .mcp_stdio import (
     McpSubprocessToolClient,
     SubprocessMcpConfig,
@@ -22,6 +23,7 @@ __all__ = [
     "CapabilityRegistry",
     "CreativeAdapter",
     "ExecutionPolicy",
+    "IllustratorAdapter",
     "McpSubprocessToolClient",
     "OperationUnknownError",
     "PhotoshopAdapter",
