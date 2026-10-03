@@ -32,7 +32,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Runner and Adobe inventory
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           Write-Host "Runner=$env:RUNNER_NAME"
@@ -69,7 +69,7 @@ jobs:
           if (-not $illustrator) { throw 'Illustrator.exe not found under Program Files\Adobe' }
 
       - name: Toolchain
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           node --version
@@ -82,7 +82,7 @@ jobs:
           }
 
       - name: Install gateway
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           if (Get-Command py -ErrorAction SilentlyContinue) {
@@ -92,7 +92,7 @@ jobs:
           }
 
       - name: Unit and regression tests
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           if (Get-Command py -ErrorAction SilentlyContinue) {
@@ -102,7 +102,7 @@ jobs:
           }
 
       - name: Photoshop real write E2E
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $out = Join-Path $env:RUNNER_TEMP 'mcp_adobe\photoshop'
@@ -116,7 +116,7 @@ jobs:
           Get-ChildItem -Path $out -File | Select-Object Name,Length,LastWriteTime
 
       - name: Illustrator real write E2E
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $out = Join-Path $env:RUNNER_TEMP 'mcp_adobe\illustrator'
@@ -131,7 +131,7 @@ jobs:
 
       - name: XD status
         if: always()
-        shell: pwsh
+        shell: powershell
         run: |
           $xdPackages = @(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'Adobe.*XD|XD.*Adobe' })
           if ($xdPackages.Count -gt 0) {
