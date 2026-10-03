@@ -1,0 +1,343 @@
+from __future__ import annotations
+
+import argparse
+import atexit
+import os
+from dataclasses import dataclass
+from threading import Lock
+from typing import Any, Mapping, Protocol
+
+from mcp.server import MCPServer
+from mcp.types import ToolAnnotations
+
+from .core import AdapterInfo, CapabilityRegistry, ExecutionPolicy, PolicyError, RiskClass
+from .illustrator import IllustratorAdapter
+from .mcp_stdio import McpSubprocessToolClient, illustrator_stdio_config, photoshop_stdio_config
+from .photoshop import PhotoshopAdapter
+from .xd import XdAdapter
+from .xd_bridge import XdWebSocketBridgeClient
+
+
+class GatewayRuntimeProtocol(Protocol):
+    def describe(self) -> tuple[AdapterInfo, ...]:
+        ...
+
+    def read(self, application: str, capability: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        ...
+
+    def write(
+        self,
+        application: str,
+        capability: str,
+        arguments: Mapping[str, Any],
+        *,
+        allow_overwrite: bool = False,
+    ) -> Mapping[str, Any]:
+        ...
+
+    def authorized_write(
+        self,
+        application: str,
+        capability: str,
+        arguments: Mapping[str, Any],
+        *,
+        allow_overwrite: bool = False,
+        allow_destructive: bool = False,
+        allow_native_script: bool = False,
+        allow_external_ai: bool = False,
+    ) -> Mapping[str, Any]:
+        ...
+
+    def close(self) -> None:
+        ...
+
+
+@dataclass(slots=True)
+class GatewayRuntime:
+    """Own the local Adobe adapter clients and enforce operation classes."""
+
+    xd_port: int = 8765
+    writes_enabled: bool = True
+
+    def __post_init__(self) -> None:
+        self._photoshop_client = McpSubprocessToolClient(photoshop_stdio_config())
+        self._illustrator_client = McpSubprocessToolClient(illustrator_stdio_config())
+        self._xd_client = XdWebSocketBridgeClient(port=self.xd_port)
+
+        self.registry = CapabilityRegistry()
+        self.registry.register(
+            PhotoshopAdapter(self._photoshop_client, writes_enabled=self.writes_enabled)
+        )
+        self.registry.register(
+            IllustratorAdapter(self._illustrator_client, writes_enabled=self.writes_enabled)
+        )
+        self.registry.register(XdAdapter(self._xd_client, writes_enabled=self.writes_enabled))
+
+    def describe(self) -> tuple[AdapterInfo, ...]:
+        return self.registry.describe()
+
+    def _risk(self, application: str, capability: str) -> RiskClass:
+        adapter = self.registry.resolve(application, capability)
+        return adapter.info().risk_for(capability)
+
+    def read(self, application: str, capability: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        risk = self._risk(application, capability)
+        if risk is not RiskClass.READ:
+            raise PolicyError(
+                f"creative_read only accepts read capabilities; {capability} is {risk.value}"
+            )
+        return self.registry.execute(application, capability, arguments)
+
+    def write(
+        self,
+        application: str,
+        capability: str,
+        arguments: Mapping[str, Any],
+        *,
+        allow_overwrite: bool = False,
+    ) -> Mapping[str, Any]:
+        risk = self._risk(application, capability)
+        if risk not in {RiskClass.WRITE_REVERSIBLE, RiskClass.FILE_WRITE}:
+            raise PolicyError(
+                "creative_write only accepts reversible/file writes; "
+                f"{capability} is {risk.value}. Use creative_authorized_write for higher-risk actions."
+            )
+        return self.registry.execute(
+            application,
+            capability,
+            arguments,
+            policy=ExecutionPolicy(allow_overwrite=allow_overwrite),
+        )
+
+    def authorized_write(
+        self,
+        application: str,
+        capability: str,
+        arguments: Mapping[str, Any],
+        *,
+        allow_overwrite: bool = False,
+        allow_destructive: bool = False,
+        allow_native_script: bool = False,
+        allow_external_ai: bool = False,
+    ) -> Mapping[str, Any]:
+        risk = self._risk(application, capability)
+        if risk is RiskClass.READ:
+            raise PolicyError("read capabilities must use creative_read")
+        return self.registry.execute(
+            application,
+            capability,
+            arguments,
+            policy=ExecutionPolicy(
+                allow_overwrite=allow_overwrite,
+                allow_destructive=allow_destructive,
+                allow_native_script=allow_native_script,
+                allow_external_ai=allow_external_ai,
+            ),
+        )
+
+    def close(self) -> None:
+        self._photoshop_client.close()
+        self._illustrator_client.close()
+        self._xd_client.close()
+
+
+_DEFAULT_RUNTIME: GatewayRuntime | None = None
+_DEFAULT_RUNTIME_LOCK = Lock()
+
+
+def _get_default_runtime() -> GatewayRuntime:
+    global _DEFAULT_RUNTIME
+    with _DEFAULT_RUNTIME_LOCK:
+        if _DEFAULT_RUNTIME is None:
+            xd_port = int(os.environ.get("MCP_ADOBE_XD_PORT", "8765"))
+            writes_enabled = os.environ.get("MCP_ADOBE_WRITES", "1").strip().lower() not in {
+                "0",
+                "false",
+                "no",
+                "off",
+            }
+            _DEFAULT_RUNTIME = GatewayRuntime(xd_port=xd_port, writes_enabled=writes_enabled)
+        return _DEFAULT_RUNTIME
+
+
+def shutdown_default_runtime() -> None:
+    global _DEFAULT_RUNTIME
+    with _DEFAULT_RUNTIME_LOCK:
+        runtime = _DEFAULT_RUNTIME
+        _DEFAULT_RUNTIME = None
+    if runtime is not None:
+        runtime.close()
+
+
+atexit.register(shutdown_default_runtime)
+
+
+def _adapter_info_payload(info: AdapterInfo) -> dict[str, Any]:
+    risks = {
+        capability: risk.value
+        for capability, risk in sorted(info.capability_risks.items(), key=lambda item: item[0])
+    }
+    return {
+        "application": info.application,
+        "connected": info.connected,
+        "version": info.version,
+        "common_capabilities": sorted(info.common_capabilities),
+        "native_capabilities": sorted(info.native_capabilities),
+        "capability_risks": risks,
+        "writes_enabled": info.writes_enabled,
+        "undo_supported": info.undo_supported,
+        "transport": info.transport,
+        "upstream_repository": info.upstream_repository,
+        "upstream_snapshot": info.upstream_snapshot,
+    }
+
+
+def build_server(runtime: GatewayRuntimeProtocol | None = None) -> MCPServer:
+    """Build one MCP surface usable over stdio or Streamable HTTP."""
+
+    mcp = MCPServer("MCP Adobe Creative Gateway")
+
+    def current_runtime() -> GatewayRuntimeProtocol:
+        return runtime if runtime is not None else _get_default_runtime()
+
+    @mcp.tool(
+        title="Discover Adobe applications and capabilities",
+        annotations=ToolAnnotations(
+            read_only_hint=True,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    def creative_discover() -> dict[str, Any]:
+        """List Adobe adapters, connection state, capability names and risk classes."""
+        return {
+            "applications": [
+                _adapter_info_payload(info) for info in current_runtime().describe()
+            ],
+            "transports": ["stdio", "streamable-http"],
+        }
+
+    @mcp.tool(
+        title="Read Adobe application state",
+        annotations=ToolAnnotations(
+            read_only_hint=True,
+            idempotent_hint=True,
+            open_world_hint=False,
+        ),
+    )
+    def creative_read(
+        application: str,
+        capability: str,
+        arguments: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Execute a capability only when its gateway risk class is read-only."""
+        return dict(current_runtime().read(application, capability, arguments or {}))
+
+    @mcp.tool(
+        title="Run a normal Adobe write",
+        annotations=ToolAnnotations(
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=False,
+            open_world_hint=False,
+        ),
+    )
+    def creative_write(
+        application: str,
+        capability: str,
+        arguments: dict[str, Any] | None = None,
+        allow_overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """Execute only reversible or file-write capabilities; overwrite is opt-in."""
+        return dict(
+            current_runtime().write(
+                application,
+                capability,
+                arguments or {},
+                allow_overwrite=allow_overwrite,
+            )
+        )
+
+    @mcp.tool(
+        title="Run an explicitly authorized high-risk Adobe write",
+        annotations=ToolAnnotations(
+            read_only_hint=False,
+            destructive_hint=True,
+            idempotent_hint=False,
+            open_world_hint=False,
+        ),
+    )
+    def creative_authorized_write(
+        application: str,
+        capability: str,
+        arguments: dict[str, Any] | None = None,
+        allow_overwrite: bool = False,
+        allow_destructive: bool = False,
+        allow_native_script: bool = False,
+        allow_external_ai: bool = False,
+    ) -> dict[str, Any]:
+        """Execute a higher-risk capability only with the corresponding explicit flags."""
+        return dict(
+            current_runtime().authorized_write(
+                application,
+                capability,
+                arguments or {},
+                allow_overwrite=allow_overwrite,
+                allow_destructive=allow_destructive,
+                allow_native_script=allow_native_script,
+                allow_external_ai=allow_external_ai,
+            )
+        )
+
+    return mcp
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="MCP Adobe Creative Gateway")
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "streamable-http"),
+        default=os.environ.get("MCP_ADOBE_TRANSPORT", "stdio"),
+    )
+    parser.add_argument("--host", default=os.environ.get("MCP_ADOBE_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("MCP_ADOBE_PORT", "8787")))
+    parser.add_argument("--path", default=os.environ.get("MCP_ADOBE_PATH", "/mcp"))
+    parser.add_argument(
+        "--allow-non-loopback",
+        action="store_true",
+        help="Allow direct non-loopback binding. Prefer a secure tunnel/reverse proxy instead.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+    if not (1 <= args.port <= 65535):
+        raise SystemExit("--port must be between 1 and 65535")
+    if not args.path.startswith("/"):
+        raise SystemExit("--path must start with /")
+    if args.host not in {"127.0.0.1", "localhost", "::1"} and not args.allow_non_loopback:
+        raise SystemExit(
+            "Refusing non-loopback bind without --allow-non-loopback. "
+            "Use a secure tunnel/reverse proxy for remote MCP access."
+        )
+
+    mcp = build_server()
+    try:
+        if args.transport == "stdio":
+            mcp.run(transport="stdio")
+        else:
+            mcp.run(
+                transport="streamable-http",
+                host=args.host,
+                port=args.port,
+                streamable_http_path=args.path,
+                stateless_http=True,
+                json_response=True,
+            )
+    finally:
+        shutdown_default_runtime()
+
+
+if __name__ == "__main__":
+    main()
