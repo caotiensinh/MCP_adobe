@@ -11,6 +11,8 @@ from pydantic import AnyHttpUrl
 
 
 DEFAULT_SCOPE = "creative:access"
+WRITE_SCOPE = "creative:write"
+HIGH_RISK_SCOPE = "creative:high-risk"
 
 
 def _env(name: str) -> str | None:
