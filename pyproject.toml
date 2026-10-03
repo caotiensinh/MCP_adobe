@@ -15,6 +15,7 @@ dependencies = [
 [project.scripts]
 mcp-adobe = "mcp_adobe.server:main"
 mcp-adobe-oauth-preflight = "mcp_adobe.oauth_preflight_cli:main"
+mcp-adobe-remote-probe = "mcp_adobe.remote_probe:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
