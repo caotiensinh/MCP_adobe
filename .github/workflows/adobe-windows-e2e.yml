@@ -1,0 +1,143 @@
+name: Adobe Windows E2E
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "scripts/real_e2e.py"
+      - "tests/**"
+      - "pyproject.toml"
+      - ".github/workflows/adobe-windows-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: adobe-windows-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  adobe-real-e2e:
+    name: Windows Adobe real E2E
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    env:
+      PYTHONUTF8: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Runner and Adobe inventory
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Runner=$env:RUNNER_NAME"
+          Write-Host "Machine=$env:COMPUTERNAME"
+          Write-Host "User=$(whoami)"
+          Write-Host "Session=$env:SESSIONNAME"
+          Write-Host "UserInteractive=$([Environment]::UserInteractive)"
+
+          $roots = @()
+          if ($env:ProgramFiles -and (Test-Path "$env:ProgramFiles\Adobe")) { $roots += "$env:ProgramFiles\Adobe" }
+          if (${env:ProgramFiles(x86)} -and (Test-Path "${env:ProgramFiles(x86)}\Adobe")) { $roots += "${env:ProgramFiles(x86)}\Adobe" }
+
+          function Find-AdobeExe([string]$exeName) {
+            foreach ($root in $roots) {
+              $hit = Get-ChildItem -Path $root -Filter $exeName -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($hit) { return $hit.FullName }
+            }
+            return $null
+          }
+
+          $photoshop = Find-AdobeExe 'Photoshop.exe'
+          $illustrator = Find-AdobeExe 'Illustrator.exe'
+          $xdPackages = @(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'Adobe.*XD|XD.*Adobe' })
+
+          Write-Host "Photoshop=$photoshop"
+          Write-Host "Illustrator=$illustrator"
+          if ($xdPackages.Count -gt 0) {
+            $xdPackages | ForEach-Object { Write-Host "AdobeXD=$($_.Name) $($_.Version) $($_.InstallLocation)" }
+          } else {
+            Write-Warning "Adobe XD package was not detected for the runner account. XD live-control is not implemented yet; this does not block Photoshop/Illustrator E2E."
+          }
+
+          if (-not $photoshop) { throw 'Photoshop.exe not found under Program Files\Adobe' }
+          if (-not $illustrator) { throw 'Illustrator.exe not found under Program Files\Adobe' }
+
+      - name: Toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          node --version
+          npm --version
+          npx --version
+          if (Get-Command py -ErrorAction SilentlyContinue) {
+            py -3 --version
+          } else {
+            python --version
+          }
+
+      - name: Install gateway
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Get-Command py -ErrorAction SilentlyContinue) {
+            py -3 -m pip install -e .
+          } else {
+            python -m pip install -e .
+          }
+
+      - name: Unit and regression tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Get-Command py -ErrorAction SilentlyContinue) {
+            py -3 -m unittest discover -s tests -v
+          } else {
+            python -m unittest discover -s tests -v
+          }
+
+      - name: Photoshop real write E2E
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'mcp_adobe\photoshop'
+          if (Test-Path $out) { Remove-Item -Recurse -Force $out }
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          if (Get-Command py -ErrorAction SilentlyContinue) {
+            py -3 scripts/real_e2e.py photoshop --write --output-dir $out
+          } else {
+            python scripts/real_e2e.py photoshop --write --output-dir $out
+          }
+          Get-ChildItem -Path $out -File | Select-Object Name,Length,LastWriteTime
+
+      - name: Illustrator real write E2E
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $out = Join-Path $env:RUNNER_TEMP 'mcp_adobe\illustrator'
+          if (Test-Path $out) { Remove-Item -Recurse -Force $out }
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          if (Get-Command py -ErrorAction SilentlyContinue) {
+            py -3 scripts/real_e2e.py illustrator --write --output-dir $out
+          } else {
+            python scripts/real_e2e.py illustrator --write --output-dir $out
+          }
+          Get-ChildItem -Path $out -File | Select-Object Name,Length,LastWriteTime
+
+      - name: XD status
+        if: always()
+        shell: pwsh
+        run: |
+          $xdPackages = @(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'Adobe.*XD|XD.*Adobe' })
+          if ($xdPackages.Count -gt 0) {
+            Write-Host 'XD_INSTALLATION=PASS'
+            $xdPackages | ForEach-Object { Write-Host "$($_.Name) $($_.Version) $($_.InstallLocation)" }
+          } else {
+            Write-Host 'XD_INSTALLATION=UNKNOWN'
+          }
+          Write-Host 'XD_LIVE_CONTROL=BLOCKED: no adopted desktop-control adapter exists yet; current XD upstreams are parser/reference implementations.'
