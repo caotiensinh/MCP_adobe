@@ -193,6 +193,8 @@ MCP_ADOBE_AUDIT_BACKUP_COUNT=5
 
 The rotating file path does not change the audit payload: bearer-token values and tool arguments remain excluded. The file sink is thread-safe and flushes each audit line after writing so a long-running service does not depend on process shutdown to persist the security decision.
 
+Invalid size/count values or filesystem setup failures are treated as startup configuration errors. When OAuth remote mode is enabled, the process exits non-zero before opening the MCP socket with a concise `Invalid MCP Adobe audit configuration: ...` message rather than an unhandled Python traceback.
+
 Choose the audit directory and retention values according to the host's access-control, backup, and privacy requirements. Do not place the audit file inside a public web root or a source checkout that is routinely committed/uploaded.
 
 ## What the MCP endpoint publishes
@@ -249,8 +251,8 @@ The stdio process boundary and the local OS user are the security boundary for t
 
 ## Verification boundary
 
-GitHub Actions run `#51` on code head `5442e3da78e834fa6f78e4718c39c68aa8d7e3e5` completed the Windows test suite with **84/84 tests PASS**. The same exact-head run also passed MCPB manifest validation/packaging, packaged MCP runtime `tools/list`, packaged adapter discovery, artifact upload, and XD static validation.
+GitHub Actions run `#53` on code head `4b538bec4afe32f584f7960b9828dfb876294c6b` completed the Windows test suite with **87/87 tests PASS**. The same exact-head run also passed MCPB manifest validation/packaging, packaged MCP runtime `tools/list`, packaged Photoshop/Illustrator/XD adapter discovery, artifact upload, and XD static validation.
 
-Software verification now covers MCP transports, OAuth challenge and Protected Resource Metadata, RFC 7662 introspection, audience/resource validation, deployment-profile scopes, `403 insufficient_scope`, provider preflight, the safe remote deployment probe, redacted authenticated security-decision auditing, bounded rotating audit persistence, and packaged Claude Desktop MCP runtime smoke verification.
+Software verification now covers MCP transports, OAuth challenge and Protected Resource Metadata, RFC 7662 introspection, audience/resource validation, deployment-profile scopes, `403 insufficient_scope`, provider preflight, the safe remote deployment probe, redacted authenticated security-decision auditing, bounded rotating audit persistence, clean fail-closed startup for invalid audit size/count and simulated filesystem failures, and packaged Claude Desktop MCP runtime smoke verification.
 
 It does not prove a specific ChatGPT account/workspace connection or a real Adobe desktop write. Those require the actual external account/provider and an interactive Adobe desktop session respectively.
