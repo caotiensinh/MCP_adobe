@@ -14,19 +14,23 @@ A vendor-neutral MCP gateway for controlling Adobe creative applications from MC
 
 1. Adobe Photoshop
 2. Adobe Illustrator
-3. Adobe XD
-4. Premiere Pro, After Effects, and InDesign after the first two applications are stable
+3. Adobe XD read/parse workflows
+4. Premiere Pro, After Effects, and InDesign after Photoshop + Illustrator are stable
 
-## Verified upstream baselines
+## 5-upstream audit status
 
-The project does **not** vendor upstream source code at this stage. The following repositories are reference/adapter candidates and must be integrated according to their licenses and verified capabilities:
+The first deep audit is pinned to exact source snapshots:
 
-- `mikechambers/adb-mcp` — MIT — multi-application architecture reference; tested by its author with Claude Desktop and OpenAI Agent SDK.
-- `alisaitteke/photoshop-mcp` — MIT — Photoshop-specific MCP implementation with broad tool coverage.
-- `ie3jp/illustrator-mcp-server` — MIT — Illustrator-specific MCP implementation for stable Illustrator.
-- `stephenszpak/xd-mcp` — no GitHub license metadata observed during the initial audit; do not copy its code unless licensing is clarified.
+- `mikechambers/adb-mcp@afe5d09cdbdd4cc60434dce6b3f46fdafe15a21c` — multi-application architecture reference.
+- `alisaitteke/photoshop-mcp@ecd502c666f0e5b3889d3ef7bc42e5b3eb1119c2` — **primary Photoshop implementation candidate**.
+- `ie3jp/illustrator-mcp-server@57c5c101a5192c61535493f39b653e6f92b8eb29` — **primary Illustrator implementation candidate**.
+- `stephenszpak/xd-mcp@895613f0af9b14fb1c004913ad227fbbf18e4055` — XD file/share parser reference, not a desktop write adapter.
+- `dekdee/adobe-xd-mcp@fb2c767bf8a46b6a503fce90eca47fceca0a474e` — XD parser/code-generation reference, not selected for runtime adoption.
 
-See `docs/UPSTREAM_AUDIT.md` for the current reuse policy.
+The project does **not** vendor upstream source code at this stage. See:
+
+- `docs/UPSTREAM_AUDIT.md` — evidence and decisions for all five repositories.
+- `docs/ADOPTION_PLAN.md` — exactly what will be reused and the E2E gates required before a PASS claim.
 
 ## Target architecture
 
@@ -38,12 +42,15 @@ Claude / ChatGPT / Codex / Cursor / other MCP clients
                          |
         +----------------+----------------+
         |                |                |
-   Photoshop        Illustrator          XD
-    adapter            adapter         adapter
+        v                v                v
+    Photoshop        Illustrator          XD
+     adapter            adapter       read/parser
         |                |                |
-  UXP / script      CEP/UXP/script     XD bridge
-        |                |                |
-   Photoshop         Illustrator         XD
+ AppleScript/COM    osascript/COM      XD package/share
+ ExtendScript/UXP    ExtendScript       parsing
+        |                |
+        v                v
+    Photoshop         Illustrator
 ```
 
 The gateway exposes two capability tiers:
@@ -51,17 +58,36 @@ The gateway exposes two capability tiers:
 - **Common semantic capabilities** such as document open/save/export, selection, text/object creation, and undo.
 - **Native application capabilities** for operations that cannot be normalized without losing power.
 
+## Audit-derived safety rules
+
+These are now project invariants:
+
+- application bridges stay local by default;
+- inspect state/capabilities before mutation;
+- arbitrary native script execution is **default-deny**;
+- save/export never overwrites an existing file implicitly;
+- timeout of a mutating call is **UNKNOWN**, not automatically safe to retry;
+- transport success is not PASS until document/application state is verified where possible;
+- undo/rollback capability is explicit metadata, not assumed;
+- every adopted adapter records its upstream repository and pinned snapshot.
+
 ## Current repository state
 
-This initial commit provides:
+Implemented now:
 
-- architecture and upstream audit documentation;
-- a typed capability registry;
+- architecture and five-upstream audit documentation;
+- adoption/E2E plan;
+- typed capability registry;
 - adapter contracts;
 - deterministic routing rules;
 - unit tests for registration, discovery, routing, and duplicate protection.
 
-It does **not** yet claim live Photoshop/Illustrator control. Live application adapters will be added only after end-to-end validation against real Adobe applications.
+Not yet claimed:
+
+- live Photoshop adapter integration;
+- live Illustrator adapter integration;
+- write-capable Adobe XD desktop control;
+- production E2E with Claude + OpenAI clients.
 
 ## Development
 
@@ -71,8 +97,8 @@ Python 3.11+ is used for the gateway core scaffold.
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-## Safety / reliability rules
+## Safety / reliability rule
 
-A write operation is not considered successful merely because the MCP call returned. Production adapters should verify postconditions where possible and expose explicit undo/rollback capability metadata.
+A write operation is not considered successful merely because the MCP call returned. Production adapters must verify postconditions where possible and expose explicit undo/rollback capability metadata.
 
-See `docs/ARCHITECTURE.md`.
+See `docs/ARCHITECTURE.md` and `docs/ADOPTION_PLAN.md`.
