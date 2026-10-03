@@ -69,6 +69,21 @@ async def _list_http_tools_with_token(url: str, token: str) -> set[str]:
             return {tool.name for tool in listed.tools}
 
 
+async def _call_http_tool_with_token(
+    url: str,
+    token: str,
+    name: str,
+    arguments: dict[str, object],
+):
+    async with httpx2.AsyncClient(
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=httpx2.Timeout(10.0, read=30.0),
+    ) as http_client:
+        transport = streamable_http_client(url, http_client=http_client)
+        async with Client(transport) as client:
+            return await client.call_tool(name, arguments)
+
+
 async def _get_json(url: str) -> tuple[int, dict[str, object], dict[str, str]]:
     async with httpx2.AsyncClient(timeout=10.0) as client:
         response = await client.get(url)
@@ -129,6 +144,17 @@ def _stop_process(process: subprocess.Popen[str]) -> None:
         process.stdout.close()
     if process.stderr is not None:
         process.stderr.close()
+
+
+def _stop_process_and_collect(process: subprocess.Popen[str]) -> tuple[str, str]:
+    if process.poll() is None:
+        process.terminate()
+    try:
+        stdout, stderr = process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        stdout, stderr = process.communicate(timeout=5)
+    return stdout or "", stderr or ""
 
 
 def _start_introspection_server(resource_url: str) -> tuple[ThreadingHTTPServer, Thread]:
@@ -301,6 +327,64 @@ class McpServerTransportTests(unittest.TestCase):
             introspection.shutdown()
             introspection.server_close()
             thread.join(timeout=5)
+
+    def test_oauth_denied_write_emits_redacted_identity_audit_over_real_http(self) -> None:
+        port = _free_loopback_port()
+        resource_url = f"http://127.0.0.1:{port}/mcp"
+        introspection, thread = _start_introspection_server(resource_url)
+        introspection_port = int(introspection.server_address[1])
+        process = _start_gateway(
+            port,
+            _oauth_env(resource_url, introspection_port, "creative:access"),
+        )
+        stdout = ""
+        stderr = ""
+        try:
+            _wait_for_tcp(port, process)
+            result = asyncio.run(
+                _call_http_tool_with_token(
+                    resource_url,
+                    "good-token",
+                    "creative_write",
+                    {
+                        "application": "photoshop",
+                        "capability": "creative.document.create",
+                        "arguments": {"sentinel": "MUST-NOT-APPEAR-IN-AUDIT"},
+                    },
+                )
+            )
+            self.assertTrue(result.is_error)
+        finally:
+            stdout, stderr = _stop_process_and_collect(process)
+            introspection.shutdown()
+            introspection.server_close()
+            thread.join(timeout=5)
+
+        audit_events: list[dict[str, object]] = []
+        for line in stderr.splitlines():
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("event") == "mcp_adobe.security":
+                audit_events.append(payload)
+
+        denied = [
+            event
+            for event in audit_events
+            if event.get("tool") == "creative_write" and event.get("decision") == "denied"
+        ]
+        self.assertEqual(len(denied), 1, msg=f"stderr={stderr}\nstdout={stdout}")
+        event = denied[0]
+        self.assertEqual(event["application"], "photoshop")
+        self.assertEqual(event["capability"], "creative.document.create")
+        principal = event["principal"]
+        self.assertEqual(principal["subject"], "test-user")
+        self.assertEqual(principal["client_id"], "chatgpt-test-client")
+        self.assertIn("creative:access", principal["scopes"])
+        combined = stdout + stderr
+        self.assertNotIn("good-token", combined)
+        self.assertNotIn("MUST-NOT-APPEAR-IN-AUDIT", combined)
 
 
 if __name__ == "__main__":
