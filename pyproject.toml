@@ -9,6 +9,7 @@ description = "Client-neutral gateway core for Adobe Creative MCP adapters"
 requires-python = ">=3.11"
 dependencies = [
   "mcp>=2,<3",
+  "websockets>=15,<16",
 ]
 
 [tool.setuptools]
