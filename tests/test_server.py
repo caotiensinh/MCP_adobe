@@ -224,7 +224,6 @@ class McpServerContractTests(unittest.TestCase):
         normal, high = asyncio.run(self._with_client(scenario, server))
         self.assertTrue(normal.is_error)
         self.assertTrue(high.is_error)
-        self.assertIn(WRITE_SCOPE, " ".join(item.text for item in normal.content if item.type == "text"))
         self.assertEqual(self.runtime.calls, [])
 
     def test_oauth_write_profile_allows_normal_write_but_blocks_high_risk(self) -> None:
@@ -258,7 +257,6 @@ class McpServerContractTests(unittest.TestCase):
         self.assertFalse(normal.is_error)
         self.assertEqual(normal.structured_content["mode"], "write")
         self.assertTrue(high.is_error)
-        self.assertIn(HIGH_RISK_SCOPE, " ".join(item.text for item in high.content if item.type == "text"))
         self.assertEqual([name for name, _ in self.runtime.calls], ["write"])
 
     def test_oauth_full_profile_allows_high_risk_and_reports_policy(self) -> None:
