@@ -112,6 +112,16 @@ jobs:
           "illustrator_found=$(([bool]$illustrator).ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "xd_found=$($xdFound.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Toolchain
         shell: powershell
         run: |
@@ -119,19 +129,19 @@ jobs:
           node --version
           npm --version
           npx --version
-          if (Get-Command py -ErrorAction SilentlyContinue) { py -3 --version } else { python --version }
+          python --version
 
       - name: Install gateway
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          if (Get-Command py -ErrorAction SilentlyContinue) { py -3 -m pip install -e . } else { python -m pip install -e . }
+          python -m pip install -e .
 
       - name: Unit and regression tests
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          if (Get-Command py -ErrorAction SilentlyContinue) { py -3 -m unittest discover -s tests -v } else { python -m unittest discover -s tests -v }
+          python -m unittest discover -s tests -v
 
       - name: Photoshop real write E2E
         if: steps.inventory.outputs.interactive == 'true' && steps.inventory.outputs.photoshop_found == 'true'
@@ -141,7 +151,7 @@ jobs:
           $out = Join-Path $env:RUNNER_TEMP 'mcp_adobe\photoshop'
           if (Test-Path $out) { Remove-Item -Recurse -Force $out }
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          if (Get-Command py -ErrorAction SilentlyContinue) { py -3 scripts/real_e2e.py photoshop --write --output-dir $out } else { python scripts/real_e2e.py photoshop --write --output-dir $out }
+          python scripts/real_e2e.py photoshop --write --output-dir $out
           Get-ChildItem -Path $out -File | Select-Object Name,Length,LastWriteTime
 
       - name: Illustrator real write E2E
@@ -152,7 +162,7 @@ jobs:
           $out = Join-Path $env:RUNNER_TEMP 'mcp_adobe\illustrator'
           if (Test-Path $out) { Remove-Item -Recurse -Force $out }
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          if (Get-Command py -ErrorAction SilentlyContinue) { py -3 scripts/real_e2e.py illustrator --write --output-dir $out } else { python scripts/real_e2e.py illustrator --write --output-dir $out }
+          python scripts/real_e2e.py illustrator --write --output-dir $out
           Get-ChildItem -Path $out -File | Select-Object Name,Length,LastWriteTime
 
       - name: XD status
