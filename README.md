@@ -183,6 +183,24 @@ The preflight validates provider discovery metadata before deployment, including
 
 Hard incompatibilities exit non-zero. Warnings are reported without pretending they are failures.
 
+## Safe remote deployment probe
+
+Installed command:
+
+```powershell
+uv run mcp-adobe-remote-probe --url https://creative.example.com/mcp
+```
+
+It verifies the public OAuth/MCP boundary without executing any Adobe tool: anonymous `401`, same-origin Protected Resource Metadata, metadata `200`, resource binding, authorization-server metadata, and scopes. With a temporary token supplied through `MCP_ADOBE_PROBE_TOKEN`, it can additionally verify authenticated MCP `tools/list`.
+
+The probe rejects cross-origin metadata pointers, never prints the bearer token, and rejects non-loopback plain HTTP. See `docs/CHATGPT_REMOTE.md` for the authenticated and JSON-mode commands.
+
+## Remote security audit
+
+OAuth-protected Streamable HTTP uses a redacted JSONL security-decision audit sink. It records the tool, allow/deny decision, application/capability, bounded denial reason, and OAuth subject/client/scopes when available.
+
+Raw bearer tokens and tool arguments are deliberately outside the audit payload API and regression-tested not to appear in emitted JSONL. `decision=allowed` means policy allowed the request to proceed; it is not a claim that the downstream Adobe operation completed successfully.
+
 ## Adobe XD bridge
 
 The local XD UXP/WebSocket bridge supports live reads:
@@ -215,6 +233,7 @@ No documented programmatic XD undo primitive was found in the audited API surfac
 - transport success is not operation PASS until postconditions are verified where possible;
 - undo/rollback capability is explicit metadata;
 - high-risk actions use a separate top-level tool and explicit authorization flags;
+- remote security audit never serializes bearer tokens or tool arguments;
 - normal push CI never writes into a real Adobe desktop application.
 
 ## Development and verification
@@ -229,9 +248,9 @@ uv run python -m unittest discover -s tests -v
 Latest verified software baseline:
 
 ```text
-GitHub Actions run #36
-code head: 42e50743ad05d3c974f04a23b49a825d90a07f08
-76/76 tests PASS
+GitHub Actions run #39
+code head: fc85fe0d088bde892ffc57687b32c96f50cf4050
+79/79 tests PASS
 XD manifest/main.js static validation PASS
 ```
 
@@ -251,8 +270,9 @@ Coverage includes:
 - read-only / normal-write / full high-risk server profile gates;
 - fail-closed non-loopback HTTP without OAuth;
 - RFC 7662 introspection behavior;
-- OAuth/OIDC provider compatibility preflight;
-- installed `mcp-adobe-oauth-preflight` console entrypoint on Windows;
+- OAuth/OIDC provider compatibility preflight and installed console entrypoint;
+- safe remote endpoint probe, same-origin metadata enforcement, installed probe command, and token non-leak checks;
+- authenticated security audit redaction, including bearer-token and tool-argument non-leak checks;
 - XD loopback WebSocket handshake/request/response;
 - PowerShell helper syntax validation;
 - XD plugin static validation.
@@ -307,9 +327,11 @@ Software-verified now:
 - OAuth resource-server protection and token introspection;
 - remote OAuth permission profiles with HTTP scope enforcement;
 - remote-provider compatibility preflight;
+- safe deployed-endpoint boundary probe;
+- redacted OAuth security-decision audit;
 - Photoshop and Illustrator adapters over pinned upstream MCPs;
 - XD local UXP/WebSocket bridge;
-- **76/76 Windows tests passing**.
+- **79/79 Windows tests passing on run #39**.
 
 Still not claimed:
 
@@ -319,4 +341,4 @@ Still not claimed:
 - production E2E using a specific external OAuth provider and ChatGPT account/workspace;
 - production E2E from a specific Claude client product.
 
-Those boundaries are intentional: software simulation, transport tests, and mocked token introspection are not substituted for real external-account or desktop evidence.
+Those boundaries are intentional: software simulation, transport tests, and local/mock OAuth evidence are not substituted for real external-account or desktop evidence.
