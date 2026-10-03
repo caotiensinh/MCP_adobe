@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - "src/**"
-      - "scripts/real_e2e.py"
+      - "scripts/**"
       - "tests/**"
       - "pyproject.toml"
       - ".github/workflows/adobe-windows-e2e.yml"
@@ -32,6 +32,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Runner and Adobe inventory
+        id: inventory
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -39,34 +40,77 @@ jobs:
           Write-Host "Machine=$env:COMPUTERNAME"
           Write-Host "User=$(whoami)"
           Write-Host "Session=$env:SESSIONNAME"
-          Write-Host "UserInteractive=$([Environment]::UserInteractive)"
+          $interactive = [Environment]::UserInteractive -and -not [string]::IsNullOrWhiteSpace($env:SESSIONNAME)
+          Write-Host "UserInteractive=$interactive"
 
-          $roots = @()
-          if ($env:ProgramFiles -and (Test-Path "$env:ProgramFiles\Adobe")) { $roots += "$env:ProgramFiles\Adobe" }
-          if (${env:ProgramFiles(x86)} -and (Test-Path "${env:ProgramFiles(x86)}\Adobe")) { $roots += "${env:ProgramFiles(x86)}\Adobe" }
+          Write-Host '--- runner service ---'
+          Get-CimInstance Win32_Service | Where-Object {
+            $_.Name -like 'actions.runner.*' -or $_.PathName -like '*actions-runner-adobe*'
+          } | Select-Object Name,State,StartMode,StartName,PathName | Format-List
 
-          function Find-AdobeExe([string]$exeName) {
-            foreach ($root in $roots) {
-              $hit = Get-ChildItem -Path $root -Filter $exeName -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          Write-Host '--- logged-on sessions ---'
+          try { quser } catch { Write-Warning "quser unavailable: $($_.Exception.Message)" }
+
+          Write-Host '--- Adobe registry entries ---'
+          $uninstallRoots = @(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+          )
+          foreach ($root in $uninstallRoots) {
+            Get-ItemProperty $root -ErrorAction SilentlyContinue |
+              Where-Object { $_.DisplayName -match 'Adobe.*(Photoshop|Illustrator|XD)' } |
+              Select-Object DisplayName,DisplayVersion,InstallLocation,DisplayIcon |
+              Format-Table -AutoSize
+          }
+
+          $fixedDrives = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { $_.DeviceID })
+          Write-Host "FixedDrives=$($fixedDrives -join ',')"
+
+          $photoshopPatterns = @()
+          $illustratorPatterns = @()
+          foreach ($drive in $fixedDrives) {
+            $photoshopPatterns += @(
+              "$drive\Program Files\Adobe\Adobe Photoshop *\Photoshop.exe",
+              "$drive\Adobe\Adobe Photoshop *\Photoshop.exe",
+              "$drive\Adobe Photoshop *\Photoshop.exe"
+            )
+            $illustratorPatterns += @(
+              "$drive\Program Files\Adobe\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe",
+              "$drive\Adobe\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe",
+              "$drive\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe"
+            )
+          }
+
+          function Find-FirstFile([string[]]$patterns) {
+            foreach ($pattern in $patterns) {
+              $hit = Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue | Select-Object -First 1
               if ($hit) { return $hit.FullName }
             }
             return $null
           }
 
-          $photoshop = Find-AdobeExe 'Photoshop.exe'
-          $illustrator = Find-AdobeExe 'Illustrator.exe'
-          $xdPackages = @(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'Adobe.*XD|XD.*Adobe' })
+          $photoshop = Find-FirstFile $photoshopPatterns
+          $illustrator = Find-FirstFile $illustratorPatterns
+
+          $xdCurrent = @(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'Adobe.*XD|XD.*Adobe' })
+          $xdAll = @()
+          try {
+            $xdAll = @(Get-AppxPackage -AllUsers -ErrorAction Stop | Where-Object { $_.Name -match 'Adobe.*XD|XD.*Adobe' })
+          } catch {
+            Write-Warning "Get-AppxPackage -AllUsers unavailable for this account: $($_.Exception.Message)"
+          }
+          $xdFound = ($xdCurrent.Count + $xdAll.Count) -gt 0
 
           Write-Host "Photoshop=$photoshop"
           Write-Host "Illustrator=$illustrator"
-          if ($xdPackages.Count -gt 0) {
-            $xdPackages | ForEach-Object { Write-Host "AdobeXD=$($_.Name) $($_.Version) $($_.InstallLocation)" }
-          } else {
-            Write-Warning "Adobe XD package was not detected for the runner account. XD live-control is not implemented yet; this does not block Photoshop/Illustrator E2E."
+          @($xdCurrent + $xdAll) | Sort-Object PackageFullName -Unique | ForEach-Object {
+            Write-Host "AdobeXD=$($_.Name) $($_.Version) $($_.InstallLocation)"
           }
 
-          if (-not $photoshop) { throw 'Photoshop.exe not found under Program Files\Adobe' }
-          if (-not $illustrator) { throw 'Illustrator.exe not found under Program Files\Adobe' }
+          "interactive=$($interactive.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "photoshop_found=$(([bool]$photoshop).ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "illustrator_found=$(([bool]$illustrator).ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "xd_found=$($xdFound.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Toolchain
         shell: powershell
@@ -75,69 +119,55 @@ jobs:
           node --version
           npm --version
           npx --version
-          if (Get-Command py -ErrorAction SilentlyContinue) {
-            py -3 --version
-          } else {
-            python --version
-          }
+          if (Get-Command py -ErrorAction SilentlyContinue) { py -3 --version } else { python --version }
 
       - name: Install gateway
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          if (Get-Command py -ErrorAction SilentlyContinue) {
-            py -3 -m pip install -e .
-          } else {
-            python -m pip install -e .
-          }
+          if (Get-Command py -ErrorAction SilentlyContinue) { py -3 -m pip install -e . } else { python -m pip install -e . }
 
       - name: Unit and regression tests
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          if (Get-Command py -ErrorAction SilentlyContinue) {
-            py -3 -m unittest discover -s tests -v
-          } else {
-            python -m unittest discover -s tests -v
-          }
+          if (Get-Command py -ErrorAction SilentlyContinue) { py -3 -m unittest discover -s tests -v } else { python -m unittest discover -s tests -v }
 
       - name: Photoshop real write E2E
+        if: steps.inventory.outputs.interactive == 'true' && steps.inventory.outputs.photoshop_found == 'true'
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $out = Join-Path $env:RUNNER_TEMP 'mcp_adobe\photoshop'
           if (Test-Path $out) { Remove-Item -Recurse -Force $out }
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          if (Get-Command py -ErrorAction SilentlyContinue) {
-            py -3 scripts/real_e2e.py photoshop --write --output-dir $out
-          } else {
-            python scripts/real_e2e.py photoshop --write --output-dir $out
-          }
+          if (Get-Command py -ErrorAction SilentlyContinue) { py -3 scripts/real_e2e.py photoshop --write --output-dir $out } else { python scripts/real_e2e.py photoshop --write --output-dir $out }
           Get-ChildItem -Path $out -File | Select-Object Name,Length,LastWriteTime
 
       - name: Illustrator real write E2E
+        if: steps.inventory.outputs.interactive == 'true' && steps.inventory.outputs.illustrator_found == 'true'
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
           $out = Join-Path $env:RUNNER_TEMP 'mcp_adobe\illustrator'
           if (Test-Path $out) { Remove-Item -Recurse -Force $out }
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          if (Get-Command py -ErrorAction SilentlyContinue) {
-            py -3 scripts/real_e2e.py illustrator --write --output-dir $out
-          } else {
-            python scripts/real_e2e.py illustrator --write --output-dir $out
-          }
+          if (Get-Command py -ErrorAction SilentlyContinue) { py -3 scripts/real_e2e.py illustrator --write --output-dir $out } else { python scripts/real_e2e.py illustrator --write --output-dir $out }
           Get-ChildItem -Path $out -File | Select-Object Name,Length,LastWriteTime
 
       - name: XD status
         if: always()
         shell: powershell
         run: |
-          $xdPackages = @(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'Adobe.*XD|XD.*Adobe' })
-          if ($xdPackages.Count -gt 0) {
-            Write-Host 'XD_INSTALLATION=PASS'
-            $xdPackages | ForEach-Object { Write-Host "$($_.Name) $($_.Version) $($_.InstallLocation)" }
-          } else {
-            Write-Host 'XD_INSTALLATION=UNKNOWN'
+          Write-Host "XD_INSTALLATION=${{ steps.inventory.outputs.xd_found }}"
+          Write-Host 'XD_LIVE_CONTROL=BLOCKED: current adopted XD upstreams are parser/reference implementations, not a desktop-control adapter.'
+
+      - name: Adobe interactive E2E gate
+        if: always()
+        shell: powershell
+        run: |
+          if ('${{ steps.inventory.outputs.interactive }}' -ne 'true') {
+            throw 'BLOCKED: the Adobe runner is running as a non-interactive Windows service account. Run scripts/start_adobe_runner_interactive.ps1 -StopService from an elevated logged-in desktop PowerShell, keep the new runner console open, then rerun this workflow.'
           }
-          Write-Host 'XD_LIVE_CONTROL=BLOCKED: no adopted desktop-control adapter exists yet; current XD upstreams are parser/reference implementations.'
+          if ('${{ steps.inventory.outputs.photoshop_found }}' -ne 'true') { throw 'BLOCKED: Photoshop installation is not visible to the interactive runner account.' }
+          if ('${{ steps.inventory.outputs.illustrator_found }}' -ne 'true') { throw 'BLOCKED: Illustrator installation is not visible to the interactive runner account.' }
