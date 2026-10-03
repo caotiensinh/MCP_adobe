@@ -3,13 +3,21 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from mcp import Client
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 
-from mcp_adobe.audit import JsonLineSecurityAuditSink, SecurityAuditEvent, security_audit_payload
+from mcp_adobe.audit import (
+    JsonLineSecurityAuditSink,
+    RotatingJsonLineFileSecurityAuditSink,
+    SecurityAuditEvent,
+    security_audit_payload,
+)
 from mcp_adobe.auth import OAuthResourceConfig
 from mcp_adobe.server import build_server
 
@@ -86,6 +94,72 @@ class SecurityAuditTests(unittest.TestCase):
         payload = json.loads(line)
         self.assertEqual(payload["event"], "mcp_adobe.security")
         self.assertEqual(payload["principal"]["subject"], "alice@example.test")
+
+    def test_rotating_file_sink_keeps_bounded_backups_and_redaction(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "security-audit.jsonl"
+            sink = RotatingJsonLineFileSecurityAuditSink(
+                path,
+                max_bytes=1,
+                backup_count=2,
+            )
+            event = SecurityAuditEvent(
+                tool="creative_write",
+                decision="allowed",
+                application="illustrator",
+                capability="creative.document.create",
+            )
+            sink.emit(event, _token())
+            sink.emit(event, _token())
+            sink.emit(event, _token())
+            sink.emit(event, _token())
+
+            self.assertTrue(path.exists())
+            self.assertTrue(Path(f"{path}.1").exists())
+            self.assertTrue(Path(f"{path}.2").exists())
+            self.assertFalse(Path(f"{path}.3").exists())
+
+            combined = "".join(
+                candidate.read_text(encoding="utf-8")
+                for candidate in (path, Path(f"{path}.1"), Path(f"{path}.2"))
+            )
+            self.assertNotIn("DO-NOT-LOG-THIS-BEARER-TOKEN", combined)
+            self.assertIn("alice@example.test", combined)
+
+    def test_default_jsonl_sink_uses_rotating_file_when_env_path_is_set(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "nested" / "security-audit.jsonl"
+            env = {
+                "MCP_ADOBE_AUDIT_PATH": str(path),
+                "MCP_ADOBE_AUDIT_MAX_BYTES": "1",
+                "MCP_ADOBE_AUDIT_BACKUP_COUNT": "2",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                sink = JsonLineSecurityAuditSink()
+                sink.emit(
+                    SecurityAuditEvent(
+                        tool="creative_read",
+                        decision="allowed",
+                        application="xd",
+                        capability="xd.health",
+                    ),
+                    _token(),
+                )
+                sink.emit(
+                    SecurityAuditEvent(
+                        tool="creative_read",
+                        decision="allowed",
+                        application="xd",
+                        capability="xd.document.info",
+                    ),
+                    _token(),
+                )
+
+            self.assertTrue(path.exists())
+            self.assertTrue(Path(f"{path}.1").exists())
+            combined = path.read_text(encoding="utf-8") + Path(f"{path}.1").read_text(encoding="utf-8")
+            self.assertNotIn("DO-NOT-LOG-THIS-BEARER-TOKEN", combined)
+            self.assertIn("chatgpt-client", combined)
 
     def test_profile_denial_audits_principal_before_runtime(self) -> None:
         stream = io.StringIO()
