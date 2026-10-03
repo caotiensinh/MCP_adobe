@@ -99,6 +99,30 @@ Local endpoint:
 http://127.0.0.1:8787/mcp
 ```
 
+## Claude Desktop MCPB package
+
+The repository can produce a self-contained Claude Desktop MCPB bundle containing the gateway source/runtime metadata while continuing to resolve the pinned Photoshop and Illustrator upstream MCP packages at runtime.
+
+Build and validate the bundle:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/build_mcpb.ps1
+```
+
+Expected output:
+
+```text
+dist\mcp-adobe-creative-gateway.mcpb
+```
+
+Exercise the packaged runtime without claiming real Adobe desktop E2E:
+
+```powershell
+uv run python scripts/smoke_mcpb.py dist/mcp-adobe-creative-gateway.mcpb --exercise-adapters
+```
+
+The smoke test validates archive contents, starts the gateway from the extracted package, verifies the four-tool MCP surface, and discovers Photoshop/Illustrator/XD adapter metadata. Adapter `connected` state is reported as evidence but is not treated as a desktop-E2E PASS unless `--require-connected <application>` is explicitly requested. The complete packaged runtime exercise is bounded by a timeout so an upstream process cannot hang CI indefinitely.
+
 ## OAuth-protected remote MCP
 
 The gateway implements the MCP resource-server side using the official MCP Python SDK's `TokenVerifier` and `AuthSettings` support.
@@ -193,13 +217,23 @@ uv run mcp-adobe-remote-probe --url https://creative.example.com/mcp
 
 It verifies the public OAuth/MCP boundary without executing any Adobe tool: anonymous `401`, same-origin Protected Resource Metadata, metadata `200`, resource binding, authorization-server metadata, and scopes. With a temporary token supplied through `MCP_ADOBE_PROBE_TOKEN`, it can additionally verify authenticated MCP `tools/list`.
 
-The probe rejects cross-origin metadata pointers, never prints the bearer token, and rejects non-loopback plain HTTP. See `docs/CHATGPT_REMOTE.md` for the authenticated and JSON-mode commands.
+The probe rejects cross-origin metadata pointers before fetching them, never prints the bearer token, and rejects non-loopback plain HTTP. See `docs/CHATGPT_REMOTE.md` for the authenticated and JSON-mode commands.
 
 ## Remote security audit
 
 OAuth-protected Streamable HTTP uses a redacted JSONL security-decision audit sink. It records the tool, allow/deny decision, application/capability, bounded denial reason, and OAuth subject/client/scopes when available.
 
 Raw bearer tokens and tool arguments are deliberately outside the audit payload API and regression-tested not to appear in emitted JSONL. `decision=allowed` means policy allowed the request to proceed; it is not a claim that the downstream Adobe operation completed successfully.
+
+The default audit destination is process `stderr`. Persistent bounded rotation can be enabled without changing the payload:
+
+```text
+MCP_ADOBE_AUDIT_PATH=C:\ProgramData\MCPAdobe\security-audit.jsonl
+MCP_ADOBE_AUDIT_MAX_BYTES=10485760
+MCP_ADOBE_AUDIT_BACKUP_COUNT=5
+```
+
+The file sink creates parent directories as needed, rotates to numbered backups, caps the number of retained backups, flushes every line, and remains token/argument-redacted. See `docs/CHATGPT_REMOTE.md` for deployment guidance.
 
 ## Adobe XD bridge
 
@@ -234,6 +268,7 @@ No documented programmatic XD undo primitive was found in the audited API surfac
 - undo/rollback capability is explicit metadata;
 - high-risk actions use a separate top-level tool and explicit authorization flags;
 - remote security audit never serializes bearer tokens or tool arguments;
+- packaged smoke does not substitute package bootstrap for live Adobe desktop connectivity;
 - normal push CI never writes into a real Adobe desktop application.
 
 ## Development and verification
@@ -248,9 +283,13 @@ uv run python -m unittest discover -s tests -v
 Latest verified software baseline:
 
 ```text
-GitHub Actions run #39
-code head: fc85fe0d088bde892ffc57687b32c96f50cf4050
-79/79 tests PASS
+GitHub Actions run #51
+code head: 5442e3da78e834fa6f78e4718c39c68aa8d7e3e5
+84/84 tests PASS
+Claude Desktop MCPB validate/pack PASS
+packaged MCP tools/list PASS
+packaged Photoshop/Illustrator/XD adapter discovery PASS
+MCPB artifact upload PASS
 XD manifest/main.js static validation PASS
 ```
 
@@ -271,8 +310,10 @@ Coverage includes:
 - fail-closed non-loopback HTTP without OAuth;
 - RFC 7662 introspection behavior;
 - OAuth/OIDC provider compatibility preflight and installed console entrypoint;
-- safe remote endpoint probe, same-origin metadata enforcement, installed probe command, and token non-leak checks;
-- authenticated security audit redaction, including bearer-token and tool-argument non-leak checks;
+- safe remote endpoint probe, deterministic same-origin metadata enforcement, installed probe command, and token non-leak checks;
+- authenticated security audit redaction, persistent JSONL rotation, and bounded backup checks;
+- Windows bootstrap/config generation tests;
+- Claude Desktop MCPB manifest validation, package creation, packaged runtime smoke, adapter discovery, and artifact upload;
 - XD loopback WebSocket handshake/request/response;
 - PowerShell helper syntax validation;
 - XD plugin static validation.
@@ -328,10 +369,11 @@ Software-verified now:
 - remote OAuth permission profiles with HTTP scope enforcement;
 - remote-provider compatibility preflight;
 - safe deployed-endpoint boundary probe;
-- redacted OAuth security-decision audit;
+- redacted OAuth security-decision audit with optional bounded rotating persistence;
+- Claude Desktop MCPB package validation and packaged runtime smoke;
 - Photoshop and Illustrator adapters over pinned upstream MCPs;
 - XD local UXP/WebSocket bridge;
-- **79/79 Windows tests passing on run #39**.
+- **84/84 Windows tests passing on run #51**.
 
 Still not claimed:
 
@@ -341,4 +383,4 @@ Still not claimed:
 - production E2E using a specific external OAuth provider and ChatGPT account/workspace;
 - production E2E from a specific Claude client product.
 
-Those boundaries are intentional: software simulation, transport tests, and local/mock OAuth evidence are not substituted for real external-account or desktop evidence.
+Those boundaries are intentional: software simulation, transport tests, package bootstrap, and local/mock OAuth evidence are not substituted for real external-account or desktop evidence.
