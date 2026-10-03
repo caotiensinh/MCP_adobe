@@ -1,6 +1,6 @@
 # MCP Adobe Creative Gateway
 
-A client-neutral MCP gateway for Adobe creative applications. The project is designed to expose one normalized control plane to MCP-capable clients while reusing existing Adobe integrations wherever they are mature enough.
+A client-neutral MCP gateway for Adobe creative applications. The project exposes one normalized control plane to MCP-capable clients while reusing existing Adobe integrations wherever they are mature enough.
 
 ## Project goals
 
@@ -8,6 +8,7 @@ A client-neutral MCP gateway for Adobe creative applications. The project is des
 - Reuse proven community implementations instead of rewriting mature integrations.
 - Normalize common creative operations while preserving application-specific capabilities.
 - Keep risky write operations observable, policy-gated, and reversible where the host application exposes a verified undo primitive.
+- Support both local stdio clients and Streamable HTTP remote-client deployments.
 - Support Windows first, with macOS compatibility where adopted upstream adapters provide it.
 - Require real application evidence before claiming desktop E2E PASS.
 
@@ -31,7 +32,7 @@ The audited upstream snapshots are:
 
 No audited community XD repository provided the live desktop-write bridge needed by this project, so only that missing layer is implemented locally.
 
-The gateway does not reimplement MCP framing for adopted upstream servers. It reuses the official MCP Python SDK for stdio subprocess lifecycle, initialization, tool discovery, and tool calls.
+The gateway does not reimplement MCP framing for adopted upstream servers. It reuses the official MCP Python SDK for stdio subprocess lifecycle, initialization, tool discovery, tool calls, and the top-level stdio/Streamable HTTP server transports.
 
 Pinned runtime launchers currently use:
 
@@ -45,27 +46,80 @@ See `docs/UPSTREAM_AUDIT.md` and `docs/ADOPTION_PLAN.md` for audit evidence and 
 ## Architecture
 
 ```text
-MCP-capable client
-       |
-       v
-Adobe Creative MCP Gateway
-       |
-       +----------------------+----------------------+
-       |                      |                      |
-       v                      v                      v
- Photoshop adapter      Illustrator adapter       XD adapter
-       |                      |                      |
- official MCP SDK       official MCP SDK      local WebSocket
-       |                      |                127.0.0.1:8765
-       v                      v                      |
- Photoshop MCP          Illustrator MCP             v
-       |                      |              XD UXP panel plugin
-       v                      v                      |
-  Photoshop              Illustrator                v
-                                                   XD
+Claude / Codex / Cursor                 ChatGPT / remote MCP client
+        |                                          |
+      stdio                              HTTPS / secure tunnel
+        |                                          |
+        +------------------+-----------------------+
+                           |
+                           v
+                Adobe Creative MCP Gateway
+                           |
+          +----------------+----------------+
+          |                |                |
+          v                v                v
+   Photoshop adapter  Illustrator adapter  XD adapter
+          |                |                |
+   official MCP SDK   official MCP SDK  local WebSocket
+          |                |          127.0.0.1:8765
+          v                v                |
+   Photoshop MCP     Illustrator MCP        v
+          |                |        XD UXP panel plugin
+          v                v                |
+      Photoshop        Illustrator          v
+                                             XD
 ```
 
-The XD bridge binds to loopback only. It is not exposed on the LAN.
+The XD bridge binds to loopback only. The top-level HTTP gateway also defaults to loopback and refuses a non-loopback bind unless explicitly overridden.
+
+## Unified MCP server
+
+`src/mcp_adobe/server.py` provides one client-neutral MCP surface over either stdio or Streamable HTTP.
+
+The installed command is:
+
+```text
+mcp-adobe
+```
+
+The top-level server exposes four tools:
+
+- `creative_discover` — read-only application/capability/risk discovery;
+- `creative_read` — accepts only capabilities classified as `read`;
+- `creative_write` — accepts only reversible writes and file writes, with overwrite opt-in;
+- `creative_authorized_write` — separate high-risk path for destructive, native-script, external-AI, or explicitly authorized operations.
+
+This separation is intentional. A generic normal-write call cannot silently become a native-script or destructive execution path.
+
+### Local stdio mode
+
+For MCP clients that can launch a local stdio server:
+
+```powershell
+uv run mcp-adobe --transport stdio
+```
+
+### Local Streamable HTTP mode
+
+For local HTTP testing:
+
+```powershell
+uv run mcp-adobe --transport streamable-http --host 127.0.0.1 --port 8787 --path /mcp
+```
+
+Endpoint:
+
+```text
+http://127.0.0.1:8787/mcp
+```
+
+The Windows CI suite launches this server as a real subprocess and connects to that endpoint with the official MCP Python SDK client before accepting PASS.
+
+### ChatGPT / remote MCP use
+
+ChatGPT connects to remote MCP servers rather than directly to a localhost MCP endpoint. Keep `mcp-adobe` bound to loopback and expose `/mcp` through a supported secure MCP tunnel or an authenticated TLS reverse proxy/deployment.
+
+The gateway currently does **not** implement its own internet-facing identity/OAuth layer. Do not expose an unauthenticated `--allow-non-loopback` bind directly to the public internet. The flag exists for controlled deployment environments where authentication/TLS is provided by an outer layer.
 
 ## Current implemented surface
 
@@ -107,6 +161,7 @@ No documented programmatic XD undo primitive was found in the audited API surfac
 - transport success is not PASS until postconditions are verified where possible;
 - undo/rollback capability is explicit metadata, not assumed;
 - every adopted adapter records its upstream repository and pinned snapshot;
+- high-risk writes use a separate top-level MCP tool and explicit authorization flags;
 - normal push CI never writes into a real Adobe desktop application.
 
 ## Development
@@ -118,20 +173,25 @@ uv sync --python 3.12
 uv run python -m unittest discover -s tests -v
 ```
 
-The latest verified Windows baseline contains 47 passing tests, including:
+The latest verified Windows baseline contains **52 passing tests**, including:
 
 - gateway policy/regression coverage;
 - Photoshop and Illustrator adapter/transport tests;
+- top-level MCP tool contract and risk-annotation tests through the official MCP client;
+- real subprocess `mcp-adobe --transport stdio` handshake and `tools/list` verification;
+- real subprocess Streamable HTTP handshake and `tools/list` verification against `http://127.0.0.1:<ephemeral-port>/mcp`;
 - XD adapter tests;
-- a real loopback WebSocket handshake/request/response test;
+- a real loopback XD WebSocket handshake/request/response test;
 - PowerShell parser validation for every `scripts/*.ps1` helper;
 - XD `manifest v4` and `main.js` static validation in CI.
+
+The latest exact-head Windows run verified `52/52` tests and returned HTTP `200 OK` through the Streamable HTTP MCP endpoint.
 
 ## Windows CI versus real Adobe E2E
 
 `.github/workflows/adobe-windows-e2e.yml` intentionally separates safe CI from real desktop automation.
 
-A normal push performs toolchain setup, unit/regression tests, inventory, and XD plugin static validation. It never creates or edits a Photoshop, Illustrator, or XD document.
+A normal push performs toolchain setup, unit/regression tests, inventory, transport smoke tests, and XD plugin static validation. It never creates or edits a real Photoshop, Illustrator, or XD document.
 
 Manual `workflow_dispatch` supports these inputs:
 
@@ -167,7 +227,7 @@ Keep the new runner console open. In Adobe XD:
 
 The XD development plugin source is under `adobe-xd-plugin/`. The installer uses the current user's XD `develop` folder and replaces only its own `MCPAdobeBridge` directory.
 
-## Direct smoke commands
+## Direct Adobe smoke commands
 
 Photoshop and Illustrator read-only smoke probes:
 
@@ -201,11 +261,15 @@ The write probe queues a small rectangle named `MCP_ADOBE_E2E_RECT`. It only rep
 
 Implemented and software-verified:
 
+- unified top-level MCP server;
+- stdio server transport through a real child process and MCP client handshake;
+- Streamable HTTP server transport through a real child process and MCP client handshake;
+- four policy-separated top-level gateway tools;
 - Photoshop gateway adapter and pinned upstream launcher;
 - Illustrator gateway adapter and pinned upstream launcher;
 - Adobe XD local UXP/WebSocket bridge with approval-gated writes;
 - Windows self-hosted CI on the MRCAO runner;
-- 47/47 current Windows tests passing;
+- **52/52 current Windows tests passing**;
 - XD plugin manifest/JavaScript static validation passing.
 
 Not yet claimed:
@@ -213,6 +277,7 @@ Not yet claimed:
 - real Photoshop desktop E2E PASS from the target interactive Windows user session;
 - real Illustrator desktop E2E PASS from the target interactive Windows user session;
 - real Adobe XD UXP bridge live read/write E2E PASS on the target interactive session;
-- production E2E from specific Claude and OpenAI client products.
+- production E2E from a specific Claude client product;
+- production ChatGPT E2E through an authenticated remote/tunneled deployment.
 
 A real desktop PASS requires the corresponding Adobe application to be visible and controllable from the interactive runner account. Service-mode CI evidence is not substituted for that result.
