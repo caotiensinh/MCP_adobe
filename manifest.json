@@ -1,0 +1,71 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/mcpb/main/schemas/mcpb-manifest-v0.4.schema.json",
+  "manifest_version": "0.4",
+  "name": "mcp-adobe-creative-gateway",
+  "display_name": "MCP Adobe Creative Gateway",
+  "version": "0.1.0",
+  "description": "Local MCP gateway for Adobe Photoshop, Illustrator, and XD with policy-gated writes.",
+  "long_description": "One local MCP surface for Adobe creative desktop applications. Photoshop and Illustrator reuse audited upstream MCP integrations. Adobe XD uses a local UXP/WebSocket bridge with explicit Apply pending approval for mutations. High-risk native-script, destructive, and external-AI operations remain policy-gated. Real Adobe desktop control requires the corresponding applications and, for XD, the included development plugin to be installed and opened in Adobe XD.",
+  "author": {
+    "name": "Mr.Cao"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/caotiensinh/MCP_adobe"
+  },
+  "documentation": "https://github.com/caotiensinh/MCP_adobe#readme",
+  "server": {
+    "type": "uv",
+    "entry_point": "src/mcp_adobe/server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${__dirname}",
+        "mcp-adobe",
+        "--transport",
+        "stdio"
+      ],
+      "env": {
+        "MCP_ADOBE_TRANSPORT": "stdio"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "creative_discover",
+      "description": "Discover Adobe adapters, connection state, capabilities, and risk classes."
+    },
+    {
+      "name": "creative_read",
+      "description": "Execute read-only Adobe capabilities."
+    },
+    {
+      "name": "creative_write",
+      "description": "Execute reversible or file-write Adobe capabilities with overwrite protection."
+    },
+    {
+      "name": "creative_authorized_write",
+      "description": "Execute explicitly authorized high-risk Adobe capabilities through gateway policy gates."
+    }
+  ],
+  "tools_generated": false,
+  "compatibility": {
+    "platforms": [
+      "win32"
+    ],
+    "runtimes": {
+      "python": ">=3.11,<4.0",
+      "node": ">=20"
+    }
+  },
+  "keywords": [
+    "adobe",
+    "photoshop",
+    "illustrator",
+    "xd",
+    "mcp",
+    "creative"
+  ]
+}
