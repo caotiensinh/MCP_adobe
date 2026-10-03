@@ -78,6 +78,40 @@ def _start_resource_server(*, cross_origin_metadata: bool = False):
     return server, thread, state["resource_url"]
 
 
+class _FakeResponse:
+    def __init__(self, status_code: int, headers: dict[str, str] | None = None) -> None:
+        self.status_code = status_code
+        self.headers = headers or {}
+
+
+class _CrossOriginChallengeClient:
+    """Deterministic client proving a cross-origin metadata URL is never fetched."""
+
+    def __init__(self) -> None:
+        self.get_calls = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url, **kwargs):
+        return _FakeResponse(
+            401,
+            {
+                "www-authenticate": (
+                    'Bearer error="invalid_token", '
+                    'resource_metadata="https://other.example.com/.well-known/oauth-protected-resource/mcp"'
+                )
+            },
+        )
+
+    async def get(self, url, **kwargs):
+        self.get_calls += 1
+        raise AssertionError("cross-origin resource metadata must be rejected before GET")
+
+
 class RemoteProbeTests(unittest.TestCase):
     def test_extract_resource_metadata_url_handles_quoted_and_unquoted(self) -> None:
         self.assertEqual(
@@ -131,16 +165,19 @@ class RemoteProbeTests(unittest.TestCase):
         self.assertNotIn("secret-token", json.dumps(result))
 
     def test_cross_origin_resource_metadata_pointer_is_rejected_before_fetch(self) -> None:
-        server, thread, url = _start_resource_server(cross_origin_metadata=True)
-        try:
-            result = asyncio.run(probe_remote(url, allow_loopback_http=True))
-        finally:
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=5)
-        self.assertGreater(result["summary"]["fail"], 0)
+        fake_client = _CrossOriginChallengeClient()
+        with patch("httpx2.AsyncClient", return_value=fake_client):
+            result = asyncio.run(
+                probe_remote("http://127.0.0.1:8765/mcp", allow_loopback_http=True)
+            )
+
+        self.assertGreater(result["summary"]["fail"], 0, result)
         failures = [item for item in result["findings"] if item["status"] == "FAIL"]
-        self.assertTrue(any(item["check"] == "resource_metadata_pointer" for item in failures))
+        self.assertTrue(
+            any(item["check"] == "resource_metadata_pointer" for item in failures),
+            result,
+        )
+        self.assertEqual(fake_client.get_calls, 0)
 
     def test_installed_remote_probe_entrypoint_has_help(self) -> None:
         completed = subprocess.run(
