@@ -1,0 +1,20 @@
+{
+  "id": "A1B2C3D4",
+  "name": "MCP Adobe Bridge",
+  "version": "0.1.0",
+  "description": "Localhost bridge between Adobe XD and MCP_adobe.",
+  "summary": "Expose a small audited Adobe XD control surface to MCP_adobe.",
+  "languages": ["en"],
+  "author": "MCP_adobe",
+  "host": {
+    "app": "XD",
+    "minVersion": "40.0"
+  },
+  "uiEntryPoints": [
+    {
+      "type": "panel",
+      "label": "MCP Adobe Bridge",
+      "panelId": "mcpAdobeBridge"
+    }
+  ]
+}
