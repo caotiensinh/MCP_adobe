@@ -17,6 +17,8 @@ from .mcp_stdio import (
     photoshop_stdio_config,
 )
 from .photoshop import OperationUnknownError, PhotoshopAdapter, UpstreamToolClient
+from .xd import XdAdapter
+from .xd_bridge import XdWebSocketBridgeClient
 
 __all__ = [
     "AdapterInfo",
@@ -32,6 +34,8 @@ __all__ = [
     "SubprocessMcpConfig",
     "UpstreamToolClient",
     "UpstreamToolError",
+    "XdAdapter",
+    "XdWebSocketBridgeClient",
     "illustrator_stdio_config",
     "photoshop_stdio_config",
 ]
