@@ -100,16 +100,15 @@ class McpServerContractTests(unittest.TestCase):
         self.runtime = FakeRuntime()
         self.server = build_server(self.runtime)
 
-    async def _list_tools(self):
+    async def _with_client(self, action):
         async with Client(self.server) as client:
-            return await client.list_tools()
-
-    async def _call(self, name: str, arguments: dict[str, Any]):
-        async with Client(self.server) as client:
-            return await client.call_tool(name, arguments)
+            return await action(client)
 
     def test_tools_are_exposed_with_conservative_annotations(self) -> None:
-        listed = asyncio.run(self._list_tools())
+        async def scenario(client):
+            return await client.list_tools()
+
+        listed = asyncio.run(self._with_client(scenario))
         tools = {tool.name: tool for tool in listed.tools}
         self.assertEqual(
             set(tools),
@@ -127,7 +126,10 @@ class McpServerContractTests(unittest.TestCase):
         self.assertTrue(tools["creative_authorized_write"].annotations.destructive_hint)
 
     def test_discover_returns_structured_capability_metadata(self) -> None:
-        result = asyncio.run(self._call("creative_discover", {}))
+        async def scenario(client):
+            return await client.call_tool("creative_discover", {})
+
+        result = asyncio.run(self._with_client(scenario))
         payload = result.structured_content
         self.assertIsNotNone(payload)
         self.assertEqual(payload["applications"][0]["application"], "photoshop")
@@ -138,8 +140,8 @@ class McpServerContractTests(unittest.TestCase):
         self.assertEqual(payload["transports"], ["stdio", "streamable-http"])
 
     def test_read_write_and_authorized_write_route_to_distinct_runtime_paths(self) -> None:
-        read = asyncio.run(
-            self._call(
+        async def scenario(client):
+            read = await client.call_tool(
                 "creative_read",
                 {
                     "application": "photoshop",
@@ -147,11 +149,7 @@ class McpServerContractTests(unittest.TestCase):
                     "arguments": {"detail": True},
                 },
             )
-        )
-        self.assertEqual(read.structured_content["mode"], "read")
-
-        write = asyncio.run(
-            self._call(
+            write = await client.call_tool(
                 "creative_write",
                 {
                     "application": "photoshop",
@@ -160,12 +158,7 @@ class McpServerContractTests(unittest.TestCase):
                     "allow_overwrite": True,
                 },
             )
-        )
-        self.assertEqual(write.structured_content["mode"], "write")
-        self.assertTrue(write.structured_content["allow_overwrite"])
-
-        high_risk = asyncio.run(
-            self._call(
+            high_risk = await client.call_tool(
                 "creative_authorized_write",
                 {
                     "application": "photoshop",
@@ -174,10 +167,14 @@ class McpServerContractTests(unittest.TestCase):
                     "allow_native_script": True,
                 },
             )
-        )
+            return read, write, high_risk
+
+        read, write, high_risk = asyncio.run(self._with_client(scenario))
+        self.assertEqual(read.structured_content["mode"], "read")
+        self.assertEqual(write.structured_content["mode"], "write")
+        self.assertTrue(write.structured_content["allow_overwrite"])
         self.assertEqual(high_risk.structured_content["mode"], "authorized_write")
         self.assertTrue(high_risk.structured_content["allow_native_script"])
-
         self.assertEqual([name for name, _ in self.runtime.calls], ["read", "write", "authorized_write"])
 
 
