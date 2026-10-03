@@ -52,7 +52,7 @@ class GatewayRuntimeProtocol(Protocol):
         ...
 
 
-@dataclass(slots=True)
+@dataclass
 class GatewayRuntime:
     """Own the local Adobe adapter clients and enforce operation classes."""
 
