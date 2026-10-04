@@ -110,13 +110,8 @@ jobs:
           $target=$windows | Where-Object {
             $_.Pid -eq [uint32]$xd.Id -or $_.Title -match '(?i)Adobe XD|\bXD\b'
           } | Select-Object -First 1
-
-          if(-not $target){
-            Write-Host 'XD_WINDOW_CANDIDATES_BEGIN'
-            $windows | ForEach-Object { Write-Host ("PID={0} TID={1} HWND={2} TITLE={3}" -f $_.Pid,$_.ThreadId,$_.Hwnd,$_.Title) }
-            Write-Host 'XD_WINDOW_CANDIDATES_END'
-            throw 'Could not find a visible Adobe XD top-level window'
-          }
+          if(-not $target){throw 'Could not find a visible Adobe XD top-level window'}
+          "XD_HWND=$($target.Hwnd.ToInt64())" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
           [uint32]$foregroundPid=0
           $foreground=[Win32XdFocus]::GetForegroundWindow()
@@ -132,7 +127,7 @@ jobs:
             [void][Win32XdFocus]::BringWindowToTop($target.Hwnd)
             $focused=[Win32XdFocus]::SetForegroundWindow($target.Hwnd)
             [void][Win32XdFocus]::SetFocus($target.Hwnd)
-            Write-Host ("XD_WINDOW_TARGET=PID={0} TID={1} HWND={2} TITLE={3} FOCUSED={4} ATTACH_CURRENT={5} ATTACH_FOREGROUND={6}" -f $target.Pid,$target.ThreadId,$target.Hwnd,$target.Title,$focused,$attachedCurrent,$attachedForeground)
+            Write-Host ("XD_WINDOW_TARGET=PID={0} TID={1} HWND={2} TITLE={3} FOCUSED={4}" -f $target.Pid,$target.ThreadId,$target.Hwnd,$target.Title,$focused)
             Start-Sleep -Milliseconds 700
             $shell=New-Object -ComObject WScript.Shell
             $shell.SendKeys('^+r')
@@ -143,11 +138,78 @@ jobs:
           }
           Start-Sleep -Seconds 3
 
+      - name: Activate MCP Adobe Bridge panel
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $hwnd=[IntPtr][int64]$env:XD_HWND
+          $root=[System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+          if(-not $root){throw 'UI Automation could not attach to Adobe XD window'}
+
+          function Invoke-UiaElement($element) {
+            if(-not $element){return $false}
+            $pattern=$null
+            if($element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)){
+              ([System.Windows.Automation.InvokePattern]$pattern).Invoke(); return $true
+            }
+            if($element.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern,[ref]$pattern)){
+              ([System.Windows.Automation.ExpandCollapsePattern]$pattern).Expand(); return $true
+            }
+            if($element.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$pattern)){
+              ([System.Windows.Automation.SelectionItemPattern]$pattern).Select(); return $true
+            }
+            return $false
+          }
+
+          $trueCond=[System.Windows.Automation.Condition]::TrueCondition
+          $items=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$trueCond)
+          $plugins=$null
+          foreach($item in $items){
+            try {
+              $name=$item.Current.Name
+              if($name -eq 'Plugins'){$plugins=$item;break}
+            } catch {}
+          }
+          if($plugins){
+            $invoked=Invoke-UiaElement $plugins
+            Write-Host "XD_UIA_PLUGINS_INVOKED=$invoked"
+            Start-Sleep -Seconds 1
+          } else {
+            Write-Host 'XD_UIA_PLUGINS_NOT_FOUND'
+          }
+
+          $items=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$trueCond)
+          $bridge=$null
+          foreach($item in $items){
+            try {
+              $name=$item.Current.Name
+              if($name -eq 'MCP Adobe Bridge'){$bridge=$item;break}
+            } catch {}
+          }
+          if(-not $bridge){
+            Write-Host 'XD_UIA_RELEVANT_ELEMENTS_BEGIN'
+            foreach($item in $items){
+              try {
+                $name=$item.Current.Name
+                if($name -and $name -match '(?i)plugin|mcp|bridge'){
+                  Write-Host ("NAME={0} TYPE={1} CLASS={2}" -f $name,$item.Current.ControlType.ProgrammaticName,$item.Current.ClassName)
+                }
+              } catch {}
+            }
+            Write-Host 'XD_UIA_RELEVANT_ELEMENTS_END'
+            throw 'MCP Adobe Bridge panel entry was not discoverable through XD UI Automation'
+          }
+          $opened=Invoke-UiaElement $bridge
+          Write-Host "XD_UIA_BRIDGE_INVOKED=$opened"
+          if(-not $opened){throw 'MCP Adobe Bridge entry was found but could not be invoked'}
+          Start-Sleep -Seconds 3
+
       - name: Live XD bridge read plus approval write gate
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          Write-Host "Keep Plugins > MCP Adobe Bridge panel open in Adobe XD."
           Write-Host "When Pending approvals becomes 1, click Apply pending."
           uv run python scripts/probe_xd_live.py
           if($LASTEXITCODE -ne 0){throw 'Adobe XD live approval probe failed'}
