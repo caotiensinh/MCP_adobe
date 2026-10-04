@@ -56,12 +56,13 @@ jobs:
 
           $body="var f=new File('$resultJs');if(f.open('w')){f.write('PASS:'+app.version);f.close();}"
           $bodyEscaped=$body.Replace('\','\\').Replace('"','\"')
+          $bodyLine='bt.body="' + $bodyEscaped + '";'
           $lines=@(
             '#target illustrator',
             "var r=new File('$readyJs');if(r.open('w')){r.write('PASS:'+app.version);r.close();}",
             'var bt=new BridgeTalk();',
             'bt.target=BridgeTalk.appSpecifier;',
-            "bt.body=\"$bodyEscaped\";",
+            $bodyLine,
             'bt.send();'
           )
           [IO.File]::WriteAllLines($probe,$lines,(New-Object Text.UTF8Encoding($false)))
