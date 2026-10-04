@@ -1,0 +1,57 @@
+name: Targeted Adobe XD live bridge
+
+on:
+  push:
+    branches: [fix/photoshop-path-override]
+    paths:
+      - ".github/workflows/targeted-xd-live.yml"
+      - "scripts/probe_xd_live.py"
+      - "src/mcp_adobe/xd.py"
+      - "src/mcp_adobe/xd_bridge.py"
+      - "adobe-xd-plugin/**"
+      - "scripts/install_xd_plugin.ps1"
+
+concurrency:
+  group: targeted-xd-live-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  live-xd:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: '0.12.17'
+          enable-cache: false
+
+      - name: Prepare gateway environment
+        shell: powershell
+        run: |
+          uv python install 3.12
+          uv sync --python 3.12
+
+      - name: Verify Adobe XD is running and bridge is installed
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $xd=Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.ProcessName -match '^XD$|AdobeXD|Adobe\.XD' -or ($_.Path -and $_.Path -match 'Adobe\.XD')
+          } | Select-Object -First 1
+          if(-not $xd){throw 'Adobe XD is not running in the interactive desktop session'}
+          Write-Host "XD_PROCESS=PASS PID=$($xd.Id) SESSION=$($xd.SessionId)"
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_xd_plugin.ps1 -NoReloadHint
+          if($LASTEXITCODE -ne 0){throw 'Adobe XD bridge installation failed'}
+
+      - name: Live XD bridge read plus approval write gate
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Host "Keep Plugins > MCP Adobe Bridge panel open in Adobe XD."
+          Write-Host "When Pending approvals becomes 1, click Apply pending."
+          uv run python scripts/probe_xd_live.py
+          if($LASTEXITCODE -ne 0){throw 'Adobe XD live approval probe failed'}
