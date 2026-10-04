@@ -63,7 +63,8 @@ jobs:
           [IO.File]::WriteAllLines($readyProbe,$readyLines,(New-Object Text.UTF8Encoding($false)))
 
           $body="var z=new File('$resultJs');if(z.open('w')){z.write('PASS:'+app.version);z.close();}"
-          $bodyLine='bt.body=' + "'" + $body.Replace("'","\\'") + "'" + ';'
+          $bodyEscaped=$body.Replace('"','\"')
+          $bodyLine='bt.body="' + $bodyEscaped + '";'
           $btLines=@(
             '#target illustrator',
             "var l=new File('$loadedJs');if(l.open('w')){l.write('LOADED:'+app.version);l.close();}",
