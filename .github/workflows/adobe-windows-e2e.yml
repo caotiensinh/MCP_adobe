@@ -69,9 +69,6 @@ jobs:
           $serviceListenerRunning = @($adobeRunnerServices | Where-Object { $_.State -eq 'Running' }).Count -gt 0
           $serviceIdentity = $identity -match '^(nt authority\\(network service|local service|system)|nt authority\\system)$'
           $explicitInteractive = $env:MCP_ADOBE_INTERACTIVE_RUNNER -eq '1'
-          # SESSIONNAME is not reliable inside a GitHub Actions child process. The
-          # live runner is considered desktop-user mode only when it is not a
-          # service identity and the dedicated MCP_adobe service listener is not running.
           $interactive = (-not $serviceIdentity) -and (-not $serviceListenerRunning)
           if ($explicitInteractive) { $interactive = $interactive -and $true }
           Write-Host "DesktopRunnerEvidence: explicit_marker=$explicitInteractive service_listener_running=$serviceListenerRunning service_identity=$serviceIdentity"
@@ -85,7 +82,8 @@ jobs:
           Write-Host '--- Adobe registry entries ---'
           $uninstallRoots = @(
             'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
           )
           foreach ($root in $uninstallRoots) {
             Get-ItemProperty $root -ErrorAction SilentlyContinue |
@@ -94,34 +92,68 @@ jobs:
               Format-Table -AutoSize
           }
 
-          $fixedDrives = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { $_.DeviceID })
-          Write-Host "FixedDrives=$($fixedDrives -join ',')"
-
-          $photoshopPatterns = @()
-          $illustratorPatterns = @()
-          foreach ($drive in $fixedDrives) {
-            $photoshopPatterns += @(
-              "$drive\Program Files\Adobe\Adobe Photoshop *\Photoshop.exe",
-              "$drive\Adobe\Adobe Photoshop *\Photoshop.exe",
-              "$drive\Adobe Photoshop *\Photoshop.exe"
+          function Find-AdobeExe {
+            param(
+              [Parameter(Mandatory = $true)][string]$ProcessName,
+              [Parameter(Mandatory = $true)][string]$ExeName,
+              [Parameter(Mandatory = $true)][string[]]$Patterns
             )
-            $illustratorPatterns += @(
-              "$drive\Program Files\Adobe\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe",
-              "$drive\Adobe\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe",
-              "$drive\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe"
-            )
-          }
 
-          function Find-FirstFile([string[]]$patterns) {
-            foreach ($pattern in $patterns) {
-              $hit = Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($hit) { return $hit.FullName }
+            $running = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue |
+              Where-Object { $_.Path -and (Test-Path -LiteralPath $_.Path -PathType Leaf) } |
+              Select-Object -First 1
+            if ($running) {
+              Write-Host "$ProcessName discovery=running-process path=$($running.Path)"
+              return $running.Path
             }
+
+            $fixedDrives = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { $_.DeviceID })
+            foreach ($drive in $fixedDrives) {
+              foreach ($pattern in $Patterns) {
+                $expanded = $pattern.Replace('{DRIVE}', $drive)
+                $hit = Get-ChildItem -Path $expanded -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($hit) {
+                  Write-Host "$ProcessName discovery=standard-pattern path=$($hit.FullName)"
+                  return $hit.FullName
+                }
+              }
+            }
+
+            try {
+              $shell = New-Object -ComObject WScript.Shell
+              $shortcutRoots = @(
+                (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),
+                (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
+              )
+              foreach ($root in $shortcutRoots) {
+                if (-not (Test-Path -LiteralPath $root)) { continue }
+                $shortcuts = Get-ChildItem -LiteralPath $root -Recurse -Filter '*.lnk' -File -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Name -match [Regex]::Escape($ProcessName) }
+                foreach ($shortcut in $shortcuts) {
+                  $target = $shell.CreateShortcut($shortcut.FullName).TargetPath
+                  if ($target -and (Split-Path -Leaf $target) -ieq $ExeName -and (Test-Path -LiteralPath $target -PathType Leaf)) {
+                    Write-Host "$ProcessName discovery=start-menu-shortcut path=$target shortcut=$($shortcut.FullName)"
+                    return $target
+                  }
+                }
+              }
+            } catch {
+              Write-Warning "$ProcessName Start Menu discovery failed: $($_.Exception.Message)"
+            }
+
             return $null
           }
 
-          $photoshop = Find-FirstFile $photoshopPatterns
-          $illustrator = Find-FirstFile $illustratorPatterns
+          $photoshop = Find-AdobeExe -ProcessName 'Photoshop' -ExeName 'Photoshop.exe' -Patterns @(
+            '{DRIVE}\Program Files\Adobe\Adobe Photoshop *\Photoshop.exe',
+            '{DRIVE}\Adobe\Adobe Photoshop *\Photoshop.exe',
+            '{DRIVE}\Adobe Photoshop *\Photoshop.exe'
+          )
+          $illustrator = Find-AdobeExe -ProcessName 'Illustrator' -ExeName 'Illustrator.exe' -Patterns @(
+            '{DRIVE}\Program Files\Adobe\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe',
+            '{DRIVE}\Adobe\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe',
+            '{DRIVE}\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe'
+          )
 
           $xdCurrent = @(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'Adobe.*XD|XD.*Adobe' })
           $xdAll = @()

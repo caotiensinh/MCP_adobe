@@ -30,15 +30,58 @@ Write-Host "RepoRoot=$repoRoot"
 Write-Host "RunnerRoot=$RunnerRoot"
 
 function Find-AdobeExe {
-    param([string[]]$Patterns)
+    param(
+        [Parameter(Mandatory = $true)][string]$ProcessName,
+        [Parameter(Mandatory = $true)][string]$ExeName,
+        [Parameter(Mandatory = $true)][string[]]$Patterns
+    )
+
+    # Prefer the executable path of a live desktop process. This is the strongest
+    # evidence that the logged-in user can actually see and run the application.
+    $running = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -and (Test-Path -LiteralPath $_.Path -PathType Leaf) } |
+        Select-Object -First 1
+    if ($running) {
+        Write-Host "$ProcessName discovery=running-process path=$($running.Path)"
+        return $running.Path
+    }
+
     $fixedDrives = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { $_.DeviceID })
     foreach ($drive in $fixedDrives) {
         foreach ($pattern in $Patterns) {
             $expanded = $pattern.Replace('{DRIVE}', $drive)
             $hit = Get-ChildItem -Path $expanded -File -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($hit) { return $hit.FullName }
+            if ($hit) {
+                Write-Host "$ProcessName discovery=standard-pattern path=$($hit.FullName)"
+                return $hit.FullName
+            }
         }
     }
+
+    # Portable/custom Adobe installs often have no uninstall/App Paths entries,
+    # but their Start Menu shortcuts still carry the authoritative executable target.
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcutRoots = @(
+            (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),
+            (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
+        )
+        foreach ($root in $shortcutRoots) {
+            if (-not (Test-Path -LiteralPath $root)) { continue }
+            $shortcuts = Get-ChildItem -LiteralPath $root -Recurse -Filter '*.lnk' -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match [Regex]::Escape($ProcessName) }
+            foreach ($shortcut in $shortcuts) {
+                $target = $shell.CreateShortcut($shortcut.FullName).TargetPath
+                if ($target -and (Split-Path -Leaf $target) -ieq $ExeName -and (Test-Path -LiteralPath $target -PathType Leaf)) {
+                    Write-Host "$ProcessName discovery=start-menu-shortcut path=$target shortcut=$($shortcut.FullName)"
+                    return $target
+                }
+            }
+        }
+    } catch {
+        Write-Warning "$ProcessName Start Menu discovery failed: $($_.Exception.Message)"
+    }
+
     return $null
 }
 
@@ -77,12 +120,12 @@ function Start-XdPackageIfNeeded {
     }
 }
 
-$photoshop = Find-AdobeExe @(
+$photoshop = Find-AdobeExe -ProcessName 'Photoshop' -ExeName 'Photoshop.exe' -Patterns @(
     '{DRIVE}\Program Files\Adobe\Adobe Photoshop *\Photoshop.exe',
     '{DRIVE}\Adobe\Adobe Photoshop *\Photoshop.exe',
     '{DRIVE}\Adobe Photoshop *\Photoshop.exe'
 )
-$illustrator = Find-AdobeExe @(
+$illustrator = Find-AdobeExe -ProcessName 'Illustrator' -ExeName 'Illustrator.exe' -Patterns @(
     '{DRIVE}\Program Files\Adobe\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe',
     '{DRIVE}\Adobe\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe',
     '{DRIVE}\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe'
@@ -101,11 +144,9 @@ if ($xdPackage) {
     Write-Warning 'Adobe XD package is not visible to this logged-in account.'
 }
 
-if (-not $photoshop) { Write-Warning 'Photoshop.exe was not found by standard Adobe path patterns.' }
-if (-not $illustrator) { Write-Warning 'Illustrator.exe was not found by standard Adobe path patterns.' }
+if (-not $photoshop) { Write-Warning 'Photoshop.exe was not found by process, standard paths, or Start Menu shortcuts.' }
+if (-not $illustrator) { Write-Warning 'Illustrator.exe was not found by process, standard paths, or Start Menu shortcuts.' }
 
-# Launch XD before auto-installing the bridge so a freshly installed UWP package
-# has a chance to create its per-user LocalState sandbox first.
 if (-not $NoLaunchXd -and $xdPackage) {
     Start-XdPackageIfNeeded -Package $xdPackage
 }
