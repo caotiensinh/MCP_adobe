@@ -1,0 +1,112 @@
+name: Diagnose Adobe desktop inventory
+
+on:
+  push:
+    branches: [diag/adobe-desktop-inventory]
+    paths:
+      - ".github/workflows/diag-adobe-inventory.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Inspect Adobe desktop installations
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host "=== identity ==="
+          Write-Host "User=$(whoami)"
+          Write-Host "Session=$env:SESSIONNAME"
+          Write-Host "Profile=$env:USERPROFILE"
+
+          Write-Host "=== running Adobe processes ==="
+          Get-Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProcessName -match 'Photoshop|Illustrator|Adobe' } |
+            Select-Object ProcessName,Id,Path | Format-Table -AutoSize
+
+          Write-Host "=== uninstall registry HKLM/HKCU ==="
+          $uninstallRoots = @(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+          )
+          foreach ($root in $uninstallRoots) {
+            Write-Host "-- $root"
+            Get-ItemProperty $root -ErrorAction SilentlyContinue |
+              Where-Object { $_.DisplayName -match 'Adobe|Photoshop|Illustrator' } |
+              Select-Object DisplayName,DisplayVersion,InstallLocation,DisplayIcon,UninstallString |
+              Format-List
+          }
+
+          Write-Host "=== App Paths ==="
+          $appPathRoots = @(
+            'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths',
+            'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\App Paths',
+            'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths'
+          )
+          foreach ($root in $appPathRoots) {
+            foreach ($exe in @('Photoshop.exe','Illustrator.exe')) {
+              $key = Join-Path $root $exe
+              if (Test-Path $key) {
+                Write-Host "-- $key"
+                Get-ItemProperty $key -ErrorAction SilentlyContinue | Format-List
+              }
+            }
+          }
+
+          Write-Host "=== Adobe registry product hints ==="
+          foreach ($root in @('HKLM:\SOFTWARE\Adobe','HKLM:\SOFTWARE\WOW6432Node\Adobe','HKCU:\SOFTWARE\Adobe')) {
+            Write-Host "-- $root"
+            if (Test-Path $root) {
+              Get-ChildItem $root -ErrorAction SilentlyContinue |
+                Where-Object { $_.PSChildName -match 'Photoshop|Illustrator|Creative Cloud' } |
+                Select-Object Name,PSChildName | Format-Table -AutoSize
+            }
+          }
+
+          Write-Host "=== targeted install directory scan ==="
+          $roots = @(
+            'C:\Program Files\Adobe',
+            'C:\Program Files (x86)\Adobe',
+            'D:\Adobe',
+            'D:\Program Files\Adobe',
+            'D:\Program Files (x86)\Adobe',
+            'E:\Adobe',
+            'E:\Program Files\Adobe',
+            'E:\Program Files (x86)\Adobe'
+          )
+          foreach ($root in $roots) {
+            if (Test-Path -LiteralPath $root) {
+              Write-Host "-- scanning $root"
+              Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -in @('Photoshop.exe','Illustrator.exe') } |
+                Select-Object FullName,Length,LastWriteTime | Format-Table -AutoSize
+            }
+          }
+
+          Write-Host "=== Start Menu shortcuts ==="
+          $shortcutRoots = @(
+            "$env:ProgramData\Microsoft\Windows\Start Menu\Programs",
+            "$env:APPDATA\Microsoft\Windows\Start Menu\Programs"
+          )
+          $shell = New-Object -ComObject WScript.Shell
+          foreach ($root in $shortcutRoots) {
+            if (-not (Test-Path -LiteralPath $root)) { continue }
+            Get-ChildItem -LiteralPath $root -Recurse -Filter '*.lnk' -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match 'Photoshop|Illustrator' } |
+              ForEach-Object {
+                $s = $shell.CreateShortcut($_.FullName)
+                [pscustomobject]@{ Shortcut=$_.FullName; Target=$s.TargetPath; Arguments=$s.Arguments }
+              } | Format-List
+          }
+
+          Write-Host "=== package/AppX Adobe entries ==="
+          Get-AppxPackage -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match 'Adobe|Photoshop|Illustrator|XD' } |
+            Select-Object Name,Version,InstallLocation,PackageFamilyName | Format-List
