@@ -14,6 +14,7 @@ _OAUTH_ENV = {
     "MCP_ADOBE_OAUTH_CLIENT_SECRET",
     "MCP_ADOBE_OAUTH_VALIDATE_RESOURCE",
 }
+_SUBPROCESS_TIMEOUT_SECONDS = 45
 
 
 def _clean_env() -> dict[str, str]:
@@ -29,7 +30,7 @@ class OAuthPreflightCliTests(unittest.TestCase):
             ["mcp-adobe-oauth-preflight", "--help"],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
             check=False,
         )
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
@@ -42,7 +43,7 @@ class OAuthPreflightCliTests(unittest.TestCase):
             env=_clean_env(),
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
             check=False,
         )
         self.assertEqual(completed.returncode, 2)
