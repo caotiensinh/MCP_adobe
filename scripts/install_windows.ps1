@@ -2,6 +2,8 @@
 param(
     [string]$PythonVersion = "3.12",
     [switch]$InstallXdPlugin,
+    [switch]$InstallIllustratorCep,
+    [switch]$EnableUnsignedIllustratorCepDebug,
     [switch]$GenerateConfigsOnly,
     [string]$UvCommandPath = "",
     [string]$OutputDir = ""
@@ -201,6 +203,30 @@ if ($LASTEXITCODE -ne 0) { throw "uv python install failed (exit $LASTEXITCODE)"
 Write-Host "project=sync"
 & $uvExe sync --directory $RepoRoot --python $PythonVersion
 if ($LASTEXITCODE -ne 0) { throw "uv sync failed (exit $LASTEXITCODE)" }
+
+if ($EnableUnsignedIllustratorCepDebug -and -not $InstallIllustratorCep) {
+    throw "-EnableUnsignedIllustratorCepDebug requires -InstallIllustratorCep"
+}
+
+if ($InstallIllustratorCep) {
+    $gatewayPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $gatewayPython -PathType Leaf)) {
+        throw "Gateway Python not found after uv sync: $gatewayPython"
+    }
+    $illustratorInstaller = Join-Path $PSScriptRoot "install_illustrator_cep.ps1"
+    $installerArgs = @(
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $illustratorInstaller,
+        "-PythonCommand", $gatewayPython
+    )
+    if ($EnableUnsignedIllustratorCepDebug) {
+        $installerArgs += "-EnableUnsignedDebug"
+    }
+    Write-Host "illustrator_cep=install"
+    & powershell @installerArgs
+    if ($LASTEXITCODE -ne 0) { throw "Illustrator CEP installation failed (exit $LASTEXITCODE)" }
+}
 
 Write-Host "smoke=mcp-adobe"
 & $uvExe run --directory $RepoRoot mcp-adobe --help | Out-Null
