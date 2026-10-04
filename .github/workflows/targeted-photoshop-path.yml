@@ -44,60 +44,6 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           uv run python -c "from mcp_adobe.mcp_stdio import photoshop_stdio_config; c=photoshop_stdio_config(); p=c.env.get('PHOTOSHOP_PATH'); print('PHOTOSHOP_PATH='+str(p)); assert p and p.lower().endswith('photoshop.exe')"
-      - name: Diagnose Photoshop COM registration
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Continue'
-          Write-Host '=== Photoshop COM ProgIDs in HKCR ==='
-          Get-ChildItem 'Registry::HKEY_CLASSES_ROOT' -ErrorAction SilentlyContinue |
-            Where-Object { $_.PSChildName -like 'Photoshop.Application*' } |
-            ForEach-Object {
-              Write-Host "PROGID=$($_.PSChildName)"
-              $clsidKey = Join-Path $_.PSPath 'CLSID'
-              if (Test-Path $clsidKey) {
-                $clsid=(Get-ItemProperty $clsidKey -ErrorAction SilentlyContinue).'(default)'
-                Write-Host "CLSID=$clsid"
-              }
-            }
-          try {
-            $app=New-Object -ComObject Photoshop.Application -ErrorAction Stop
-            Write-Host "COM_ACTIVATION=PASS"
-            try { Write-Host "COM_VERSION=$($app.Version)" } catch {}
-            [Runtime.InteropServices.Marshal]::FinalReleaseComObject($app) | Out-Null
-          } catch {
-            Write-Host "COM_ACTIVATION=FAIL"
-            Write-Host "COM_HRESULT=0x$('{0:X8}' -f ($_.Exception.HResult -band 0xffffffffL))"
-            Write-Host "COM_ERROR=$($_.Exception.Message)"
-          }
-      - name: Probe direct Photoshop JSX execution without COM
-        continue-on-error: true
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          $process=Get-Process -Name Photoshop -ErrorAction Stop | Where-Object {$_.Path} | Select-Object -First 1
-          if(-not $process){throw 'Photoshop process/path unavailable'}
-          $photoshop=$process.Path
-          $marker=Join-Path $env:RUNNER_TEMP 'mcp_adobe_photoshop_direct_jsx_marker.txt'
-          $jsx=Join-Path $env:RUNNER_TEMP 'mcp_adobe_photoshop_direct_jsx_probe.jsx'
-          Remove-Item -Force $marker,$jsx -ErrorAction SilentlyContinue
-          $markerJs=$marker.Replace('\','/')
-          $script="var f=new File('$markerJs'); if(!f.open('w')){throw new Error('open marker failed');} f.write('PASS:'+app.version); f.close();"
-          [IO.File]::WriteAllText($jsx,$script,(New-Object Text.UTF8Encoding($false)))
-          Write-Host "PHOTOSHOP=$photoshop"
-          Write-Host "JSX=$jsx"
-          Start-Process -FilePath $photoshop -ArgumentList @('-r',$jsx) | Out-Null
-          $deadline=[DateTime]::UtcNow.AddSeconds(30)
-          while(-not (Test-Path -LiteralPath $marker) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 500}
-          if(-not (Test-Path -LiteralPath $marker)){throw 'Photoshop -r JSX probe did not create marker within 30 seconds'}
-          $value=Get-Content -LiteralPath $marker -Raw
-          Write-Host "DIRECT_JSX_RESULT=$value"
-          if($value -notmatch '^PASS:'){throw "Unexpected JSX marker: $value"}
-      - name: Verify upstream subprocess starts
-        continue-on-error: true
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          uv run python -c "from mcp_adobe.mcp_stdio import McpSubprocessToolClient,photoshop_stdio_config; c=McpSubprocessToolClient(photoshop_stdio_config()); c.start(); print('tool_count='+str(len(c.tool_names))); c.close()"
       - name: Ensure Illustrator is running
         shell: powershell
         run: |
@@ -174,6 +120,61 @@ jobs:
           $png=Join-Path $out 'mcp_adobe_smoke.png'
           if(-not (Test-Path -LiteralPath $png -PathType Leaf)){throw 'Illustrator export produced no PNG file'}
           Get-ChildItem -Path $out -File | Select-Object Name,Length,LastWriteTime
+      - name: Diagnose Photoshop COM registration
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          Write-Host '=== Photoshop COM ProgIDs in HKCR ==='
+          Get-ChildItem 'Registry::HKEY_CLASSES_ROOT' -ErrorAction SilentlyContinue |
+            Where-Object { $_.PSChildName -like 'Photoshop.Application*' } |
+            ForEach-Object {
+              Write-Host "PROGID=$($_.PSChildName)"
+              $clsidKey = Join-Path $_.PSPath 'CLSID'
+              if (Test-Path $clsidKey) {
+                $clsid=(Get-ItemProperty $clsidKey -ErrorAction SilentlyContinue).'(default)'
+                Write-Host "CLSID=$clsid"
+              }
+            }
+          try {
+            $app=New-Object -ComObject Photoshop.Application -ErrorAction Stop
+            Write-Host "COM_ACTIVATION=PASS"
+            try { Write-Host "COM_VERSION=$($app.Version)" } catch {}
+            [Runtime.InteropServices.Marshal]::FinalReleaseComObject($app) | Out-Null
+          } catch {
+            Write-Host "COM_ACTIVATION=FAIL"
+            Write-Host "COM_HRESULT=0x$('{0:X8}' -f ($_.Exception.HResult -band 0xffffffffL))"
+            Write-Host "COM_ERROR=$($_.Exception.Message)"
+          }
+      - name: Probe direct Photoshop JSX execution without COM
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $process=Get-Process -Name Photoshop -ErrorAction Stop | Where-Object {$_.Path} | Select-Object -First 1
+          if(-not $process){throw 'Photoshop process/path unavailable'}
+          $photoshop=$process.Path
+          $marker=Join-Path $env:RUNNER_TEMP 'mcp_adobe_photoshop_direct_jsx_marker.txt'
+          $jsx=Join-Path $env:RUNNER_TEMP 'mcp_adobe_photoshop_direct_jsx_probe.jsx'
+          Remove-Item -Force $marker,$jsx -ErrorAction SilentlyContinue
+          $markerJs=$marker.Replace('\','/')
+          $script="var f=new File('$markerJs'); if(!f.open('w')){throw new Error('open marker failed');} f.write('PASS:'+app.version); f.close();"
+          [IO.File]::WriteAllText($jsx,$script,(New-Object Text.UTF8Encoding($false)))
+          Write-Host "PHOTOSHOP=$photoshop"
+          Write-Host "JSX=$jsx"
+          Start-Process -FilePath $photoshop -ArgumentList @('-r',$jsx) | Out-Null
+          $deadline=[DateTime]::UtcNow.AddSeconds(30)
+          while(-not (Test-Path -LiteralPath $marker) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 500}
+          if(-not (Test-Path -LiteralPath $marker)){throw 'Photoshop -r JSX probe did not create marker within 30 seconds'}
+          $value=Get-Content -LiteralPath $marker -Raw
+          Write-Host "DIRECT_JSX_RESULT=$value"
+          if($value -notmatch '^PASS:'){throw "Unexpected JSX marker: $value"}
+      - name: Verify Photoshop upstream subprocess starts
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          uv run python -c "from mcp_adobe.mcp_stdio import McpSubprocessToolClient,photoshop_stdio_config; c=McpSubprocessToolClient(photoshop_stdio_config()); c.start(); print('tool_count='+str(len(c.tool_names))); c.close()"
       - name: Photoshop live read E2E
         continue-on-error: true
         shell: powershell
