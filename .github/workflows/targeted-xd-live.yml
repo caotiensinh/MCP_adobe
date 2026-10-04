@@ -35,7 +35,7 @@ jobs:
           uv python install 3.12
           uv sync --python 3.12
 
-      - name: Verify Adobe XD is running and bridge is already installed
+      - name: Verify Adobe XD and sync bridge source
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -46,16 +46,29 @@ jobs:
           Write-Host "XD_PROCESS=PASS PID=$($xd.Id) SESSION=$($xd.SessionId)"
 
           $packagesRoot=Join-Path $env:LOCALAPPDATA 'Packages'
-          $manifest=Get-ChildItem -LiteralPath $packagesRoot -Directory -Filter 'Adobe.XD_*' -ErrorAction SilentlyContinue |
-            ForEach-Object { Join-Path $_.FullName 'LocalState\develop\MCPAdobeBridge\manifest.json' } |
+          $installedMain=Get-ChildItem -LiteralPath $packagesRoot -Directory -Filter 'Adobe.XD_*' -ErrorAction SilentlyContinue |
+            ForEach-Object { Join-Path $_.FullName 'LocalState\develop\MCPAdobeBridge\main.js' } |
             Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
             Select-Object -First 1
-          if(-not $manifest){
+          $sourceMain=Join-Path $PWD 'adobe-xd-plugin\main.js'
+          if(-not (Test-Path -LiteralPath $sourceMain)){throw 'XD bridge source main.js missing'}
+
+          $needsInstall=$true
+          if($installedMain){
+            $sourceHash=(Get-FileHash -LiteralPath $sourceMain -Algorithm SHA256).Hash
+            $installedHash=(Get-FileHash -LiteralPath $installedMain -Algorithm SHA256).Hash
+            Write-Host "XD_SOURCE_SHA256=$sourceHash"
+            Write-Host "XD_INSTALLED_SHA256=$installedHash"
+            if($sourceHash -eq $installedHash){$needsInstall=$false}
+          }
+
+          if($needsInstall){
             powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_xd_plugin.ps1 -NoReloadHint
             if($LASTEXITCODE -ne 0){throw 'Adobe XD bridge installation failed'}
-            Write-Host 'XD_BRIDGE_INSTALL=PASS'
+            Write-Host 'XD_BRIDGE_SYNC=UPDATED'
+            Write-Host 'Reload the XD development plugins once with Ctrl+Shift+R before opening MCP Adobe Bridge.'
           } else {
-            Write-Host "XD_BRIDGE_PRESERVED=PASS manifest=$manifest"
+            Write-Host "XD_BRIDGE_SYNC=CURRENT main=$installedMain"
           }
 
       - name: Live XD bridge read plus approval write gate
@@ -63,7 +76,7 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           Write-Host "Keep Plugins > MCP Adobe Bridge panel open in Adobe XD."
-          Write-Host "If needed press Ctrl+Shift+R once before opening the panel."
+          Write-Host "If the previous step printed XD_BRIDGE_SYNC=UPDATED, press Ctrl+Shift+R once before opening the panel."
           Write-Host "When Pending approvals becomes 1, click Apply pending."
           uv run python scripts/probe_xd_live.py
           if($LASTEXITCODE -ne 0){throw 'Adobe XD live approval probe failed'}
