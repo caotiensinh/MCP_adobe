@@ -9,8 +9,10 @@ on:
       - "scripts/install_illustrator_cep.ps1"
       - "scripts/prepare_illustrator_cep.py"
       - "scripts/probe_illustrator_cep_upstream.py"
+      - "src/mcp_adobe/mcp_stdio.py"
       - "tests/test_prepare_illustrator_cep.py"
       - "tests/test_install_illustrator_cep_contract.py"
+      - "tests/test_transport.py"
 
 concurrency:
   group: targeted-illustrator-cep-production-${{ github.ref }}
@@ -39,14 +41,15 @@ jobs:
           uv python install 3.12
           uv sync --python 3.12
 
-      - name: Test production CEP contracts
+      - name: Test production CEP and MCP transport contracts
         shell: powershell
         run: |
           uv run python -m unittest `
             tests.test_prepare_illustrator_cep `
             tests.test_install_illustrator_cep_contract `
-            tests.test_install_windows -v
-          if($LASTEXITCODE -ne 0){throw 'Illustrator CEP production contract tests failed'}
+            tests.test_install_windows `
+            tests.test_transport -v
+          if($LASTEXITCODE -ne 0){throw 'Illustrator production contract tests failed'}
 
       - name: Install pinned production CEP panel
         shell: powershell
