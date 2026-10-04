@@ -69,7 +69,7 @@ jobs:
           Push-Location $cli
           try {
             npm init -y | Out-Null
-            npm install --no-audit --no-fund @adobe/uxp-devtools-cli@1.6.4
+            npm install --no-audit --no-fund @adobe/uxp-devtools-cli@1.2.0
             if($LASTEXITCODE -ne 0){throw 'UXP CLI install failed'}
             $uxp=Join-Path $cli 'node_modules\.bin\uxp.cmd'
             if(-not (Test-Path -LiteralPath $uxp)){throw "UXP CLI missing: $uxp"}
