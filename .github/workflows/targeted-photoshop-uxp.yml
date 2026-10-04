@@ -69,13 +69,16 @@ jobs:
           Push-Location $cli
           try {
             npm init -y | Out-Null
-            # Adobe UXP CLI 1.2.0 helper's install script requires `tar` but the
-            # published package does not declare it. Install the compatible
-            # dependency locally before the pinned Adobe package.
-            npm install --no-audit --no-fund tar@6.2.1
-            if($LASTEXITCODE -ne 0){throw 'UXP CLI tar dependency install failed'}
-            npm install --no-audit --no-fund @adobe/uxp-devtools-cli@1.2.0
-            if($LASTEXITCODE -ne 0){throw 'UXP CLI install failed'}
+            # Adobe 1.2.0 was published with two broken package assumptions:
+            # helper needs `tar` from devDependencies, and the CLI postinstall
+            # references an unpublished inspector app package. We only need the
+            # native helper + service/apps/plugin commands, not the inspector.
+            npm install --no-audit --no-fund --ignore-scripts tar@6.2.1 @adobe/uxp-devtools-cli@1.2.0
+            if($LASTEXITCODE -ne 0){throw 'UXP CLI package install failed'}
+            $helperSetup=Join-Path $cli 'node_modules\@adobe\uxp-devtools-helper\scripts\devtools_setup.js'
+            if(-not (Test-Path -LiteralPath $helperSetup)){throw "UXP helper setup missing: $helperSetup"}
+            node $helperSetup
+            if($LASTEXITCODE -ne 0){throw 'UXP native helper setup failed'}
             $uxp=Join-Path $cli 'node_modules\.bin\uxp.cmd'
             if(-not (Test-Path -LiteralPath $uxp)){throw "UXP CLI missing: $uxp"}
             & $uxp help
