@@ -1,0 +1,118 @@
+name: Targeted Illustrator CEP production
+
+on:
+  push:
+    branches: [feat/illustrator-cep-production]
+    paths:
+      - ".github/workflows/targeted-illustrator-cep-production.yml"
+      - "scripts/install_windows.ps1"
+      - "scripts/install_illustrator_cep.ps1"
+      - "scripts/prepare_illustrator_cep.py"
+      - "scripts/probe_illustrator_cep_upstream.py"
+      - "tests/test_prepare_illustrator_cep.py"
+      - "tests/test_install_illustrator_cep_contract.py"
+
+concurrency:
+  group: targeted-illustrator-cep-production-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  live-cep:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '20'
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: '0.12.17'
+          enable-cache: false
+
+      - name: Prepare gateway test environment
+        shell: powershell
+        run: |
+          uv python install 3.12
+          uv sync --python 3.12
+
+      - name: Test production CEP contracts
+        shell: powershell
+        run: |
+          uv run python -m unittest `
+            tests.test_prepare_illustrator_cep `
+            tests.test_install_illustrator_cep_contract `
+            tests.test_install_windows -v
+          if($LASTEXITCODE -ne 0){throw 'Illustrator CEP production contract tests failed'}
+
+      - name: Install pinned production CEP panel
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $gatewayPython=Join-Path $PWD '.venv\Scripts\python.exe'
+          if(-not (Test-Path -LiteralPath $gatewayPython -PathType Leaf)){
+            throw "Gateway Python not found: $gatewayPython"
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_illustrator_cep.ps1 `
+            -PythonCommand $gatewayPython `
+            -EnableUnsignedDebug
+          if($LASTEXITCODE -ne 0){throw 'Production Illustrator CEP installation failed'}
+
+      - name: Install pinned upstream Python server
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $src=Join-Path $env:TEMP 'MCPAdobe-Illustrator-MCP'
+          $expected='5d7a3edc8ebc89a0fc56b059e1311d3b2bfca815'
+          $actual=(git -C $src rev-parse HEAD).Trim()
+          Write-Host "UPSTREAM_HEAD=$actual"
+          if($actual -ne $expected){throw "Pinned upstream checkout mismatch: $actual"}
+
+          $venv=Join-Path $env:RUNNER_TEMP 'Illustrator_MCP_venv'
+          if(Test-Path $venv){Remove-Item -Recurse -Force $venv}
+          uv venv --python 3.12 $venv
+          $python=Join-Path $venv 'Scripts\python.exe'
+          uv pip install --python $python -e $src
+          if($LASTEXITCODE -ne 0){throw 'Pinned upstream Python install failed'}
+          & $python -c "import illustrator_mcp; print('UPSTREAM_PYTHON_IMPORT=PASS')"
+
+      - name: Live CEP connection and document create gate
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $venv=Join-Path $env:RUNNER_TEMP 'Illustrator_MCP_venv'
+          $upstreamPython=Join-Path $venv 'Scripts\python.exe'
+          $p=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
+          $target=$null
+          if($p){$target=$p.Path}
+          if(-not $target){
+            $shell=New-Object -ComObject WScript.Shell
+            $roots=@(
+              (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),
+              (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
+            )
+            foreach($root in $roots){
+              if(-not (Test-Path -LiteralPath $root)){continue}
+              foreach($lnk in @(Get-ChildItem -LiteralPath $root -Recurse -Filter '*.lnk' -File -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'Illustrator'})){
+                $candidate=$shell.CreateShortcut($lnk.FullName).TargetPath
+                if($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)){$target=$candidate;break}
+              }
+              if($target){break}
+            }
+          }
+          if(-not $target){throw 'Illustrator executable not found'}
+          Write-Host "ILLUSTRATOR_EXE=$target"
+
+          Get-Process -Name Illustrator,CEPHtmlEngine -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          $env:UPSTREAM_PYTHON=$upstreamPython
+          $env:ILLUSTRATOR_EXE=$target
+          uv run python scripts/probe_illustrator_cep_upstream.py
+          if($LASTEXITCODE -ne 0){throw 'CEP live create probe failed'}
+
+          $cep=Get-Process -Name CEPHtmlEngine -ErrorAction SilentlyContinue | Select-Object -First 1
+          if(-not $cep){throw 'CEP live probe passed without a CEPHtmlEngine process'}
+          Write-Host "CEP_HTML_ENGINE=PASS PID=$($cep.Id) SESSION=$($cep.SessionId)"
