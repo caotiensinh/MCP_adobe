@@ -80,7 +80,7 @@ jobs:
             [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
             [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
             [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
-            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
             [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
             [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
           }
@@ -94,10 +94,10 @@ jobs:
             if($len -le 0){ return $true }
             $sb=New-Object System.Text.StringBuilder ($len+1)
             [void][Win32XdFocus]::GetWindowText($hWnd,$sb,$sb.Capacity)
-            [uint32]$pid=0
-            [void][Win32XdFocus]::GetWindowThreadProcessId($hWnd,[ref]$pid)
+            [uint32]$windowPid=0
+            [void][Win32XdFocus]::GetWindowThreadProcessId($hWnd,[ref]$windowPid)
             $title=$sb.ToString()
-            $windows.Add([pscustomobject]@{Hwnd=$hWnd;Pid=$pid;Title=$title})
+            $windows.Add([pscustomobject]@{Hwnd=$hWnd;Pid=$windowPid;Title=$title})
             return $true
           }
           [void][Win32XdFocus]::EnumWindows($callback,[IntPtr]::Zero)
