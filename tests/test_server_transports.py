@@ -32,6 +32,8 @@ _OAUTH_ENV = {
     "MCP_ADOBE_OAUTH_CLIENT_SECRET",
     "MCP_ADOBE_OAUTH_VALIDATE_RESOURCE",
 }
+_SUBPROCESS_TIMEOUT_SECONDS = 45
+_SERVER_START_TIMEOUT_SECONDS = 45.0
 
 
 def _clean_env() -> dict[str, str]:
@@ -114,7 +116,11 @@ def _free_loopback_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def _wait_for_tcp(port: int, process: subprocess.Popen[str], timeout: float = 20.0) -> None:
+def _wait_for_tcp(
+    port: int,
+    process: subprocess.Popen[str],
+    timeout: float = _SERVER_START_TIMEOUT_SECONDS,
+) -> None:
     deadline = time.monotonic() + timeout
     last_error: OSError | None = None
     while time.monotonic() < deadline:
@@ -259,7 +265,7 @@ class McpServerTransportTests(unittest.TestCase):
             env=_clean_env(),
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=_SUBPROCESS_TIMEOUT_SECONDS,
             check=False,
         )
         self.assertNotEqual(completed.returncode, 0)

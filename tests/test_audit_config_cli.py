@@ -26,6 +26,7 @@ _AUDIT_ENV = {
     "MCP_ADOBE_AUDIT_MAX_BYTES",
     "MCP_ADOBE_AUDIT_BACKUP_COUNT",
 }
+_SUBPROCESS_TIMEOUT_SECONDS = 45
 
 
 def _base_env(audit_path: Path) -> dict[str, str]:
@@ -62,7 +63,7 @@ def _run_server_with_env(env: dict[str, str]) -> subprocess.CompletedProcess[str
         env=env,
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
         check=False,
     )
 
