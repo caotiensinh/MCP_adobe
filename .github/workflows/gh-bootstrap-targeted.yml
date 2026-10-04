@@ -1,0 +1,28 @@
+name: GitHub CLI bootstrap targeted
+
+on:
+  push:
+    branches: [fix/bootstrap-github-cli-live-e2e]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-helper:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: '0.12.17'
+          enable-cache: false
+      - name: Setup Python
+        shell: powershell
+        run: uv python install 3.12
+      - name: Install
+        shell: powershell
+        run: uv sync --python 3.12
+      - name: Windows helper regression
+        shell: powershell
+        run: uv run python -m unittest tests.test_windows_helpers -v
