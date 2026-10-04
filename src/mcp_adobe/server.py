@@ -299,7 +299,10 @@ def build_server(
                 operation_id=operation_id,
                 outcome="unknown",
             )
-            raise
+            raise RuntimeError(
+                f"operation outcome is unknown; operation_id={operation_id}; "
+                "inspect Adobe state before retrying"
+            ) from None
         except PolicyError:
             audit(
                 tool_name,
@@ -310,7 +313,9 @@ def build_server(
                 operation_id=operation_id,
                 outcome="denied",
             )
-            raise
+            raise RuntimeError(
+                f"operation denied by runtime policy; operation_id={operation_id}"
+            ) from None
         except Exception as exc:
             audit(
                 tool_name,
@@ -321,7 +326,9 @@ def build_server(
                 operation_id=operation_id,
                 outcome="failed",
             )
-            raise
+            raise RuntimeError(
+                f"operation failed; operation_id={operation_id}"
+            ) from None
 
         outcome = str(payload.get("outcome", "accepted_unverified"))
         payload["operation_id"] = operation_id
