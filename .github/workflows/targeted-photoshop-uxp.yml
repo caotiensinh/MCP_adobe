@@ -1,0 +1,138 @@
+name: Targeted Photoshop UXP bridge
+
+on:
+  push:
+    branches: [fix/photoshop-path-override]
+    paths:
+      - ".github/workflows/targeted-photoshop-uxp.yml"
+
+concurrency:
+  group: targeted-photoshop-uxp-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  live-uxp:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '20'
+
+      - name: Locate and start Photoshop
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $p=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
+          $target=$null
+          if($p){$target=$p.Path}
+          if(-not $target){
+            $shell=New-Object -ComObject WScript.Shell
+            $roots=@((Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),(Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'))
+            foreach($root in $roots){
+              if(-not (Test-Path -LiteralPath $root)){continue}
+              foreach($lnk in @(Get-ChildItem -LiteralPath $root -Recurse -Filter '*.lnk' -File -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'Photoshop'})){
+                $candidate=$shell.CreateShortcut($lnk.FullName).TargetPath
+                if($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)){$target=$candidate;break}
+              }
+              if($target){break}
+            }
+          }
+          if(-not $target){throw 'Photoshop executable not found'}
+          $vi=(Get-Item -LiteralPath $target).VersionInfo
+          Write-Host "PHOTOSHOP_EXE=$target"
+          Write-Host "PHOTOSHOP_FILE_VERSION=$($vi.FileVersion)"
+          Write-Host "PHOTOSHOP_PRODUCT_VERSION=$($vi.ProductVersion)"
+          "PHOTOSHOP_EXE=$target" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $version=([regex]::Match($vi.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
+          if(-not $version){throw "Cannot parse Photoshop version from $($vi.ProductVersion)"}
+          "PHOTOSHOP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $major=[int]($version.Split('.')[0])
+          "PHOTOSHOP_MAJOR=$major" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          if(-not $p){Start-Process -FilePath $target | Out-Null}
+          $deadline=[DateTime]::UtcNow.AddSeconds(60)
+          do{Start-Sleep -Seconds 1;$p=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1}while(-not $p -and [DateTime]::UtcNow -lt $deadline)
+          if(-not $p){throw 'Photoshop did not start within 60 seconds'}
+          Write-Host "PHOTOSHOP_PID=$($p.Id) SESSION=$($p.SessionId)"
+
+      - name: Install official Adobe UXP DevTools CLI
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $cli=Join-Path $env:RUNNER_TEMP 'uxp-cli'
+          if(Test-Path $cli){Remove-Item -Recurse -Force $cli}
+          New-Item -ItemType Directory -Force -Path $cli | Out-Null
+          Push-Location $cli
+          try {
+            npm init -y | Out-Null
+            npm install --no-audit --no-fund @adobe/uxp-devtools-cli@1.6.4
+            if($LASTEXITCODE -ne 0){throw 'UXP CLI install failed'}
+            $uxp=Join-Path $cli 'node_modules\.bin\uxp.cmd'
+            if(-not (Test-Path -LiteralPath $uxp)){throw "UXP CLI missing: $uxp"}
+            & $uxp help
+            if($LASTEXITCODE -ne 0){throw 'UXP CLI help failed'}
+            "UXP_CLI=$uxp" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          } finally { Pop-Location }
+
+      - name: Enable UXP developer mode without GUI prompt
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $dir=Join-Path $env:CommonProgramFiles 'Adobe\UXP\Developer'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          $settings=Join-Path $dir 'settings.json'
+          [IO.File]::WriteAllText($settings,'{ "developer": true }',(New-Object Text.UTF8Encoding($false)))
+          Write-Host "UXP_DEV_SETTINGS=$settings"
+          Get-Content -LiteralPath $settings -Raw
+
+      - name: Checkout pinned Brainferno Photoshop UXP panel
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $dst=Join-Path $env:RUNNER_TEMP 'brainferno-mcp-bridge'
+          if(Test-Path $dst){Remove-Item -Recurse -Force $dst}
+          git clone https://github.com/Brainferno/brainferno-mcp-bridge.git $dst
+          git -C $dst checkout --detach a25b8d9e15f1ff63ebd02d7593a457e6690fcc6e
+          $actual=(git -C $dst rev-parse HEAD).Trim()
+          if($actual -ne 'a25b8d9e15f1ff63ebd02d7593a457e6690fcc6e'){throw 'Brainferno pin mismatch'}
+          $panel=Join-Path $dst 'packages\panel-uxp'
+          $manifest=Join-Path $panel 'manifest.json'
+          $json=Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
+          $json.host[0].minVersion="$env:PHOTOSHOP_MAJOR.0.0"
+          $json | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $manifest -Encoding UTF8
+          Write-Host "BRAINFERNO_HEAD=$actual"
+          Write-Host "PATCHED_MIN_VERSION=$($json.host[0].minVersion)"
+          "BRAINFERNO_PANEL=$panel" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Start UXP service and discover Photoshop host
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $log=Join-Path $env:RUNNER_TEMP 'uxp-service.log'
+          Remove-Item -Force $log -ErrorAction SilentlyContinue
+          $cmd="`"$env:UXP_CLI`" service start > `"$log`" 2>&1"
+          $svc=Start-Process -FilePath $env:ComSpec -ArgumentList @('/d','/s','/c',$cmd) -PassThru -WindowStyle Hidden
+          "UXP_SERVICE_PID=$($svc.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Start-Sleep -Seconds 5
+          & $env:UXP_CLI apps list
+          $rc=$LASTEXITCODE
+          if(Test-Path $log){Get-Content -LiteralPath $log -Raw}
+          if($rc -ne 0){throw "uxp apps list failed rc=$rc"}
+
+      - name: Load patched Photoshop panel through official UXP CLI
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          & $env:UXP_CLI plugin load --manifest $env:BRAINFERNO_PANEL --apps "PS@$env:PHOTOSHOP_VERSION"
+          if($LASTEXITCODE -ne 0){throw "UXP plugin load failed rc=$LASTEXITCODE"}
+          Write-Host 'PHOTOSHOP_UXP_PLUGIN_LOAD=PASS'
+
+      - name: Cleanup UXP service
+        if: always()
+        shell: powershell
+        run: |
+          if($env:UXP_SERVICE_PID){Stop-Process -Id ([int]$env:UXP_SERVICE_PID) -Force -ErrorAction SilentlyContinue}
