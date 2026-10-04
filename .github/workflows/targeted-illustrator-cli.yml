@@ -39,7 +39,6 @@ jobs:
           }
           if(-not $target){throw 'Illustrator executable not found'}
           Write-Host "ILLUSTRATOR_EXE=$target"
-
           $windowsDir=Split-Path $target -Parent
           $contentsDir=Split-Path $windowsDir -Parent
           $supportDir=Split-Path $contentsDir -Parent
@@ -47,20 +46,19 @@ jobs:
           $startupDir=Join-Path $installRoot 'Startup Scripts'
           New-Item -ItemType Directory -Force -Path $startupDir | Out-Null
           Write-Host "STARTUP_DIR=$startupDir"
-
           $probe=Join-Path $startupDir 'mcp_adobe_bootstrap_probe.jsx'
           $marker=Join-Path $env:RUNNER_TEMP 'mcp_adobe_illustrator_startup_marker.txt'
           Remove-Item -Force $marker,$probe -ErrorAction SilentlyContinue
           $markerJs=$marker.Replace('\','/')
-          $script=@"
-#target illustrator
-try { app.preferences.setBooleanPreference('ShowExternalJSXWarning', false); } catch(e) {}
-var f=new File('$markerJs');
-if(!f.open('w')){throw new Error('open marker failed');}
-f.write('PASS:'+app.version);
-f.close();
-"@
-          [IO.File]::WriteAllText($probe,$script,(New-Object Text.UTF8Encoding($false)))
+          $lines=@(
+            '#target illustrator',
+            "try { app.preferences.setBooleanPreference('ShowExternalJSXWarning', false); } catch(e) {}",
+            "var f=new File('$markerJs');",
+            "if(!f.open('w')){throw new Error('open marker failed');}",
+            "f.write('PASS:'+app.version);",
+            'f.close();'
+          )
+          [IO.File]::WriteAllLines($probe,$lines,(New-Object Text.UTF8Encoding($false)))
           try {
             Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
