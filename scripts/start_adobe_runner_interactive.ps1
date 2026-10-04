@@ -5,8 +5,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+if ($env:GITHUB_ACTIONS -eq 'true') {
+    throw 'Run this script from the logged-in MRCAO desktop session, not from inside a GitHub Actions job.'
+}
 if (-not [Environment]::UserInteractive) {
-    throw 'Run this script from the logged-in Windows desktop session, not from a GitHub Actions service job.'
+    throw 'Run this script from the logged-in Windows desktop session, not from a background/service session.'
 }
 
 $runCmd = Join-Path $RunnerRoot 'run.cmd'
@@ -101,5 +104,6 @@ function Repair-InteractiveWorkspaceOwnership {
 Repair-InteractiveWorkspaceOwnership -Root $RunnerRoot
 
 Write-Host 'Starting GitHub Actions runner in the logged-in desktop session...'
-Start-Process -FilePath 'cmd.exe' -ArgumentList '/k', "`"$runCmd`"" -WorkingDirectory $RunnerRoot
-Write-Host 'Interactive runner console launched. Keep that window open while Adobe E2E jobs run.'
+$runnerCommand = "set MCP_ADOBE_INTERACTIVE_RUNNER=1&& `"$runCmd`""
+Start-Process -FilePath 'cmd.exe' -ArgumentList '/k', $runnerCommand -WorkingDirectory $RunnerRoot
+Write-Host 'Interactive runner console launched with MCP_ADOBE_INTERACTIVE_RUNNER=1. Keep that window open while Adobe E2E jobs run.'
