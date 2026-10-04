@@ -50,6 +50,56 @@ if ($existingListener.Count -gt 0) {
     throw "A Runner.Listener from $RunnerRoot is still running. Stop it before starting the interactive listener."
 }
 
+function Repair-InteractiveWorkspaceOwnership {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    $workRoot = Join-Path $Root '_work\MCP_adobe'
+    if (-not (Test-Path -LiteralPath $workRoot)) {
+        Write-Host "Workspace ownership repair skipped; path does not exist yet: $workRoot"
+        return
+    }
+
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $icacls = Join-Path $env:SystemRoot 'System32\icacls.exe'
+    if (-not (Test-Path -LiteralPath $icacls -PathType Leaf)) {
+        throw "icacls.exe not found: $icacls"
+    }
+
+    Write-Host "Repairing interactive runner workspace ownership: $workRoot"
+    Write-Host "Workspace owner/grantee=$identity"
+
+    & $icacls $workRoot '/setowner' $identity '/T' '/C' '/Q'
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to transfer runner workspace ownership to $identity. icacls exit code=$LASTEXITCODE"
+    }
+
+    & $icacls $workRoot '/grant:r' "${identity}:(OI)(CI)F" '/T' '/C' '/Q'
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to grant runner workspace permissions to $identity. icacls exit code=$LASTEXITCODE"
+    }
+
+    $repoWorktree = Join-Path $workRoot 'MCP_adobe'
+    if (Test-Path -LiteralPath $repoWorktree) {
+        $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($git) {
+            & $git.Source config --global --add safe.directory ($repoWorktree -replace '\\', '/')
+            if ($LASTEXITCODE -ne 0) {
+                throw "Failed to add Git safe.directory for interactive workspace. git exit code=$LASTEXITCODE"
+            }
+            Write-Host "Git safe.directory added for interactive user: $repoWorktree"
+        } else {
+            Write-Warning 'git.exe is not currently available in PATH; ownership repair completed and checkout may still proceed if the runner toolchain supplies Git.'
+        }
+    }
+
+    Write-Host 'PASS: interactive runner workspace ownership repaired.'
+}
+
+Repair-InteractiveWorkspaceOwnership -Root $RunnerRoot
+
 Write-Host 'Starting GitHub Actions runner in the logged-in desktop session...'
 Start-Process -FilePath 'cmd.exe' -ArgumentList '/k', "`"$runCmd`"" -WorkingDirectory $RunnerRoot
 Write-Host 'Interactive runner console launched. Keep that window open while Adobe E2E jobs run.'
