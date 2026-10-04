@@ -42,6 +42,41 @@ function Find-AdobeExe {
     return $null
 }
 
+function Start-XdPackageIfNeeded {
+    param($Package)
+
+    if (-not $Package) { return }
+    $xdRunning = Get-Process -Name 'XD' -ErrorAction SilentlyContinue
+    if ($xdRunning) {
+        Write-Host 'Adobe XD is already running.'
+        return
+    }
+
+    try {
+        $manifest = Get-AppxPackageManifest -Package $Package.PackageFullName
+        $app = @($manifest.Package.Applications.Application)[0]
+        if (-not $app.Id) { throw 'Adobe XD AppX application ID is empty.' }
+        $appUserModelId = "$($Package.PackageFamilyName)!$($app.Id)"
+        Start-Process explorer.exe -ArgumentList "shell:AppsFolder\$appUserModelId"
+        Write-Host "Adobe XD launch requested: $appUserModelId"
+
+        if ($env:LOCALAPPDATA -and $Package.PackageFamilyName) {
+            $localState = Join-Path $env:LOCALAPPDATA "Packages\$($Package.PackageFamilyName)\LocalState"
+            $deadline = [DateTime]::UtcNow.AddSeconds(20)
+            while (-not (Test-Path $localState) -and [DateTime]::UtcNow -lt $deadline) {
+                Start-Sleep -Milliseconds 500
+            }
+            if (Test-Path $localState) {
+                Write-Host "Adobe XD LocalState ready: $localState"
+            } else {
+                Write-Warning "Adobe XD launched but LocalState was not observed within 20 seconds: $localState"
+            }
+        }
+    } catch {
+        Write-Warning "Could not launch Adobe XD automatically: $($_.Exception.Message)"
+    }
+}
+
 $photoshop = Find-AdobeExe @(
     '{DRIVE}\Program Files\Adobe\Adobe Photoshop *\Photoshop.exe',
     '{DRIVE}\Adobe\Adobe Photoshop *\Photoshop.exe',
@@ -52,18 +87,28 @@ $illustrator = Find-AdobeExe @(
     '{DRIVE}\Adobe\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe',
     '{DRIVE}\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe'
 )
-$xdPackage = Get-AppxPackage -Name 'Adobe.XD' -ErrorAction SilentlyContinue | Select-Object -First 1
+$xdPackage = @(
+    Get-AppxPackage -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match 'Adobe.*XD|XD.*Adobe' }
+)[0]
 
 Write-Host "Photoshop=$photoshop"
 Write-Host "Illustrator=$illustrator"
 if ($xdPackage) {
     Write-Host "AdobeXD=$($xdPackage.Name) $($xdPackage.Version) $($xdPackage.InstallLocation)"
+    Write-Host "AdobeXDFamily=$($xdPackage.PackageFamilyName)"
 } else {
     Write-Warning 'Adobe XD package is not visible to this logged-in account.'
 }
 
 if (-not $photoshop) { Write-Warning 'Photoshop.exe was not found by standard Adobe path patterns.' }
 if (-not $illustrator) { Write-Warning 'Illustrator.exe was not found by standard Adobe path patterns.' }
+
+# Launch XD before auto-installing the bridge so a freshly installed UWP package
+# has a chance to create its per-user LocalState sandbox first.
+if (-not $NoLaunchXd -and $xdPackage) {
+    Start-XdPackageIfNeeded -Package $xdPackage
+}
 
 if (-not $SkipXdPlugin) {
     if (-not (Test-Path $installXd)) { throw "Missing helper: $installXd" }
@@ -72,24 +117,6 @@ if (-not $SkipXdPlugin) {
 
 if (-not (Test-Path $startRunner)) { throw "Missing helper: $startRunner" }
 & $startRunner -RunnerRoot $RunnerRoot -StopService
-
-if (-not $NoLaunchXd -and $xdPackage) {
-    $xdRunning = Get-Process -Name 'XD' -ErrorAction SilentlyContinue
-    if (-not $xdRunning) {
-        try {
-            $manifest = Get-AppxPackageManifest -Package $xdPackage.PackageFullName
-            $app = @($manifest.Package.Applications.Application)[0]
-            if (-not $app.Id) { throw 'Adobe XD AppX application ID is empty.' }
-            $appUserModelId = "$($xdPackage.PackageFamilyName)!$($app.Id)"
-            Start-Process explorer.exe -ArgumentList "shell:AppsFolder\$appUserModelId"
-            Write-Host "Adobe XD launch requested: $appUserModelId"
-        } catch {
-            Write-Warning "Could not launch Adobe XD automatically: $($_.Exception.Message)"
-        }
-    } else {
-        Write-Host 'Adobe XD is already running.'
-    }
-}
 
 Write-Host ''
 Write-Host 'PASS: preparation completed.'
