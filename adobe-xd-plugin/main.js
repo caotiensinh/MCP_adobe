@@ -385,3 +385,8 @@ module.exports = {
     }
   }
 };
+
+// Transport readiness must not depend on the panel being visible. XD loads the
+// plugin module during development-plugin reload; connect immediately so the
+// gateway can distinguish plugin-runtime readiness from panel/UI readiness.
+connect();
