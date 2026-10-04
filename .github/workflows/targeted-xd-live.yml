@@ -81,8 +81,13 @@ jobs:
             [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
             [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
             [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
             [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+            [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd);
+            [DllImport("user32.dll")] public static extern IntPtr SetFocus(IntPtr hWnd);
             [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+            [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+            [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
           }
           '@
 
@@ -95,9 +100,9 @@ jobs:
             $sb=New-Object System.Text.StringBuilder ($len+1)
             [void][Win32XdFocus]::GetWindowText($hWnd,$sb,$sb.Capacity)
             [uint32]$windowPid=0
-            [void][Win32XdFocus]::GetWindowThreadProcessId($hWnd,[ref]$windowPid)
+            [uint32]$threadId=[Win32XdFocus]::GetWindowThreadProcessId($hWnd,[ref]$windowPid)
             $title=$sb.ToString()
-            $windows.Add([pscustomobject]@{Hwnd=$hWnd;Pid=$windowPid;Title=$title})
+            $windows.Add([pscustomobject]@{Hwnd=$hWnd;Pid=$windowPid;ThreadId=$threadId;Title=$title})
             return $true
           }
           [void][Win32XdFocus]::EnumWindows($callback,[IntPtr]::Zero)
@@ -108,19 +113,34 @@ jobs:
 
           if(-not $target){
             Write-Host 'XD_WINDOW_CANDIDATES_BEGIN'
-            $windows | ForEach-Object { Write-Host ("PID={0} HWND={1} TITLE={2}" -f $_.Pid,$_.Hwnd,$_.Title) }
+            $windows | ForEach-Object { Write-Host ("PID={0} TID={1} HWND={2} TITLE={3}" -f $_.Pid,$_.ThreadId,$_.Hwnd,$_.Title) }
             Write-Host 'XD_WINDOW_CANDIDATES_END'
             throw 'Could not find a visible Adobe XD top-level window'
           }
 
-          [void][Win32XdFocus]::ShowWindow($target.Hwnd,9)
-          $focused=[Win32XdFocus]::SetForegroundWindow($target.Hwnd)
-          Write-Host ("XD_WINDOW_TARGET=PID={0} HWND={1} TITLE={2} FOCUSED={3}" -f $target.Pid,$target.Hwnd,$target.Title,$focused)
-          if(-not $focused){throw 'SetForegroundWindow failed for Adobe XD'}
-          Start-Sleep -Milliseconds 700
-          $shell=New-Object -ComObject WScript.Shell
-          $shell.SendKeys('^+r')
-          Write-Host 'XD_DEV_PLUGIN_RELOAD=SENT'
+          [uint32]$foregroundPid=0
+          $foreground=[Win32XdFocus]::GetForegroundWindow()
+          [uint32]$foregroundThread=[Win32XdFocus]::GetWindowThreadProcessId($foreground,[ref]$foregroundPid)
+          [uint32]$currentThread=[Win32XdFocus]::GetCurrentThreadId()
+          $attachedCurrent=[Win32XdFocus]::AttachThreadInput($currentThread,[uint32]$target.ThreadId,$true)
+          $attachedForeground=$false
+          if($foregroundThread -ne 0 -and $foregroundThread -ne [uint32]$target.ThreadId){
+            $attachedForeground=[Win32XdFocus]::AttachThreadInput($foregroundThread,[uint32]$target.ThreadId,$true)
+          }
+          try {
+            [void][Win32XdFocus]::ShowWindow($target.Hwnd,9)
+            [void][Win32XdFocus]::BringWindowToTop($target.Hwnd)
+            $focused=[Win32XdFocus]::SetForegroundWindow($target.Hwnd)
+            [void][Win32XdFocus]::SetFocus($target.Hwnd)
+            Write-Host ("XD_WINDOW_TARGET=PID={0} TID={1} HWND={2} TITLE={3} FOCUSED={4} ATTACH_CURRENT={5} ATTACH_FOREGROUND={6}" -f $target.Pid,$target.ThreadId,$target.Hwnd,$target.Title,$focused,$attachedCurrent,$attachedForeground)
+            Start-Sleep -Milliseconds 700
+            $shell=New-Object -ComObject WScript.Shell
+            $shell.SendKeys('^+r')
+            Write-Host 'XD_DEV_PLUGIN_RELOAD=SENT'
+          } finally {
+            if($attachedForeground){[void][Win32XdFocus]::AttachThreadInput($foregroundThread,[uint32]$target.ThreadId,$false)}
+            if($attachedCurrent){[void][Win32XdFocus]::AttachThreadInput($currentThread,[uint32]$target.ThreadId,$false)}
+          }
           Start-Sleep -Seconds 3
 
       - name: Live XD bridge read plus approval write gate
