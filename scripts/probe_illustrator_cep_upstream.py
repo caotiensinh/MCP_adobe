@@ -7,14 +7,64 @@ import time
 from mcp_adobe.mcp_stdio import McpSubprocessToolClient, SubprocessMcpConfig
 
 
-def _looks_connected(payload: object) -> bool:
-    text = repr(payload).lower()
+def _layers(payload: object) -> dict[str, object] | None:
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    layers = data.get("layers")
+    return layers if isinstance(layers, dict) else None
+
+
+def _layer_status(layers: dict[str, object], name: str) -> str | None:
+    layer = layers.get(name)
+    if not isinstance(layer, dict):
+        return None
+    status = layer.get("status")
+    return status if isinstance(status, str) else None
+
+
+def _host_connected(payload: object) -> bool:
+    """Return True once the real CEP panel can probe the Illustrator host.
+
+    A missing document is not a transport/readiness failure for a document-create
+    operation. Upstream v3 reports that state as ready=False / blockedAt=document
+    even though both the panel and Illustrator layers are healthy.
+    """
+    layers = _layers(payload)
+    if layers is None:
+        return False
     return (
-        "connected" in text
-        and "'connected': false" not in text
-        and '"connected": false' not in text
-        and "not connected" not in text
+        _layer_status(layers, "panel") == "ok"
+        and _layer_status(layers, "illustrator") == "ok"
     )
+
+
+def _document_open(payload: object) -> bool:
+    layers = _layers(payload)
+    if layers is None:
+        return False
+    document = layers.get("document")
+    if not isinstance(document, dict):
+        return False
+    status = document.get("status")
+    open_count = document.get("openCount")
+    if status == "ok":
+        return True
+    return isinstance(open_count, int) and not isinstance(open_count, bool) and open_count > 0
+
+
+def _result_has_failure(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return True
+    if payload.get("ok") is False:
+        return True
+    execution = payload.get("execution")
+    if isinstance(execution, str) and execution.lower() in {"failed", "error"}:
+        return True
+    error = payload.get("error")
+    return error not in (None, False, "")
 
 
 def _dump_cep_runtime(label: str) -> None:
@@ -109,7 +159,8 @@ def main() -> int:
                     "illustrator_connection_status", {"params": {"probe": True}}
                 )
                 print(f"CONNECTION_STATUS={last!r}", flush=True)
-                if _looks_connected(last):
+                if _host_connected(last):
+                    print("CEP_HOST_READY=PASS", flush=True)
                     break
             except Exception as exc:  # diagnostic retry while panel starts
                 last = {"exception": repr(exc)}
@@ -120,19 +171,31 @@ def main() -> int:
             time.sleep(2)
         else:
             _dump_cep_runtime("final-before-timeout")
-            raise RuntimeError(f"CEP panel did not connect: {last!r}")
+            raise RuntimeError(f"CEP panel/Illustrator host did not become ready: {last!r}")
 
         result = client.call_tool(
             "illustrator_document", {"params": {"action": "create"}}
         )
         print(f"CREATE_RESULT={result!r}", flush=True)
-        low = repr(result).lower()
-        if "error" in low and any(
-            marker in low for marker in ("'error': true", '"error": true', "failed", "not connected")
-        ):
-            raise RuntimeError(f"document create returned error: {result!r}")
-        print("CEP_LIVE_CREATE=PASS", flush=True)
-        return 0
+        if _result_has_failure(result):
+            raise RuntimeError(f"document create returned failure: {result!r}")
+
+        verify_deadline = time.time() + 15
+        verified: object = None
+        while time.time() < verify_deadline:
+            verified = client.call_tool(
+                "illustrator_connection_status", {"params": {"probe": True}}
+            )
+            print(f"POST_CREATE_STATUS={verified!r}", flush=True)
+            if _host_connected(verified) and _document_open(verified):
+                print("CEP_DOCUMENT_VERIFY=PASS", flush=True)
+                print("CEP_LIVE_CREATE=PASS", flush=True)
+                return 0
+            time.sleep(1)
+
+        raise RuntimeError(
+            f"document create was accepted but no open document was verified: {verified!r}"
+        )
     finally:
         client.close()
 
