@@ -20,7 +20,19 @@ $dispatch = Join-Path $PSScriptRoot 'dispatch_adobe_live_e2e.ps1'
 if (-not (Test-Path $prepare)) { throw "Missing helper: $prepare" }
 if (-not (Test-Path $dispatch)) { throw "Missing helper: $dispatch" }
 
+$dispatchArgs = @{
+    Repository = $Repository
+    Workflow = $Workflow
+    Ref = $Ref
+}
+if ($NoXdLive) { $dispatchArgs['NoXdLive'] = $true }
+if ($XdWrite) { $dispatchArgs['XdWrite'] = $true }
+
 Write-Host '=== MCP Adobe one-command live E2E ==='
+Write-Host 'Preflight: verify GitHub CLI authentication before changing the runner service.'
+& $dispatch @dispatchArgs -PreflightOnly
+
+Write-Host ''
 Write-Host 'Phase 1/2: prepare Adobe apps, XD bridge, and interactive MCP_adobe runner.'
 
 $prepareArgs = @{
@@ -32,14 +44,6 @@ if ($NoLaunchXd) { $prepareArgs['NoLaunchXd'] = $true }
 
 Write-Host ''
 Write-Host 'Phase 2/2: dispatch the guarded workflow_dispatch live E2E run.'
-
-$dispatchArgs = @{
-    Repository = $Repository
-    Workflow = $Workflow
-    Ref = $Ref
-}
-if ($NoXdLive) { $dispatchArgs['NoXdLive'] = $true }
-if ($XdWrite) { $dispatchArgs['XdWrite'] = $true }
 & $dispatch @dispatchArgs
 
 Write-Host ''
