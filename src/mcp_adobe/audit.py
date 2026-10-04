@@ -23,6 +23,8 @@ class SecurityAuditEvent:
     application: str | None = None
     capability: str | None = None
     reason: str | None = None
+    operation_id: str | None = None
+    outcome: str | None = None
 
 
 class SecurityAuditSink(Protocol):
@@ -55,6 +57,8 @@ def security_audit_payload(
         "application": event.application,
         "capability": event.capability,
         "reason": event.reason,
+        "operation_id": event.operation_id,
+        "outcome": event.outcome,
     }
     if access_token is None:
         payload["principal"] = {
