@@ -43,7 +43,7 @@ jobs:
           $actual=(git -C $dst rev-parse HEAD).Trim()
           Write-Host "UPSTREAM_HEAD=$actual"
           if($actual -ne '5d7a3edc8ebc89a0fc56b059e1311d3b2bfca815'){throw 'Pinned upstream checkout mismatch'}
-      - name: Build and install CEP panel with StartOn
+      - name: Build and install CEP panel with StartOn and runtime probe
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -61,8 +61,6 @@ jobs:
             if($LASTEXITCODE -ne 0){throw 'CEP validation failed'}
           } finally { Pop-Location }
 
-          # Upstream has AutoVisible=true but no StartOn. For this isolated proof,
-          # start the panel when Illustrator activates so the React hook can auto-connect.
           $manifest=Join-Path $cep 'CSXS\manifest.xml'
           $xml=[IO.File]::ReadAllText($manifest)
           if($xml -notmatch '<StartOn>') {
@@ -77,6 +75,52 @@ jobs:
             throw 'StartOn patch verification failed'
           }
           Write-Host 'CEP_STARTON_PATCH=PASS'
+
+          # Runtime probe executes before the Vite/React module. It proves whether
+          # CEP page JS, Node integration, and a raw WebSocket can work independently.
+          $index=Join-Path $cep 'dist\index.html'
+          $html=[IO.File]::ReadAllText($index)
+          $moduleMarker='<script type="module"'
+          $probe=@'
+<script>
+(function () {
+  try {
+    var fs = require('fs');
+    var path = require('path');
+    var marker = path.join(process.env.TEMP, 'mcp_adobe_cep_inline_probe.txt');
+    function log(value) { try { fs.appendFileSync(marker, String(value) + '\n'); } catch (_) {} }
+    fs.writeFileSync(marker, 'INLINE_START\n');
+    window.addEventListener('error', function (event) {
+      log('WINDOW_ERROR:' + (event && event.message ? event.message : 'unknown'));
+    });
+    window.addEventListener('unhandledrejection', function (event) {
+      log('UNHANDLED:' + String(event && event.reason ? event.reason : 'unknown'));
+    });
+    try {
+      var socket = new WebSocket('ws://127.0.0.1:8081');
+      socket.onopen = function () { log('WS_OPEN'); };
+      socket.onerror = function () { log('WS_ERROR'); };
+      socket.onclose = function (event) { log('WS_CLOSE:' + event.code); };
+      window.__mcpAdobeProbeSocket = socket;
+    } catch (error) {
+      log('WS_CREATE_ERROR:' + String(error));
+    }
+    setTimeout(function () {
+      var root = document.getElementById('root');
+      log('ROOT_LEN:' + (root ? root.innerHTML.length : -1));
+    }, 5000);
+  } catch (error) {
+    try { document.title = 'MCP_PROBE_ERROR:' + String(error); } catch (_) {}
+  }
+})();
+</script>
+'@
+          $pos=$html.IndexOf($moduleMarker)
+          if($pos -lt 0){throw 'Vite module script marker not found in built index.html'}
+          $html=$html.Insert($pos,$probe + "`r`n  ")
+          [IO.File]::WriteAllText($index,$html,(New-Object Text.UTF8Encoding($false)))
+          if([IO.File]::ReadAllText($index) -notmatch 'mcp_adobe_cep_inline_probe'){throw 'CEP inline runtime probe injection failed'}
+          Write-Host 'CEP_INLINE_RUNTIME_PROBE=INSTALLED'
 
           $target=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel'
           if(Test-Path -LiteralPath $target){Remove-Item -Recurse -Force $target}
@@ -102,7 +146,9 @@ jobs:
       - name: Live CEP connection and document create gate
         shell: powershell
         run: |
-          $ErrorActionPreference='Stop'
+          $ErrorActionPreference='Continue'
+          $marker=Join-Path $env:TEMP 'mcp_adobe_cep_inline_probe.txt'
+          Remove-Item -Force $marker -ErrorAction SilentlyContinue
           $venv=Join-Path $env:RUNNER_TEMP 'Illustrator_MCP_venv'
           $upstreamPython=Join-Path $venv 'Scripts\python.exe'
           $p=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
@@ -127,7 +173,14 @@ jobs:
           $env:UPSTREAM_PYTHON=$upstreamPython
           $env:ILLUSTRATOR_EXE=$target
           uv run python scripts/probe_illustrator_cep_upstream.py
-          if($LASTEXITCODE -ne 0){throw 'CEP live create probe failed'}
+          $probeRc=$LASTEXITCODE
+          Write-Host '=== CEP inline runtime marker ==='
+          if(Test-Path -LiteralPath $marker){
+            Get-Content -LiteralPath $marker -Raw
+          } else {
+            Write-Host 'INLINE_MARKER=MISSING'
+          }
+          if($probeRc -ne 0){throw "CEP live create probe failed rc=$probeRc"}
           $cep=Get-Process -Name CEPHtmlEngine -ErrorAction SilentlyContinue | Select-Object -First 1
           if(-not $cep){throw 'CEP live probe passed without a CEPHtmlEngine process'}
           Write-Host "CEP_HTML_ENGINE=PASS PID=$($cep.Id) SESSION=$($cep.SessionId)"
