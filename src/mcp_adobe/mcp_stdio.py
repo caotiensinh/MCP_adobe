@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from threading import Event, Lock, Thread
@@ -178,15 +179,25 @@ class McpSubprocessToolClient:
 
 
 def photoshop_stdio_config() -> SubprocessMcpConfig:
-    """Pinned launcher matching the audited Photoshop snapshot/package release."""
+    """Pinned launcher matching the audited Photoshop snapshot/package release.
+
+    The pinned upstream Windows detector explicitly supports PHOTOSHOP_PATH as
+    its highest-priority discovery source. Forward it when our Windows inventory
+    resolved a custom/portable installation instead of forcing Program Files.
+    """
+    env = {
+        "LOG_LEVEL": "0",
+        "PSMCP_FEEDBACK": "0",
+        "PSMCP_UPDATE_CHECK": "0",
+    }
+    photoshop_path = os.environ.get("PHOTOSHOP_PATH", "").strip()
+    if photoshop_path:
+        env["PHOTOSHOP_PATH"] = photoshop_path
+
     return SubprocessMcpConfig(
         command="npx",
         args=("-y", "@alisaitteke/photoshop-mcp@1.7.32"),
-        env={
-            "LOG_LEVEL": "0",
-            "PSMCP_FEEDBACK": "0",
-            "PSMCP_UPDATE_CHECK": "0",
-        },
+        env=env,
         call_timeout_seconds=180.0,
     )
 
