@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
+import sys
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from threading import Event, Lock, Thread
@@ -178,19 +180,44 @@ class McpSubprocessToolClient:
         self.close()
 
 
+def _running_photoshop_path() -> str | None:
+    """Resolve a running Photoshop executable without assuming its install directory."""
+    if sys.platform != "win32":
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "$p=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1; if($p){$p.Path}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    path = completed.stdout.strip().splitlines()
+    return path[0].strip() if path and path[0].strip() else None
+
+
 def photoshop_stdio_config() -> SubprocessMcpConfig:
     """Pinned launcher matching the audited Photoshop snapshot/package release.
 
-    The pinned upstream Windows detector explicitly supports PHOTOSHOP_PATH as
-    its highest-priority discovery source. Forward it when our Windows inventory
-    resolved a custom/portable installation instead of forcing Program Files.
+    The pinned upstream Windows detector checks PHOTOSHOP_PATH first. Preserve an
+    explicit override, otherwise derive it from the running Photoshop process so
+    custom/portable installs work without patching the upstream package.
     """
     env = {
         "LOG_LEVEL": "0",
         "PSMCP_FEEDBACK": "0",
         "PSMCP_UPDATE_CHECK": "0",
     }
-    photoshop_path = os.environ.get("PHOTOSHOP_PATH", "").strip()
+    photoshop_path = os.environ.get("PHOTOSHOP_PATH", "").strip() or _running_photoshop_path()
     if photoshop_path:
         env["PHOTOSHOP_PATH"] = photoshop_path
 
