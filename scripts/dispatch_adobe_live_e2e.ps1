@@ -3,7 +3,8 @@ param(
     [string]$Workflow = 'adobe-windows-e2e.yml',
     [string]$Ref = 'main',
     [switch]$NoXdLive,
-    [switch]$XdWrite
+    [switch]$XdWrite,
+    [switch]$PreflightOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,6 +21,11 @@ if (-not $gh) {
 & $gh.Source auth status --hostname github.com
 if ($LASTEXITCODE -ne 0) {
     throw 'GitHub CLI is not authenticated for github.com. Run `gh auth login`, then retry.'
+}
+
+if ($PreflightOnly) {
+    Write-Host 'PASS: GitHub CLI live-E2E dispatch preflight.'
+    return
 }
 
 $xdLiveValue = (-not $NoXdLive).ToString().ToLowerInvariant()
