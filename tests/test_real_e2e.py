@@ -29,7 +29,7 @@ class FakeClient:
     def call_tool(self, name, arguments):
         self.calls.append((name, dict(arguments)))
         if name == "photoshop_ping":
-            return {"ok": True}
+            return {"connected": True}
         if name == "photoshop_get_state":
             return {"hasDocument": False}
         if name == "get_document_info":
@@ -63,6 +63,16 @@ class IllustratorClient(FakeClient):
 class SmokeTests(unittest.TestCase):
     def test_photoshop_read_only(self):
         self.assertEqual(real_e2e.run("photoshop", client_factory=PhotoshopClient), 0)
+
+    def test_photoshop_disconnected_ping_fails_before_state_or_write(self):
+        class DisconnectedPhotoshopClient(PhotoshopClient):
+            def call_tool(self, name, arguments):
+                if name == "photoshop_ping":
+                    self.calls.append((name, dict(arguments)))
+                    return {"text": "Failed to connect to Photoshop"}
+                return super().call_tool(name, arguments)
+
+        self.assertEqual(real_e2e.run("photoshop", client_factory=DisconnectedPhotoshopClient), 1)
 
     def test_photoshop_write_verifies_outputs(self):
         with tempfile.TemporaryDirectory() as td:
