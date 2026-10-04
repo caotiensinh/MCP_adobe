@@ -1,6 +1,5 @@
 const application = require("application");
 const { Rectangle, Text, Color } = require("scenegraph");
-const { entrypoints } = require("uxp");
 
 const BRIDGE_URL = "ws://127.0.0.1:8765";
 const STATUS_LIMIT = 200;
@@ -366,11 +365,9 @@ function create() {
   return panel;
 }
 
-function show(rootNodeOrEvent) {
-  const rootNode = rootNodeOrEvent && rootNodeOrEvent.node
-    ? rootNodeOrEvent.node
-    : rootNodeOrEvent;
-  if (!panel) rootNode.appendChild(create());
+function show(event) {
+  const rootNode = event && event.node ? event.node : event;
+  if (rootNode && !panel) rootNode.appendChild(create());
   connect();
   renderStatus();
 }
@@ -380,11 +377,11 @@ function update(selection, documentRoot) {
   renderStatus();
 }
 
-entrypoints.setup({
+module.exports = {
   panels: {
     mcpAdobeBridge: {
       show,
       update
     }
   }
-});
+};
