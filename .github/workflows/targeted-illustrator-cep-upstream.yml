@@ -5,7 +5,10 @@ on:
     branches: [fix/photoshop-path-override]
     paths:
       - ".github/workflows/targeted-illustrator-cep-upstream.yml"
+      - "scripts/install_illustrator_cep.ps1"
+      - "scripts/prepare_illustrator_cep.py"
       - "scripts/probe_illustrator_cep_upstream.py"
+      - "tests/test_prepare_illustrator_cep.py"
 
 concurrency:
   group: targeted-illustrator-cep-upstream-${{ github.ref }}
@@ -27,122 +30,42 @@ jobs:
         with:
           version: '0.12.17'
           enable-cache: false
+
       - name: Prepare gateway test environment
         shell: powershell
         run: |
           uv python install 3.12
           uv sync --python 3.12
-      - name: Checkout pinned CEP upstream
+
+      - name: Test production CEP preparation
+        shell: powershell
+        run: |
+          uv run python -m unittest tests.test_prepare_illustrator_cep -v
+          if($LASTEXITCODE -ne 0){throw 'Illustrator CEP preparation tests failed'}
+
+      - name: Install pinned production CEP panel
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $dst=Join-Path $env:RUNNER_TEMP 'Illustrator_MCP_upstream'
-          if(Test-Path $dst){Remove-Item -Recurse -Force $dst}
-          git clone https://github.com/jinkeda/Illustrator_MCP.git $dst
-          git -C $dst checkout --detach 5d7a3edc8ebc89a0fc56b059e1311d3b2bfca815
-          $actual=(git -C $dst rev-parse HEAD).Trim()
-          Write-Host "UPSTREAM_HEAD=$actual"
-          if($actual -ne '5d7a3edc8ebc89a0fc56b059e1311d3b2bfca815'){throw 'Pinned upstream checkout mismatch'}
-      - name: Build and install CEP panel with StartOn and runtime probe
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          $src=Join-Path $env:RUNNER_TEMP 'Illustrator_MCP_upstream'
-          $cep=Join-Path $src 'cep-extension'
-          Push-Location $cep
-          try {
-            npm ci
-            if($LASTEXITCODE -ne 0){throw 'npm ci failed'}
-            npm run typecheck
-            if($LASTEXITCODE -ne 0){throw 'npm typecheck failed'}
-            npm run build
-            if($LASTEXITCODE -ne 0){throw 'npm build failed'}
-            node validate-panel.mjs $cep
-            if($LASTEXITCODE -ne 0){throw 'CEP validation failed'}
-          } finally { Pop-Location }
-
-          $manifest=Join-Path $cep 'CSXS\manifest.xml'
-          $xml=[IO.File]::ReadAllText($manifest)
-          if($xml -notmatch '<StartOn>') {
-            $needle='<AutoVisible>true</AutoVisible>'
-            $replacement=$needle + "`r`n                    <StartOn>`r`n                        <Event>applicationActivate</Event>`r`n                        <Event>com.adobe.csxs.events.ApplicationActivate</Event>`r`n                    </StartOn>"
-            if(-not $xml.Contains($needle)){throw 'CEP manifest AutoVisible marker not found'}
-            $xml=$xml.Replace($needle,$replacement)
-            [IO.File]::WriteAllText($manifest,$xml,(New-Object Text.UTF8Encoding($false)))
+          $gatewayPython=Join-Path $PWD '.venv\Scripts\python.exe'
+          if(-not (Test-Path -LiteralPath $gatewayPython -PathType Leaf)){
+            throw "Gateway Python not found: $gatewayPython"
           }
-          $installedXml=[IO.File]::ReadAllText($manifest)
-          if($installedXml -notmatch '<StartOn>' -or $installedXml -notmatch 'applicationActivate'){
-            throw 'StartOn patch verification failed'
-          }
-          Write-Host 'CEP_STARTON_PATCH=PASS'
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_illustrator_cep.ps1 `
+            -PythonCommand $gatewayPython `
+            -EnableUnsignedDebug
+          if($LASTEXITCODE -ne 0){throw 'Production Illustrator CEP installation failed'}
 
-          # Runtime marker executes before the Vite/React entry. The previous
-          # raw WebSocket diagnostic has been removed now that networking is
-          # proven, so only the real panel can own the bridge protocol socket.
-          $index=Join-Path $cep 'dist\index.html'
-          $html=[IO.File]::ReadAllText($index)
-          $moduleMarker='<script type="module"'
-          $probeLines=@(
-            '<script>',
-            '(function () {',
-            '  try {',
-            "    var fs = require('fs');",
-            "    var path = require('path');",
-            "    var marker = path.join(process.env.TEMP, 'mcp_adobe_cep_inline_probe.txt');",
-            "    function log(value) { try { fs.appendFileSync(marker, String(value) + '\n'); } catch (_) {} }",
-            "    fs.writeFileSync(marker, 'INLINE_START\n');",
-            "    window.addEventListener('error', function (event) {",
-            "      log('WINDOW_ERROR:' + (event && event.message ? event.message : 'unknown'));",
-            '    });',
-            "    window.addEventListener('unhandledrejection', function (event) {",
-            "      log('UNHANDLED:' + String(event && event.reason ? event.reason : 'unknown'));",
-            '    });',
-            '    setTimeout(function () {',
-            "      var root = document.getElementById('root');",
-            "      log('ROOT_LEN:' + (root ? root.innerHTML.length : -1));",
-            '    }, 5000);',
-            '  } catch (error) {',
-            "    try { document.title = 'MCP_PROBE_ERROR:' + String(error); } catch (_) {}",
-            '  }',
-            '})();',
-            '</script>'
-          )
-          $probe=$probeLines -join "`r`n"
-          $pos=$html.IndexOf($moduleMarker)
-          if($pos -lt 0){throw 'Vite module script marker not found in built index.html'}
-          $html=$html.Insert($pos,$probe + "`r`n  ")
-
-          # Vite moves the production entry into <head>. A plain classic script
-          # executes synchronously there before <div id="root"> exists, which
-          # produced React invariant #299. Keep classic mode for CEP 11 but
-          # preserve module-like document timing with defer.
-          $html=[regex]::Replace(
-            $html,
-            '<script type="module"\s+crossorigin\s+src="(\./assets/[^\"]+\.js)"></script>',
-            '<script defer src="$1"></script>'
-          )
-          if($html -match '<script type="module"'){throw 'CEP deferred classic-entry rewrite failed'}
-          if($html -notmatch '<script defer src="\./assets/[^\"]+\.js"></script>'){throw 'CEP deferred classic-entry verification failed'}
-          Write-Host 'CEP_DEFERRED_CLASSIC_ENTRY_PATCH=PASS'
-
-          [IO.File]::WriteAllText($index,$html,(New-Object Text.UTF8Encoding($false)))
-          if([IO.File]::ReadAllText($index) -notmatch 'mcp_adobe_cep_inline_probe'){throw 'CEP inline runtime probe injection failed'}
-          Write-Host 'CEP_INLINE_RUNTIME_PROBE=INSTALLED'
-
-          $target=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel'
-          if(Test-Path -LiteralPath $target){Remove-Item -Recurse -Force $target}
-          New-Item -ItemType Directory -Force -Path $target | Out-Null
-          Copy-Item -Path (Join-Path $cep '*') -Destination $target -Recurse -Force
-          reg add 'HKEY_CURRENT_USER\Software\Adobe\CSXS.11' /v PlayerDebugMode /t REG_SZ /d 1 /f | Out-Null
-          reg add 'HKEY_CURRENT_USER\Software\Adobe\CSXS.12' /v PlayerDebugMode /t REG_SZ /d 1 /f | Out-Null
-          node (Join-Path $target 'validate-panel.mjs') $target
-          if($LASTEXITCODE -ne 0){throw 'Installed CEP validation failed'}
-          Write-Host "CEP_TARGET=$target"
       - name: Install pinned upstream Python server
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $src=Join-Path $env:RUNNER_TEMP 'Illustrator_MCP_upstream'
+          $src=Join-Path $env:TEMP 'MCPAdobe-Illustrator-MCP'
+          $expected='5d7a3edc8ebc89a0fc56b059e1311d3b2bfca815'
+          $actual=(git -C $src rev-parse HEAD).Trim()
+          Write-Host "UPSTREAM_HEAD=$actual"
+          if($actual -ne $expected){throw "Pinned upstream checkout mismatch: $actual"}
+
           $venv=Join-Path $env:RUNNER_TEMP 'Illustrator_MCP_venv'
           if(Test-Path $venv){Remove-Item -Recurse -Force $venv}
           uv venv --python 3.12 $venv
@@ -150,12 +73,11 @@ jobs:
           uv pip install --python $python -e $src
           if($LASTEXITCODE -ne 0){throw 'Pinned upstream Python install failed'}
           & $python -c "import illustrator_mcp; print('UPSTREAM_PYTHON_IMPORT=PASS')"
+
       - name: Live CEP connection and document create gate
         shell: powershell
         run: |
-          $ErrorActionPreference='Continue'
-          $marker=Join-Path $env:TEMP 'mcp_adobe_cep_inline_probe.txt'
-          Remove-Item -Force $marker -ErrorAction SilentlyContinue
+          $ErrorActionPreference='Stop'
           $venv=Join-Path $env:RUNNER_TEMP 'Illustrator_MCP_venv'
           $upstreamPython=Join-Path $venv 'Scripts\python.exe'
           $p=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
@@ -163,7 +85,10 @@ jobs:
           if($p){$target=$p.Path}
           if(-not $target){
             $shell=New-Object -ComObject WScript.Shell
-            $roots=@((Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),(Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'))
+            $roots=@(
+              (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),
+              (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
+            )
             foreach($root in $roots){
               if(-not (Test-Path -LiteralPath $root)){continue}
               foreach($lnk in @(Get-ChildItem -LiteralPath $root -Recurse -Filter '*.lnk' -File -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'Illustrator'})){
@@ -175,19 +100,14 @@ jobs:
           }
           if(-not $target){throw 'Illustrator executable not found'}
           Write-Host "ILLUSTRATOR_EXE=$target"
+
           Get-Process -Name Illustrator,CEPHtmlEngine -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           Start-Sleep -Seconds 2
           $env:UPSTREAM_PYTHON=$upstreamPython
           $env:ILLUSTRATOR_EXE=$target
           uv run python scripts/probe_illustrator_cep_upstream.py
-          $probeRc=$LASTEXITCODE
-          Write-Host '=== CEP inline runtime marker ==='
-          if(Test-Path -LiteralPath $marker){
-            Get-Content -LiteralPath $marker -Raw
-          } else {
-            Write-Host 'INLINE_MARKER=MISSING'
-          }
-          if($probeRc -ne 0){throw "CEP live create probe failed rc=$probeRc"}
+          if($LASTEXITCODE -ne 0){throw 'CEP live create probe failed'}
+
           $cep=Get-Process -Name CEPHtmlEngine -ErrorAction SilentlyContinue | Select-Object -First 1
           if(-not $cep){throw 'CEP live probe passed without a CEPHtmlEngine process'}
           Write-Host "CEP_HTML_ENGINE=PASS PID=$($cep.Id) SESSION=$($cep.SessionId)"
