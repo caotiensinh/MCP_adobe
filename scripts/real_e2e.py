@@ -66,7 +66,10 @@ def _photoshop_ping_ready(result: Mapping[str, Any]) -> bool:
     return False
 
 
-def _photoshop(client: Any, write: bool, output_dir: Path) -> None:
+def _photoshop(client: Any, write: bool, output_dir: Path, write_stage: str | None = None) -> None:
+    if write_stage is not None:
+        raise SmokeFailure("--write-stage is only supported for illustrator")
+
     required = {"photoshop_ping", "photoshop_get_state"}
     if write:
         required |= {"photoshop_create_document", "photoshop_save_document", "photoshop_export_as", "photoshop_undo"}
@@ -104,43 +107,55 @@ def _photoshop(client: Any, write: bool, output_dir: Path) -> None:
     _emit("PASS", "photoshop_export_verify", {"path": str(png), "bytes": png.stat().st_size})
 
 
-def _illustrator(client: Any, write: bool, output_dir: Path) -> None:
+def _illustrator(client: Any, write: bool, output_dir: Path, write_stage: str | None = None) -> None:
     required = {"get_document_info"}
     if write:
         required |= {"create_document", "save_document", "export", "undo"}
     _require_tools(client, required)
 
-    try:
-        info = _call(client, "get_document_info")
-        _emit("PASS", "illustrator_get_document_info", info)
-    except SmokeFailure as exc:
-        if write:
-            raise
-        _emit("SKIP", "illustrator_get_document_info", str(exc))
-
     if not write:
+        try:
+            info = _call(client, "get_document_info")
+            _emit("PASS", "illustrator_get_document_info", info)
+        except SmokeFailure as exc:
+            _emit("SKIP", "illustrator_get_document_info", str(exc))
         _emit("SKIP", "illustrator_write", "rerun with --write to enable create/save/export")
         return
+
+    if write_stage not in (None, "create", "save", "export"):
+        raise SmokeFailure(f"unsupported illustrator write stage: {write_stage}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     ai_path = output_dir / "mcp_adobe_smoke.ai"
     png_path = output_dir / "mcp_adobe_smoke.png"
-    for p in (ai_path, png_path):
-        if p.exists():
-            raise SmokeFailure(f"refusing to overwrite existing smoke output: {p}")
 
-    _call(client, "create_document", {"width": 320, "height": 240})
-    _emit("PASS", "illustrator_create_document")
+    if write_stage in (None, "create"):
+        if write_stage is None:
+            for p in (ai_path, png_path):
+                if p.exists():
+                    raise SmokeFailure(f"refusing to overwrite existing smoke output: {p}")
+        _call(client, "create_document", {"width": 320, "height": 240, "color_mode": "rgb"})
+        _emit("PASS", "illustrator_create_document")
+        if write_stage == "create":
+            return
 
-    _call(client, "save_document", {"mode": "save_as", "path": str(ai_path), "overwrite": False})
-    if not ai_path.exists():
-        raise SmokeFailure(f"save reported success but file does not exist: {ai_path}")
-    _emit("PASS", "illustrator_save_verify", {"path": str(ai_path), "bytes": ai_path.stat().st_size})
+    if write_stage in (None, "save"):
+        if ai_path.exists():
+            raise SmokeFailure(f"refusing to overwrite existing smoke output: {ai_path}")
+        _call(client, "save_document", {"mode": "save_as", "path": str(ai_path), "overwrite": False})
+        if not ai_path.exists():
+            raise SmokeFailure(f"save reported success but file does not exist: {ai_path}")
+        _emit("PASS", "illustrator_save_verify", {"path": str(ai_path), "bytes": ai_path.stat().st_size})
+        if write_stage == "save":
+            return
 
-    _call(client, "export", {"target": "artboard:0", "format": "png", "output_path": str(png_path), "overwrite": False})
-    if not png_path.exists():
-        raise SmokeFailure(f"export reported success but file does not exist: {png_path}")
-    _emit("PASS", "illustrator_export_verify", {"path": str(png_path), "bytes": png_path.stat().st_size})
+    if write_stage in (None, "export"):
+        if png_path.exists():
+            raise SmokeFailure(f"refusing to overwrite existing smoke output: {png_path}")
+        _call(client, "export", {"target": "artboard:0", "format": "png", "output_path": str(png_path), "overwrite": False})
+        if not png_path.exists():
+            raise SmokeFailure(f"export reported success but file does not exist: {png_path}")
+        _emit("PASS", "illustrator_export_verify", {"path": str(png_path), "bytes": png_path.stat().st_size})
 
 
 def run(
@@ -148,6 +163,7 @@ def run(
     *,
     write: bool = False,
     output_dir: Path | None = None,
+    write_stage: str | None = None,
     client_factory: Callable[[Any], Any] = McpSubprocessToolClient,
 ) -> int:
     if application == "photoshop":
@@ -164,12 +180,12 @@ def run(
     try:
         with client_factory(config) as client:
             _emit("PASS", "mcp_connect", {"application": application})
-            runner(client, write, target)
+            runner(client, write, target, write_stage)
     except Exception as exc:
         _emit("FAIL", "real_e2e", str(exc))
         return 1
 
-    _emit("PASS", "real_e2e", {"application": application, "write": write})
+    _emit("PASS", "real_e2e", {"application": application, "write": write, "write_stage": write_stage})
     return 0
 
 
@@ -177,9 +193,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Real Adobe MCP smoke test using pinned upstream servers.")
     parser.add_argument("application", choices=("photoshop", "illustrator"))
     parser.add_argument("--write", action="store_true", help="Enable create/save/export checks. Default is read-only.")
+    parser.add_argument("--write-stage", choices=("create", "save", "export"), help="Run one Illustrator write stage for diagnostics.")
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
-    return run(args.application, write=args.write, output_dir=args.output_dir)
+    if args.write_stage and not args.write:
+        parser.error("--write-stage requires --write")
+    return run(
+        args.application,
+        write=args.write,
+        output_dir=args.output_dir,
+        write_stage=args.write_stage,
+    )
 
 
 if __name__ == "__main__":
