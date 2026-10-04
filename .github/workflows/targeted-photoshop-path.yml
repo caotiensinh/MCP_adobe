@@ -81,10 +81,10 @@ jobs:
           [IO.File]::WriteAllText($jsx,$script,(New-Object Text.UTF8Encoding($false)))
           Write-Host "PHOTOSHOP=$photoshop"
           Write-Host "JSX=$jsx"
-          Start-Process -FilePath $photoshop -ArgumentList @($jsx) | Out-Null
+          Start-Process -FilePath $photoshop -ArgumentList @('-r',$jsx) | Out-Null
           $deadline=[DateTime]::UtcNow.AddSeconds(30)
           while(-not (Test-Path -LiteralPath $marker) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 500}
-          if(-not (Test-Path -LiteralPath $marker)){throw 'Direct Photoshop JSX probe did not create marker within 30 seconds'}
+          if(-not (Test-Path -LiteralPath $marker)){throw 'Photoshop -r JSX probe did not create marker within 30 seconds'}
           $value=Get-Content -LiteralPath $marker -Raw
           Write-Host "DIRECT_JSX_RESULT=$value"
           if($value -notmatch '^PASS:'){throw "Unexpected JSX marker: $value"}
