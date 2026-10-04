@@ -1,6 +1,6 @@
 # MCP Adobe Creative Gateway
 
-A client-neutral MCP gateway for Adobe creative applications. The project reuses mature existing Adobe integrations where possible and implements only the missing normalization, policy, transport, XD bridge, and remote-auth layers.
+A client-neutral MCP gateway for Adobe creative applications. The project reuses mature existing Adobe integrations where possible and implements only the missing normalization, policy, transport, XD bridge, verification, and remote-auth layers.
 
 ## Current scope
 
@@ -98,6 +98,32 @@ Local endpoint:
 ```text
 http://127.0.0.1:8787/mcp
 ```
+
+## Operation outcome contract
+
+Adapter results remain backward compatible: the existing `ok` and `result` fields are preserved. Mutation results now additionally report an explicit `outcome` and `verification` object.
+
+```text
+read
+  -> read operation; write verification is not applicable
+
+verified
+  -> an observable postcondition was verified
+
+accepted_unverified
+  -> downstream call returned, but no deterministic postcondition was observed
+
+pending_user_approval
+  -> Adobe XD queued the mutation and still requires Apply pending in the XD panel
+```
+
+`ok=true` means the downstream call returned successfully. It does **not** by itself mean that the requested state change was verified.
+
+For Photoshop and Illustrator file writes, the gateway snapshots the target file before the call and only reports `verified` when it observes a new file or a changed existing file afterwards. A missing output or unchanged pre-existing file remains `accepted_unverified` instead of being promoted to PASS.
+
+Reversible/non-file writes currently report `accepted_unverified` unless a deterministic postcondition exists. Mutating transport timeouts remain `UNKNOWN` exceptions and must be inspected before retrying.
+
+XD network callbacks only queue mutations; queued writes report `pending_user_approval` until the user explicitly applies the batch in the panel.
 
 ## Claude Desktop MCPB package
 
@@ -263,6 +289,7 @@ No documented programmatic XD undo primitive was found in the audited API surfac
 - inspect state/capabilities before mutation;
 - arbitrary native script execution is default-deny;
 - save/export never overwrites implicitly;
+- `ok=true` is not treated as verified operation completion;
 - mutating timeout is `UNKNOWN`, not automatically safe to retry;
 - transport success is not operation PASS until postconditions are verified where possible;
 - undo/rollback capability is explicit metadata;
@@ -274,7 +301,7 @@ No documented programmatic XD undo primitive was found in the audited API surfac
 
 ## Development and verification
 
-Python 3.11+ is supported. Windows CI currently uses `uv 0.12.17` with CPython 3.12.
+Python 3.11+ is supported. Windows CI currently uses `uv 0.12.17` with CPython 3.12. The workflow uses current Node-24-based official GitHub actions while continuing to provision application Node 20 for the pinned Adobe upstream MCPs.
 
 ```powershell
 uv sync --python 3.12
@@ -284,20 +311,22 @@ uv run python -m unittest discover -s tests -v
 Latest verified software baseline:
 
 ```text
-GitHub Actions run #53
-code head: 4b538bec4afe32f584f7960b9828dfb876294c6b
-87/87 tests PASS
+GitHub Actions run #55
+code head: fc767fd37ec67dbe07f165c45e4860b16913dbc1
+95/95 tests PASS
 Claude Desktop MCPB validate/pack PASS
 packaged MCP tools/list PASS
 packaged Photoshop/Illustrator/XD adapter discovery PASS
 MCPB artifact upload PASS
 XD manifest/main.js static validation PASS
+official GitHub Actions v7 runtime migration PASS
 ```
 
 Coverage includes:
 
 - gateway policy/risk regression tests;
 - Photoshop and Illustrator adapter/transport tests;
+- operation outcome/postcondition tests for verified file creation, unchanged/missing outputs, reversible writes, reads, and XD approval-pending state;
 - top-level MCP contract and annotations through the official MCP client;
 - real subprocess stdio handshake and `tools/list`;
 - real subprocess Streamable HTTP handshake and `tools/list`;
@@ -371,10 +400,11 @@ Software-verified now:
 - remote-provider compatibility preflight;
 - safe deployed-endpoint boundary probe;
 - redacted OAuth security-decision audit with optional bounded rotating persistence and fail-closed configuration validation;
+- backward-compatible operation outcome/postcondition envelope;
 - Claude Desktop MCPB package validation and packaged runtime smoke;
 - Photoshop and Illustrator adapters over pinned upstream MCPs;
 - XD local UXP/WebSocket bridge;
-- **87/87 Windows tests passing on run #53**.
+- **95/95 Windows tests passing on run #55**.
 
 Still not claimed:
 
