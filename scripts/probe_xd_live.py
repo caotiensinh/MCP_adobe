@@ -20,14 +20,18 @@ def main() -> int:
     )
     try:
         client.start()
-        deadline = time.time() + 60
+        print(
+            "XD_ACTIVATION_REQUIRED=Open Plugins > MCP Adobe Bridge in Adobe XD and keep the panel visible",
+            flush=True,
+        )
+        deadline = time.time() + 180
         while time.time() < deadline:
             if client.connected:
                 break
             time.sleep(1)
         else:
             raise RuntimeError(
-                "Adobe XD MCP panel did not connect within 60s; keep Plugins > MCP Adobe Bridge open"
+                "Adobe XD MCP panel did not connect within 180s; open Plugins > MCP Adobe Bridge"
             )
 
         emit("XD_PANEL_CONNECTED", dict(client.plugin_info))
