@@ -4,7 +4,8 @@ param(
     [string]$Ref = 'main',
     [switch]$NoXdLive,
     [switch]$XdWrite,
-    [switch]$PreflightOnly
+    [switch]$PreflightOnly,
+    [switch]$BootstrapOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,11 +14,34 @@ if ($XdWrite -and $NoXdLive) {
     throw '-XdWrite requires XD live E2E. Remove -NoXdLive.'
 }
 
+function Get-PortableGhRoot {
+    if (-not [string]::IsNullOrWhiteSpace($env:MCP_ADOBE_GH_PORTABLE_DIR)) {
+        return $env:MCP_ADOBE_GH_PORTABLE_DIR
+    }
+
+    $base = $env:LOCALAPPDATA
+    if ([string]::IsNullOrWhiteSpace($base)) {
+        $base = $env:TEMP
+    }
+    if ([string]::IsNullOrWhiteSpace($base)) {
+        $base = $PSScriptRoot
+    }
+    return (Join-Path $base 'MCPAdobe\tools\gh')
+}
+
 function Resolve-GitHubCli {
     if (-not [string]::IsNullOrWhiteSpace($env:MCP_ADOBE_GH_PATH)) {
         if (Test-Path -LiteralPath $env:MCP_ADOBE_GH_PATH -PathType Leaf) {
             return (Resolve-Path -LiteralPath $env:MCP_ADOBE_GH_PATH).Path
         }
+    }
+
+    $portableCandidate = Join-Path (Get-PortableGhRoot) 'gh.exe'
+    if ($env:MCP_ADOBE_GH_INSTALL_MODE -eq 'portable') {
+        if (Test-Path -LiteralPath $portableCandidate -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $portableCandidate).Path
+        }
+        return $null
     }
 
     $command = Get-Command gh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -35,6 +59,7 @@ function Resolve-GitHubCli {
     if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
         $candidates += (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\gh.exe')
     }
+    $candidates += $portableCandidate
 
     foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
@@ -45,25 +70,128 @@ function Resolve-GitHubCli {
     return $null
 }
 
+function Install-GitHubCliPortable {
+    $portableRoot = Get-PortableGhRoot
+    New-Item -ItemType Directory -Force -Path $portableRoot | Out-Null
+    $portableGh = Join-Path $portableRoot 'gh.exe'
+
+    $releaseApi = $env:MCP_ADOBE_GH_RELEASE_API_URL
+    if ([string]::IsNullOrWhiteSpace($releaseApi)) {
+        $releaseApi = 'https://api.github.com/repos/cli/cli/releases/latest'
+    }
+
+    Write-Host 'Installing portable GitHub CLI directly from the official GitHub CLI release...'
+    Write-Host "  release_api=$releaseApi"
+    Write-Host "  destination=$portableGh"
+
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $headers = @{
+            'Accept' = 'application/vnd.github+json'
+            'User-Agent' = 'MCP-adobe-live-e2e-bootstrap'
+            'X-GitHub-Api-Version' = '2022-11-28'
+        }
+        $release = Invoke-RestMethod -Uri $releaseApi -Headers $headers -Method Get
+        $asset = @($release.assets) | Where-Object {
+            $_.name -match '^gh_[0-9.]+_windows_amd64\.zip$'
+        } | Select-Object -First 1
+        if (-not $asset) {
+            throw 'Latest GitHub CLI release did not contain a windows_amd64 ZIP asset.'
+        }
+
+        $downloadUrl = [string]$asset.browser_download_url
+        if ([string]::IsNullOrWhiteSpace($downloadUrl)) {
+            throw 'GitHub CLI release asset did not provide browser_download_url.'
+        }
+        if ($releaseApi -eq 'https://api.github.com/repos/cli/cli/releases/latest' -and
+            $downloadUrl -notmatch '^https://github\.com/cli/cli/releases/download/') {
+            throw "Refusing unexpected GitHub CLI download URL: $downloadUrl"
+        }
+
+        $workRoot = Join-Path ([IO.Path]::GetTempPath()) ("mcp-adobe-gh-" + [guid]::NewGuid().ToString('N'))
+        $archive = Join-Path $workRoot 'gh.zip'
+        $extract = Join-Path $workRoot 'extract'
+        New-Item -ItemType Directory -Force -Path $extract | Out-Null
+        try {
+            Write-Host "Downloading $($asset.name)..."
+            Invoke-WebRequest -Uri $downloadUrl -Headers $headers -OutFile $archive -UseBasicParsing | Out-Null
+
+            $digest = $null
+            if ($asset.PSObject.Properties.Name -contains 'digest') {
+                $digest = [string]$asset.digest
+            }
+            if (-not [string]::IsNullOrWhiteSpace($digest) -and $digest -match '^sha256:([0-9a-fA-F]{64})$') {
+                $expectedSha256 = $Matches[1].ToLowerInvariant()
+                $actualSha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+                if ($actualSha256 -ne $expectedSha256) {
+                    throw "GitHub CLI archive SHA-256 mismatch. expected=$expectedSha256 actual=$actualSha256"
+                }
+                Write-Host "PASS: GitHub CLI archive SHA-256 verified: $actualSha256"
+            } else {
+                Write-Host 'GitHub release did not expose a SHA-256 digest; relying on the official HTTPS release endpoint.'
+            }
+
+            Expand-Archive -LiteralPath $archive -DestinationPath $extract -Force
+            $extractedGh = Get-ChildItem -LiteralPath $extract -Filter 'gh.exe' -File -Recurse | Select-Object -First 1
+            if (-not $extractedGh) {
+                throw 'Downloaded GitHub CLI ZIP did not contain gh.exe.'
+            }
+
+            Copy-Item -LiteralPath $extractedGh.FullName -Destination $portableGh -Force
+        } finally {
+            Remove-Item -LiteralPath $workRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        if (-not (Test-Path -LiteralPath $portableGh -PathType Leaf)) {
+            throw 'Portable GitHub CLI extraction completed but gh.exe was not created.'
+        }
+
+        $versionLines = @(& $portableGh --version 2>&1)
+        $versionExitCode = $LASTEXITCODE
+        foreach ($line in $versionLines) {
+            Write-Host $line
+        }
+        if ($versionExitCode -ne 0) {
+            throw "Portable GitHub CLI failed its version probe with exit code $versionExitCode."
+        }
+        Write-Host "PASS: Portable GitHub CLI ready: $portableGh"
+        return (Resolve-Path -LiteralPath $portableGh).Path
+    } catch {
+        throw "Portable GitHub CLI bootstrap failed: $($_.Exception.Message)"
+    }
+}
+
 function Install-GitHubCli {
-    $winget = Get-Command winget -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if (-not $winget) {
-        throw 'GitHub CLI (gh) is missing and winget was not found. Install GitHub CLI, then rerun this command.'
+    $forcePortable = $env:MCP_ADOBE_GH_INSTALL_MODE -eq 'portable'
+    $winget = $null
+    if (-not $forcePortable) {
+        $winget = Get-Command winget -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     }
 
-    Write-Host 'GitHub CLI was not found. Installing GitHub CLI with winget...'
-    & $winget.Source install --id GitHub.cli --exact --source winget --accept-source-agreements --accept-package-agreements
-    if ($LASTEXITCODE -ne 0) {
-        throw "GitHub CLI installation failed with exit code $LASTEXITCODE."
+    if ($winget) {
+        Write-Host 'GitHub CLI was not found. Installing GitHub CLI with winget...'
+        $wingetLines = @(& $winget.Source install --id GitHub.cli --exact --source winget --accept-source-agreements --accept-package-agreements 2>&1)
+        $wingetExitCode = $LASTEXITCODE
+        foreach ($line in $wingetLines) {
+            Write-Host $line
+        }
+        if ($wingetExitCode -eq 0) {
+            $installed = Resolve-GitHubCli
+            if ($installed) {
+                Write-Host "PASS: GitHub CLI installed: $installed"
+                return $installed
+            }
+            Write-Warning 'winget completed but gh.exe could not be located; falling back to portable GitHub CLI.'
+        } else {
+            Write-Warning "winget GitHub CLI installation failed with exit code $wingetExitCode; falling back to portable GitHub CLI."
+        }
+    } elseif ($forcePortable) {
+        Write-Host 'Portable GitHub CLI bootstrap explicitly selected by MCP_ADOBE_GH_INSTALL_MODE=portable.'
+    } else {
+        Write-Host 'winget was not found. Falling back to portable GitHub CLI bootstrap.'
     }
 
-    $installed = Resolve-GitHubCli
-    if (-not $installed) {
-        throw 'GitHub CLI installation completed but gh.exe still could not be located. Open a new PowerShell window and rerun the command.'
-    }
-
-    Write-Host "PASS: GitHub CLI installed: $installed"
-    return $installed
+    return Install-GitHubCliPortable
 }
 
 $ghPath = Resolve-GitHubCli
@@ -75,6 +203,19 @@ if (-not $ghPath) {
 }
 
 Write-Host "GitHub CLI=$ghPath"
+
+if ($BootstrapOnly) {
+    $bootstrapVersionLines = @(& $ghPath --version 2>&1)
+    $bootstrapVersionExitCode = $LASTEXITCODE
+    foreach ($line in $bootstrapVersionLines) {
+        Write-Host $line
+    }
+    if ($bootstrapVersionExitCode -ne 0) {
+        throw "GitHub CLI bootstrap version probe failed with exit code $bootstrapVersionExitCode."
+    }
+    Write-Host 'PASS: GitHub CLI bootstrap ready.'
+    return
+}
 
 & $ghPath auth status --hostname github.com
 if ($LASTEXITCODE -ne 0) {
