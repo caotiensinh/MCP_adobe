@@ -35,6 +35,10 @@ class TransportTests(unittest.TestCase):
         result = SimpleNamespace(is_error=False, structured_content={"ok": True}, content=[])
         self.assertEqual(McpSubprocessToolClient._normalize_result(result), {"ok": True})
 
+    def test_mcp1_structured_result_alias_is_reused(self) -> None:
+        result = SimpleNamespace(isError=False, structuredContent={"ok": True}, content=[])
+        self.assertEqual(McpSubprocessToolClient._normalize_result(result), {"ok": True})
+
     def test_json_text_result_is_decoded(self) -> None:
         payload = {"version": "27.0"}
         result = SimpleNamespace(
@@ -59,6 +63,15 @@ class TransportTests(unittest.TestCase):
             content=[Text("no active document")],
         )
         with self.assertRaisesRegex(UpstreamToolError, "no active document"):
+            McpSubprocessToolClient._normalize_result(result)
+
+    def test_mcp1_tool_error_alias_is_not_hidden(self) -> None:
+        result = SimpleNamespace(
+            isError=True,
+            structuredContent=None,
+            content=[Text("legacy upstream error")],
+        )
+        with self.assertRaisesRegex(UpstreamToolError, "legacy upstream error"):
             McpSubprocessToolClient._normalize_result(result)
 
 
