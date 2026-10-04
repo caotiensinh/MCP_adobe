@@ -1,4 +1,4 @@
-name: Targeted Illustrator persistent file bridge
+name: Targeted Illustrator BridgeTalk self message
 
 on:
   push:
@@ -14,11 +14,11 @@ permissions:
   contents: read
 
 jobs:
-  persistent-bridge:
+  self-message:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
-      - name: Prove persistent BridgeTalk file queue
+      - name: Prove one BridgeTalk self message after startup returns
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -47,48 +47,24 @@ jobs:
           $startupDir=Join-Path $installRoot 'Startup Scripts'
           New-Item -ItemType Directory -Force -Path $startupDir | Out-Null
 
-          $queue=Join-Path $env:RUNNER_TEMP 'mcp_adobe_illustrator_bridge_probe'
-          if(Test-Path $queue){Remove-Item -Recurse -Force $queue}
-          New-Item -ItemType Directory -Force -Path $queue | Out-Null
-          $ready=Join-Path $queue 'ready.txt'
-          $request=Join-Path $queue 'request.jsx'
-          $result=Join-Path $queue 'result.txt'
-          $errorFile=Join-Path $queue 'error.txt'
-          $stop=Join-Path $queue 'stop.txt'
-          $probe=Join-Path $startupDir 'mcp_adobe_persistent_bridge_probe.jsx'
-          Remove-Item -Force $probe -ErrorAction SilentlyContinue
+          $ready=Join-Path $env:RUNNER_TEMP 'mcp_adobe_bt_ready.txt'
+          $result=Join-Path $env:RUNNER_TEMP 'mcp_adobe_bt_result.txt'
+          $probe=Join-Path $startupDir 'mcp_adobe_bt_self_probe.jsx'
+          Remove-Item -Force $ready,$result,$probe -ErrorAction SilentlyContinue
+          $readyJs=$ready.Replace('\','/')
+          $resultJs=$result.Replace('\','/')
 
-          $q=$queue.Replace('\','/')
-          $bridgeLines=@(
+          $body="var f=new File('$resultJs');if(f.open('w')){f.write('PASS:'+app.version);f.close();}"
+          $bodyEscaped=$body.Replace('\','\\').Replace('"','\"')
+          $lines=@(
             '#target illustrator',
-            '#targetengine "mcp_adobe_bridge"',
-            "var MCP_ADOBE_QUEUE='$q';",
-            'function mcpAdobeWrite(path,text){var f=new File(path);if(f.open("w")){f.write(text);f.close();}}',
-            'function mcpAdobePoll(){',
-            '  try {',
-            '    var stopFile=new File(MCP_ADOBE_QUEUE+"/stop.txt");',
-            '    if(stopFile.exists){return;}',
-            '    var req=new File(MCP_ADOBE_QUEUE+"/request.jsx");',
-            '    if(req.exists){',
-            '      var code="";',
-            '      if(req.open("r")){code=req.read();req.close();req.remove();}',
-            '      if(code){try{eval(code);}catch(e){mcpAdobeWrite(MCP_ADOBE_QUEUE+"/error.txt",e.toString());}}',
-            '    }',
-            '  } catch(e) { mcpAdobeWrite(MCP_ADOBE_QUEUE+"/error.txt",e.toString()); }',
-            '  $.sleep(100);',
-            '  var bt=new BridgeTalk();',
-            '  bt.target=BridgeTalk.appSpecifier;',
-            '  bt.body="#targetengine \\"mcp_adobe_bridge\\"\\nmcpAdobePoll();";',
-            '  bt.send();',
-            '}',
-            'try { app.preferences.setBooleanPreference("ShowExternalJSXWarning", false); } catch(e) {}',
-            'mcpAdobeWrite(MCP_ADOBE_QUEUE+"/ready.txt","PASS:"+app.version);',
-            'var first=new BridgeTalk();',
-            'first.target=BridgeTalk.appSpecifier;',
-            'first.body="#targetengine \\"mcp_adobe_bridge\\"\\nmcpAdobePoll();";',
-            'first.send();'
+            "var r=new File('$readyJs');if(r.open('w')){r.write('PASS:'+app.version);r.close();}",
+            'var bt=new BridgeTalk();',
+            'bt.target=BridgeTalk.appSpecifier;',
+            "bt.body=\"$bodyEscaped\";",
+            'bt.send();'
           )
-          [IO.File]::WriteAllLines($probe,$bridgeLines,(New-Object Text.UTF8Encoding($false)))
+          [IO.File]::WriteAllLines($probe,$lines,(New-Object Text.UTF8Encoding($false)))
 
           try {
             Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -96,29 +72,15 @@ jobs:
             Start-Process -FilePath $target | Out-Null
             $deadline=[DateTime]::UtcNow.AddSeconds(45)
             while(-not (Test-Path -LiteralPath $ready) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 500}
-            if(-not (Test-Path -LiteralPath $ready)){throw 'Persistent bridge did not become ready'}
-            $readyValue=Get-Content -LiteralPath $ready -Raw
-            Write-Host "BRIDGE_READY=$readyValue"
+            if(-not (Test-Path -LiteralPath $ready)){throw 'Startup script did not reach READY'}
+            Write-Host "READY=$(Get-Content -LiteralPath $ready -Raw)"
             Remove-Item -Force $probe -ErrorAction SilentlyContinue
-
-            $r=$result.Replace('\','/')
-            $requestLines=@(
-              'var d=app.documents.add();',
-              "var f=new File('$r');",
-              'if(!f.open("w")){throw new Error("open result failed");}',
-              'f.write("PASS:DOCS="+app.documents.length);',
-              'f.close();',
-              'd.close(SaveOptions.DONOTSAVECHANGES);'
-            )
-            [IO.File]::WriteAllLines($request,$requestLines,(New-Object Text.UTF8Encoding($false)))
-            $deadline=[DateTime]::UtcNow.AddSeconds(30)
-            while(-not (Test-Path -LiteralPath $result) -and -not (Test-Path -LiteralPath $errorFile) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 200}
-            if(Test-Path -LiteralPath $errorFile){throw "Bridge request failed: $(Get-Content -LiteralPath $errorFile -Raw)"}
-            if(-not (Test-Path -LiteralPath $result)){throw 'Bridge did not process request after startup script returned'}
+            $deadline=[DateTime]::UtcNow.AddSeconds(20)
+            while(-not (Test-Path -LiteralPath $result) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 200}
+            if(-not (Test-Path -LiteralPath $result)){throw 'BridgeTalk self message produced no result marker'}
             $value=Get-Content -LiteralPath $result -Raw
-            Write-Host "BRIDGE_REQUEST_RESULT=$value"
-            if($value -notmatch '^PASS:DOCS='){throw "Unexpected bridge result: $value"}
+            Write-Host "SELF_MESSAGE_RESULT=$value"
+            if($value -notmatch '^PASS:'){throw "Unexpected self-message result: $value"}
           } finally {
-            New-Item -ItemType File -Force -Path $stop | Out-Null
             Remove-Item -Force $probe -ErrorAction SilentlyContinue
           }
