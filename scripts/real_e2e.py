@@ -25,6 +25,16 @@ def _emit(status: str, step: str, detail: Any = None) -> None:
     print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
+def _logical_failure(result: Mapping[str, Any]) -> str | None:
+    if result.get("error") is True or result.get("success") is False or result.get("ok") is False:
+        for key in ("message", "error_message", "detail", "text"):
+            value = result.get(key)
+            if value not in (None, ""):
+                return str(value)
+        return json.dumps(dict(result), ensure_ascii=False, default=str)
+    return None
+
+
 def _call(client: Any, tool: str, arguments: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
     try:
         result = client.call_tool(tool, arguments or {})
@@ -32,6 +42,9 @@ def _call(client: Any, tool: str, arguments: Mapping[str, Any] | None = None) ->
         raise SmokeFailure(f"{tool}: {exc}") from exc
     if not isinstance(result, Mapping):
         raise SmokeFailure(f"{tool}: non-mapping result {type(result).__name__}")
+    failure = _logical_failure(result)
+    if failure is not None:
+        raise SmokeFailure(f"{tool}: upstream logical failure: {failure}")
     return result
 
 
