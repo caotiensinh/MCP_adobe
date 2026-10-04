@@ -1,0 +1,29 @@
+name: Dispatch live Adobe E2E once
+
+on:
+  push:
+    branches: [ops/dispatch-live-e2e-20261004]
+    paths:
+      - ".github/workflows/dispatch-live-e2e-once.yml"
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch guarded main workflow
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run adobe-windows-e2e.yml \
+            --repo caotiensinh/MCP_adobe \
+            --ref main \
+            -f run_adobe_live=true \
+            -f xd_live=true \
+            -f xd_write=false
+          echo "PASS: live Adobe E2E dispatch requested"
