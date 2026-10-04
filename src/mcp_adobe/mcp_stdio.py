@@ -24,11 +24,12 @@ class UpstreamToolError(RuntimeError):
 
 
 class McpSubprocessToolClient:
-    """Persistent synchronous facade over the official MCP Python SDK Client.
+    """Persistent synchronous facade over the official MCP Python SDK.
 
-    JSON-RPC framing, initialize, tools/list, stdio process lifecycle and MCP
-    protocol handling are delegated to the official `mcp` package. This class
-    only bridges that async client to the gateway's synchronous adapter contract.
+    Use the SDK's low-level ClientSession + stdio_client transport rather than
+    the higher-level Client wrapper. The low-level path performs the stable MCP
+    initialize/tools/list handshake and remains interoperable with audited
+    upstream MCP 1.x servers while the gateway itself can run on MCP 2.x.
     """
 
     def __init__(self, config: SubprocessMcpConfig) -> None:
@@ -86,7 +87,8 @@ class McpSubprocessToolClient:
             self._connected = False
 
     async def _serve(self) -> None:
-        from mcp import Client, StdioServerParameters
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
 
         self._loop = asyncio.get_running_loop()
         server = StdioServerParameters(
@@ -96,18 +98,29 @@ class McpSubprocessToolClient:
         )
         self._stop_async = asyncio.Event()
 
-        async with Client(server) as client:
-            self._client = client
-            listed = await client.list_tools()
-            self._tool_names = frozenset(tool.name for tool in listed.tools)
-            self._connected = True
-            self._ready.set()
-            await self._stop_async.wait()
+        async with stdio_client(server) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                self._client = session
+                await session.initialize()
+                listed = await session.list_tools()
+                self._tool_names = frozenset(tool.name for tool in listed.tools)
+                self._connected = True
+                self._ready.set()
+                await self._stop_async.wait()
+
+    @staticmethod
+    def _result_attr(result: Any, snake: str, camel: str, default: Any = None) -> Any:
+        value = getattr(result, snake, None)
+        if value is not None:
+            return value
+        return getattr(result, camel, default)
 
     @staticmethod
     def _normalize_result(result: Any) -> Mapping[str, Any]:
-        is_error = bool(getattr(result, "is_error", False))
-        structured = getattr(result, "structured_content", None)
+        is_error = bool(McpSubprocessToolClient._result_attr(result, "is_error", "isError", False))
+        structured = McpSubprocessToolClient._result_attr(
+            result, "structured_content", "structuredContent", None
+        )
         if is_error:
             text = McpSubprocessToolClient._text_content(result)
             raise UpstreamToolError(text or "upstream MCP tool returned an error")
