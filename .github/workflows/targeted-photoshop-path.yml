@@ -10,6 +10,10 @@ on:
       - "tests/test_real_e2e.py"
       - ".github/workflows/targeted-photoshop-path.yml"
 
+concurrency:
+  group: targeted-photoshop-path-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -136,13 +140,11 @@ jobs:
             Write-Host "ILLUSTRATOR_COM_ERROR=$($_.Exception.Message)"
           }
       - name: Illustrator live read E2E
-        continue-on-error: true
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           uv run python scripts/real_e2e.py illustrator
       - name: Illustrator live write E2E
-        continue-on-error: true
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -150,7 +152,9 @@ jobs:
           if(Test-Path $out){Remove-Item -Recurse -Force $out}
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           uv run python scripts/real_e2e.py illustrator --write --output-dir $out
-          Get-ChildItem -Path $out -File | Select-Object Name,Length,LastWriteTime
+          $files=@(Get-ChildItem -Path $out -File)
+          $files | Select-Object Name,Length,LastWriteTime
+          if($files.Count -eq 0){throw 'Illustrator write E2E produced no output files'}
       - name: Photoshop live read E2E
         continue-on-error: true
         shell: powershell
