@@ -17,11 +17,12 @@ def _looks_connected(payload: object) -> bool:
     )
 
 
-def _dump_cep_runtime() -> None:
+def _dump_cep_runtime(label: str) -> None:
     if os.name != "nt":
         return
-    command = r"""
+    command = rf"""
 $ErrorActionPreference='Continue'
+Write-Host '=== CEP runtime snapshot: {label} ==='
 Write-Host '=== CEPHtmlEngine runtime diagnostics ==='
 Get-CimInstance Win32_Process -Filter "Name='CEPHtmlEngine.exe'" -ErrorAction SilentlyContinue |
   Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine |
@@ -30,6 +31,12 @@ Write-Host '=== Illustrator runtime diagnostics ==='
 Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" -ErrorAction SilentlyContinue |
   Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine |
   Format-List
+Write-Host '=== Top-level TEMP CEP/CSXS/PlugPlug files ==='
+Get-ChildItem -LiteralPath $env:TEMP -File -ErrorAction SilentlyContinue |
+  Where-Object {{ $_.Name -match 'cep|csxs|plugplug|illustrator' }} |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 30 FullName,Length,LastWriteTime |
+  Format-Table -AutoSize
 Write-Host '=== CEP targeted log paths ==='
 $dirs=@(
   (Join-Path $env:LOCALAPPDATA 'Temp\CEPHtmlEngine'),
@@ -38,15 +45,15 @@ $dirs=@(
   (Join-Path $env:APPDATA 'Adobe\CEP'),
   (Join-Path $env:APPDATA 'Adobe\CSXS')
 )
-foreach($dir in $dirs){
+foreach($dir in $dirs){{
   Write-Host "LOGDIR=$dir EXISTS=$(Test-Path -LiteralPath $dir)"
-  if(Test-Path -LiteralPath $dir){
+  if(Test-Path -LiteralPath $dir){{
     Get-ChildItem -LiteralPath $dir -Recurse -File -ErrorAction SilentlyContinue |
       Sort-Object LastWriteTime -Descending |
       Select-Object -First 20 FullName,Length,LastWriteTime |
       Format-Table -AutoSize
-  }
-}
+  }}
+}}
 """
     try:
         completed = subprocess.run(
@@ -86,7 +93,7 @@ def main() -> int:
         subprocess.Popen([illustrator_exe])
         deadline = time.time() + 35
         last: object = None
-        dumped = False
+        dumped_mid = False
         while time.time() < deadline:
             try:
                 last = client.call_tool(
@@ -98,13 +105,12 @@ def main() -> int:
             except Exception as exc:  # diagnostic retry while panel starts
                 last = {"exception": repr(exc)}
                 print(f"CONNECTION_RETRY={last!r}", flush=True)
-            if not dumped and time.time() > deadline - 20:
-                _dump_cep_runtime()
-                dumped = True
+            if not dumped_mid and time.time() > deadline - 20:
+                _dump_cep_runtime("mid-wait")
+                dumped_mid = True
             time.sleep(2)
         else:
-            if not dumped:
-                _dump_cep_runtime()
+            _dump_cep_runtime("final-before-timeout")
             raise RuntimeError(f"CEP panel did not connect: {last!r}")
 
         result = client.call_tool(
