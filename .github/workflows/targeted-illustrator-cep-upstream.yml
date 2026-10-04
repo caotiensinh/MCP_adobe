@@ -67,15 +67,9 @@ jobs:
           $xml=[IO.File]::ReadAllText($manifest)
           if($xml -notmatch '<StartOn>') {
             $needle='<AutoVisible>true</AutoVisible>'
-            $replacement=@'
-<AutoVisible>true</AutoVisible>
-                    <StartOn>
-                        <Event>applicationActivate</Event>
-                        <Event>com.adobe.csxs.events.ApplicationActivate</Event>
-                    </StartOn>
-'@
+            $replacement=$needle + "`r`n                    <StartOn>`r`n                        <Event>applicationActivate</Event>`r`n                        <Event>com.adobe.csxs.events.ApplicationActivate</Event>`r`n                    </StartOn>"
             if(-not $xml.Contains($needle)){throw 'CEP manifest AutoVisible marker not found'}
-            $xml=$xml.Replace($needle,$replacement.TrimEnd())
+            $xml=$xml.Replace($needle,$replacement)
             [IO.File]::WriteAllText($manifest,$xml,(New-Object Text.UTF8Encoding($false)))
           }
           $installedXml=[IO.File]::ReadAllText($manifest)
