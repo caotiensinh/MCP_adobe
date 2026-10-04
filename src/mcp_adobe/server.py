@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from threading import Lock
 from typing import Any, Mapping, Protocol
+from uuid import uuid4
 
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -22,7 +23,7 @@ from .auth import HIGH_RISK_SCOPE, WRITE_SCOPE, IntrospectionTokenVerifier, OAut
 from .core import AdapterInfo, CapabilityRegistry, ExecutionPolicy, PolicyError, RiskClass
 from .illustrator import IllustratorAdapter
 from .mcp_stdio import McpSubprocessToolClient, illustrator_stdio_config, photoshop_stdio_config
-from .photoshop import PhotoshopAdapter
+from .photoshop import OperationUnknownError, PhotoshopAdapter
 from .xd import XdAdapter
 from .xd_bridge import XdWebSocketBridgeClient
 
@@ -231,6 +232,8 @@ def build_server(
         application: str | None = None,
         capability: str | None = None,
         reason: str | None = None,
+        operation_id: str | None = None,
+        outcome: str | None = None,
     ) -> None:
         security_audit.emit(
             SecurityAuditEvent(
@@ -239,6 +242,8 @@ def build_server(
                 application=application,
                 capability=capability,
                 reason=reason,
+                operation_id=operation_id,
+                outcome=outcome,
             ),
             get_access_token(),
         )
@@ -249,6 +254,7 @@ def build_server(
         *,
         application: str,
         capability: str,
+        operation_id: str | None = None,
     ) -> None:
         if oauth_config is None:
             return
@@ -259,11 +265,75 @@ def build_server(
                 application=application,
                 capability=capability,
                 reason=f"deployment-profile-missing:{scope}",
+                operation_id=operation_id,
+                outcome="denied",
             )
             raise PolicyError(
                 f"{tool_name} is disabled for this OAuth deployment; add {scope} to "
                 "MCP_ADOBE_OAUTH_REQUIRED_SCOPES and obtain a token carrying that scope"
             )
+
+    def run_correlated_write(
+        tool_name: str,
+        operation_id: str,
+        application: str,
+        capability: str,
+        callback,
+    ) -> dict[str, Any]:
+        audit(
+            tool_name,
+            "allowed",
+            application=application,
+            capability=capability,
+            operation_id=operation_id,
+        )
+        try:
+            payload = dict(callback())
+        except OperationUnknownError:
+            audit(
+                tool_name,
+                "unknown",
+                application=application,
+                capability=capability,
+                reason="mutating-timeout",
+                operation_id=operation_id,
+                outcome="unknown",
+            )
+            raise
+        except PolicyError:
+            audit(
+                tool_name,
+                "denied",
+                application=application,
+                capability=capability,
+                reason="runtime-policy-denied",
+                operation_id=operation_id,
+                outcome="denied",
+            )
+            raise
+        except Exception as exc:
+            audit(
+                tool_name,
+                "failed",
+                application=application,
+                capability=capability,
+                reason=f"runtime-error:{type(exc).__name__}",
+                operation_id=operation_id,
+                outcome="failed",
+            )
+            raise
+
+        outcome = str(payload.get("outcome", "accepted_unverified"))
+        payload["operation_id"] = operation_id
+        audit(
+            tool_name,
+            "completed",
+            application=application,
+            capability=capability,
+            operation_id=operation_id,
+            outcome=outcome,
+        )
+        return payload
 
     @mcp.tool(
         title="Discover Adobe applications and capabilities",
@@ -329,20 +399,25 @@ def build_server(
         allow_overwrite: bool = False,
     ) -> dict[str, Any]:
         """Execute only reversible or file-write capabilities; overwrite is opt-in."""
+        operation_id = str(uuid4())
         require_oauth_profile_scope(
             WRITE_SCOPE,
             "creative_write",
             application=application,
             capability=capability,
+            operation_id=operation_id,
         )
-        audit("creative_write", "allowed", application=application, capability=capability)
-        return dict(
-            current_runtime().write(
+        return run_correlated_write(
+            "creative_write",
+            operation_id,
+            application,
+            capability,
+            lambda: current_runtime().write(
                 application,
                 capability,
                 arguments or {},
                 allow_overwrite=allow_overwrite,
-            )
+            ),
         )
 
     @mcp.tool(
@@ -364,26 +439,27 @@ def build_server(
         allow_external_ai: bool = False,
     ) -> dict[str, Any]:
         """Execute a higher-risk capability only with the corresponding explicit flags."""
+        operation_id = str(uuid4())
         require_oauth_profile_scope(
             WRITE_SCOPE,
             "creative_authorized_write",
             application=application,
             capability=capability,
+            operation_id=operation_id,
         )
         require_oauth_profile_scope(
             HIGH_RISK_SCOPE,
             "creative_authorized_write",
             application=application,
             capability=capability,
+            operation_id=operation_id,
         )
-        audit(
+        return run_correlated_write(
             "creative_authorized_write",
-            "allowed",
-            application=application,
-            capability=capability,
-        )
-        return dict(
-            current_runtime().authorized_write(
+            operation_id,
+            application,
+            capability,
+            lambda: current_runtime().authorized_write(
                 application,
                 capability,
                 arguments or {},
@@ -391,7 +467,7 @@ def build_server(
                 allow_destructive=allow_destructive,
                 allow_native_script=allow_native_script,
                 allow_external_ai=allow_external_ai,
-            )
+            ),
         )
 
     return mcp
