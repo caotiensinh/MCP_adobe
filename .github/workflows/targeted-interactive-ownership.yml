@@ -1,0 +1,57 @@
+name: Targeted interactive workspace ownership
+
+on:
+  push:
+    branches: [fix/interactive-runner-workspace-ownership]
+    paths:
+      - "scripts/start_adobe_runner_interactive.ps1"
+      - "tests/test_interactive_workspace_ownership.py"
+      - ".github/workflows/targeted-interactive-ownership.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  targeted:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - name: Repair stale service-owned workspace before checkout
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workRoot = 'D:\actions-runner-adobe\_work\MCP_adobe'
+          $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          Write-Host "User=$identity"
+          Write-Host "UserInteractive=$([Environment]::UserInteractive)"
+          if (Test-Path -LiteralPath $workRoot) {
+            & "$env:SystemRoot\System32\icacls.exe" $workRoot '/setowner' $identity '/T' '/C' '/Q'
+            if ($LASTEXITCODE -ne 0) { throw "setowner failed rc=$LASTEXITCODE" }
+            & "$env:SystemRoot\System32\icacls.exe" $workRoot '/grant:r' "${identity}:(OI)(CI)F" '/T' '/C' '/Q'
+            if ($LASTEXITCODE -ne 0) { throw "grant failed rc=$LASTEXITCODE" }
+          }
+          git config --global --add safe.directory 'D:/actions-runner-adobe/_work/MCP_adobe/MCP_adobe'
+          if ($LASTEXITCODE -ne 0) { throw "safe.directory failed rc=$LASTEXITCODE" }
+
+      - name: Checkout branch after ownership repair
+        uses: actions/checkout@v7.0.1
+
+      - name: PowerShell parse
+        shell: powershell
+        run: |
+          $tokens=$null; $errors=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            "$PWD\scripts\start_adobe_runner_interactive.ps1",
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+          Write-Host 'PASS: PowerShell parse'
+
+      - name: Targeted regression
+        shell: powershell
+        run: |
+          python -m unittest tests.test_interactive_workspace_ownership -v
