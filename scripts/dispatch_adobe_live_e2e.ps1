@@ -13,14 +13,85 @@ if ($XdWrite -and $NoXdLive) {
     throw '-XdWrite requires XD live E2E. Remove -NoXdLive.'
 }
 
-$gh = Get-Command gh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $gh) {
-    throw 'GitHub CLI (gh) was not found in PATH. Install gh and authenticate with `gh auth login` before dispatching live E2E.'
+function Resolve-GitHubCli {
+    if (-not [string]::IsNullOrWhiteSpace($env:MCP_ADOBE_GH_PATH)) {
+        if (Test-Path -LiteralPath $env:MCP_ADOBE_GH_PATH -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $env:MCP_ADOBE_GH_PATH).Path
+        }
+    }
+
+    $command = Get-Command gh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($command) {
+        return $command.Source
+    }
+
+    $candidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+        $candidates += (Join-Path $env:ProgramFiles 'GitHub CLI\gh.exe')
+    }
+    if (-not [string]::IsNullOrWhiteSpace(${env:ProgramFiles(x86)})) {
+        $candidates += (Join-Path ${env:ProgramFiles(x86)} 'GitHub CLI\gh.exe')
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+        $candidates += (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\gh.exe')
+    }
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+    }
+
+    return $null
 }
 
-& $gh.Source auth status --hostname github.com
+function Install-GitHubCli {
+    $winget = Get-Command winget -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $winget) {
+        throw 'GitHub CLI (gh) is missing and winget was not found. Install GitHub CLI, then rerun this command.'
+    }
+
+    Write-Host 'GitHub CLI was not found. Installing GitHub CLI with winget...'
+    & $winget.Source install --id GitHub.cli --exact --source winget --accept-source-agreements --accept-package-agreements
+    if ($LASTEXITCODE -ne 0) {
+        throw "GitHub CLI installation failed with exit code $LASTEXITCODE."
+    }
+
+    $installed = Resolve-GitHubCli
+    if (-not $installed) {
+        throw 'GitHub CLI installation completed but gh.exe still could not be located. Open a new PowerShell window and rerun the command.'
+    }
+
+    Write-Host "PASS: GitHub CLI installed: $installed"
+    return $installed
+}
+
+$ghPath = Resolve-GitHubCli
+if (-not $ghPath) {
+    if ($env:MCP_ADOBE_NO_AUTO_INSTALL_GH -eq '1') {
+        throw 'GitHub CLI (gh) was not found and automatic installation is disabled by MCP_ADOBE_NO_AUTO_INSTALL_GH=1.'
+    }
+    $ghPath = Install-GitHubCli
+}
+
+Write-Host "GitHub CLI=$ghPath"
+
+& $ghPath auth status --hostname github.com
 if ($LASTEXITCODE -ne 0) {
-    throw 'GitHub CLI is not authenticated for github.com. Run `gh auth login`, then retry.'
+    if ($env:MCP_ADOBE_NO_AUTO_AUTH_GH -eq '1') {
+        throw 'GitHub CLI is not authenticated for github.com and automatic web authentication is disabled by MCP_ADOBE_NO_AUTO_AUTH_GH=1.'
+    }
+
+    Write-Host 'GitHub CLI is not authenticated. Starting GitHub web login...'
+    & $ghPath auth login --hostname github.com --git-protocol https --web
+    if ($LASTEXITCODE -ne 0) {
+        throw "GitHub CLI authentication failed with exit code $LASTEXITCODE."
+    }
+
+    & $ghPath auth status --hostname github.com
+    if ($LASTEXITCODE -ne 0) {
+        throw 'GitHub CLI authentication did not become ready after login.'
+    }
 }
 
 if ($PreflightOnly) {
@@ -48,7 +119,7 @@ Write-Host '  run_adobe_live=true'
 Write-Host "  xd_live=$xdLiveValue"
 Write-Host "  xd_write=$xdWriteValue"
 
-& $gh.Source @arguments
+& $ghPath @arguments
 if ($LASTEXITCODE -ne 0) {
     throw "GitHub workflow dispatch failed with exit code $LASTEXITCODE."
 }

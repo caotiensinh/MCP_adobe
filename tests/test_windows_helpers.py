@@ -215,6 +215,103 @@ class WindowsHelperSyntaxTests(unittest.TestCase):
             combined = result.stdout + result.stderr
             self.assertIn("logged-in MRCAO desktop session", combined)
 
+    def test_live_dispatch_uses_explicit_gh_path(self) -> None:
+        dispatcher = ROOT / "scripts" / "dispatch_adobe_live_e2e.ps1"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            gh_log = temp / "gh.log"
+            fake_gh = temp / "portable-gh.cmd"
+            fake_gh.write_text(
+                "@echo off\r\n"
+                ">>\"%GH_LOG%\" echo %*\r\n"
+                "exit /b 0\r\n",
+                encoding="utf-8",
+            )
+
+            env = os.environ.copy()
+            env["GH_LOG"] = str(gh_log)
+            env["MCP_ADOBE_GH_PATH"] = str(fake_gh)
+            result = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(dispatcher),
+                    "-PreflightOnly",
+                ],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, f"stdout={result.stdout}\nstderr={result.stderr}")
+            self.assertIn(f"GitHub CLI={fake_gh}", result.stdout)
+            self.assertIn("PASS: GitHub CLI live-E2E dispatch preflight", result.stdout)
+            self.assertIn("auth status --hostname github.com", gh_log.read_text(encoding="utf-8"))
+
+    def test_live_dispatch_bootstraps_gh_with_winget_when_missing(self) -> None:
+        dispatcher = ROOT / "scripts" / "dispatch_adobe_live_e2e.ps1"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            fake_gh = temp / "installed-gh.cmd"
+            winget_log = temp / "winget.log"
+            fake_winget = temp / "winget.cmd"
+            fake_winget.write_text(
+                "@echo off\r\n"
+                ">>\"%WINGET_LOG%\" echo %*\r\n"
+                ">\"%MCP_ADOBE_GH_PATH%\" echo @echo off\r\n"
+                ">>\"%MCP_ADOBE_GH_PATH%\" echo exit /b 0\r\n"
+                "exit /b 0\r\n",
+                encoding="utf-8",
+            )
+
+            env = os.environ.copy()
+            env["MCP_ADOBE_GH_PATH"] = str(fake_gh)
+            env["WINGET_LOG"] = str(winget_log)
+            env["ProgramFiles"] = str(temp / "program-files")
+            env["ProgramFiles(x86)"] = str(temp / "program-files-x86")
+            env["LOCALAPPDATA"] = str(temp / "local-app-data")
+            system_root = Path(env.get("SystemRoot", r"C:\Windows"))
+            env["PATH"] = os.pathsep.join([str(temp), str(system_root / "System32"), str(system_root)])
+
+            result = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(dispatcher),
+                    "-PreflightOnly",
+                ],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, f"stdout={result.stdout}\nstderr={result.stderr}")
+            self.assertTrue(fake_gh.is_file())
+            winget_calls = winget_log.read_text(encoding="utf-8", errors="replace")
+            self.assertIn("install --id GitHub.cli --exact --source winget", winget_calls)
+            self.assertIn("PASS: GitHub CLI installed", result.stdout)
+            self.assertIn("PASS: GitHub CLI live-E2E dispatch preflight", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
