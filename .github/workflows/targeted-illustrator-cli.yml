@@ -1,4 +1,4 @@
-name: Targeted Illustrator BridgeTalk self message
+name: Targeted Illustrator BridgeTalk staged probe
 
 on:
   push:
@@ -14,11 +14,11 @@ permissions:
   contents: read
 
 jobs:
-  self-message:
+  staged-probe:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 5
     steps:
-      - name: Prove one BridgeTalk self message after startup returns
+      - name: Separate startup loader from BridgeTalk runtime
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -39,7 +39,6 @@ jobs:
           }
           if(-not $target){throw 'Illustrator executable not found'}
           Write-Host "ILLUSTRATOR_EXE=$target"
-
           $windowsDir=Split-Path $target -Parent
           $contentsDir=Split-Path $windowsDir -Parent
           $supportDir=Split-Path $contentsDir -Parent
@@ -47,25 +46,35 @@ jobs:
           $startupDir=Join-Path $installRoot 'Startup Scripts'
           New-Item -ItemType Directory -Force -Path $startupDir | Out-Null
 
-          $ready=Join-Path $env:RUNNER_TEMP 'mcp_adobe_bt_ready.txt'
-          $result=Join-Path $env:RUNNER_TEMP 'mcp_adobe_bt_result.txt'
-          $probe=Join-Path $startupDir 'mcp_adobe_bt_self_probe.jsx'
-          Remove-Item -Force $ready,$result,$probe -ErrorAction SilentlyContinue
+          $ready=Join-Path $env:RUNNER_TEMP 'mcp_adobe_bt_stage_ready.txt'
+          $loaded=Join-Path $env:RUNNER_TEMP 'mcp_adobe_bt_stage_loaded.txt'
+          $result=Join-Path $env:RUNNER_TEMP 'mcp_adobe_bt_stage_result.txt'
+          $readyProbe=Join-Path $startupDir '00_mcp_adobe_ready_probe.jsx'
+          $btProbe=Join-Path $startupDir '01_mcp_adobe_bt_probe.jsx'
+          Remove-Item -Force $ready,$loaded,$result,$readyProbe,$btProbe -ErrorAction SilentlyContinue
           $readyJs=$ready.Replace('\','/')
+          $loadedJs=$loaded.Replace('\','/')
           $resultJs=$result.Replace('\','/')
 
-          $body="var f=new File('$resultJs');if(f.open('w')){f.write('PASS:'+app.version);f.close();}"
-          $bodyEscaped=$body.Replace('\','\\').Replace('"','\"')
-          $bodyLine='bt.body="' + $bodyEscaped + '";'
-          $lines=@(
+          $readyLines=@(
             '#target illustrator',
-            "var r=new File('$readyJs');if(r.open('w')){r.write('PASS:'+app.version);r.close();}",
+            "var f=new File('$readyJs');if(f.open('w')){f.write('PASS:'+app.version);f.close();}"
+          )
+          [IO.File]::WriteAllLines($readyProbe,$readyLines,(New-Object Text.UTF8Encoding($false)))
+
+          $body="var z=new File('$resultJs');if(z.open('w')){z.write('PASS:'+app.version);z.close();}"
+          $bodyLine='bt.body=' + "'" + $body.Replace("'","\\'") + "'" + ';'
+          $btLines=@(
+            '#target illustrator',
+            "var l=new File('$loadedJs');if(l.open('w')){l.write('LOADED:'+app.version);l.close();}",
             'var bt=new BridgeTalk();',
-            'bt.target=BridgeTalk.appSpecifier;',
+            'bt.target="illustrator";',
             $bodyLine,
             'bt.send();'
           )
-          [IO.File]::WriteAllLines($probe,$lines,(New-Object Text.UTF8Encoding($false)))
+          [IO.File]::WriteAllLines($btProbe,$btLines,(New-Object Text.UTF8Encoding($false)))
+          Write-Host '=== 01 BridgeTalk probe ==='
+          Get-Content -LiteralPath $btProbe
 
           try {
             Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -73,15 +82,20 @@ jobs:
             Start-Process -FilePath $target | Out-Null
             $deadline=[DateTime]::UtcNow.AddSeconds(45)
             while(-not (Test-Path -LiteralPath $ready) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 500}
-            if(-not (Test-Path -LiteralPath $ready)){throw 'Startup script did not reach READY'}
+            if(-not (Test-Path -LiteralPath $ready)){throw 'Known-good 00 startup probe did not run'}
             Write-Host "READY=$(Get-Content -LiteralPath $ready -Raw)"
-            Remove-Item -Force $probe -ErrorAction SilentlyContinue
+
+            $deadline=[DateTime]::UtcNow.AddSeconds(10)
+            while(-not (Test-Path -LiteralPath $loaded) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 200}
+            if(-not (Test-Path -LiteralPath $loaded)){throw '01 BridgeTalk startup file did not reach LOADED marker'}
+            Write-Host "LOADED=$(Get-Content -LiteralPath $loaded -Raw)"
+
             $deadline=[DateTime]::UtcNow.AddSeconds(20)
             while(-not (Test-Path -LiteralPath $result) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 200}
-            if(-not (Test-Path -LiteralPath $result)){throw 'BridgeTalk self message produced no result marker'}
+            if(-not (Test-Path -LiteralPath $result)){throw 'BridgeTalk message was sent but result body did not execute'}
             $value=Get-Content -LiteralPath $result -Raw
             Write-Host "SELF_MESSAGE_RESULT=$value"
-            if($value -notmatch '^PASS:'){throw "Unexpected self-message result: $value"}
+            if($value -notmatch '^PASS:'){throw "Unexpected result: $value"}
           } finally {
-            Remove-Item -Force $probe -ErrorAction SilentlyContinue
+            Remove-Item -Force $readyProbe,$btProbe -ErrorAction SilentlyContinue
           }
