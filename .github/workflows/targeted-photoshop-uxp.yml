@@ -69,10 +69,6 @@ jobs:
           Push-Location $cli
           try {
             npm init -y | Out-Null
-            # Adobe 1.2.0 was published with two broken package assumptions:
-            # helper needs `tar` from devDependencies, and the CLI postinstall
-            # references an unpublished inspector app package. We only need the
-            # native helper + service/apps/plugin commands, not the inspector.
             npm install --no-audit --no-fund --ignore-scripts tar@6.2.1 @adobe/uxp-devtools-cli@1.2.0
             if($LASTEXITCODE -ne 0){throw 'UXP CLI package install failed'}
             $helperSetup=Join-Path $cli 'node_modules\@adobe\uxp-devtools-helper\scripts\devtools_setup.js'
@@ -86,16 +82,14 @@ jobs:
             "UXP_CLI=$uxp" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           } finally { Pop-Location }
 
-      - name: Enable UXP developer mode without GUI prompt
+      - name: Enable UXP Developer Tools through official CLI
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $dir=Join-Path $env:CommonProgramFiles 'Adobe\UXP\Developer'
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $settings=Join-Path $dir 'settings.json'
-          [IO.File]::WriteAllText($settings,'{ "developer": true }',(New-Object Text.UTF8Encoding($false)))
-          Write-Host "UXP_DEV_SETTINGS=$settings"
-          Get-Content -LiteralPath $settings -Raw
+          Write-Host 'UXP_DEVTOOLS_ENABLE=START'
+          & $env:UXP_CLI devtools enable
+          if($LASTEXITCODE -ne 0){throw "uxp devtools enable failed rc=$LASTEXITCODE"}
+          Write-Host 'UXP_DEVTOOLS_ENABLE=PASS'
 
       - name: Checkout pinned Brainferno Photoshop UXP panel
         shell: powershell
@@ -125,11 +119,22 @@ jobs:
           $cmd="`"$env:UXP_CLI`" service start > `"$log`" 2>&1"
           $svc=Start-Process -FilePath $env:ComSpec -ArgumentList @('/d','/s','/c',$cmd) -PassThru -WindowStyle Hidden
           "UXP_SERVICE_PID=$($svc.Id)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Start-Sleep -Seconds 5
-          & $env:UXP_CLI apps list
-          $rc=$LASTEXITCODE
+
+          $deadline=[DateTime]::UtcNow.AddSeconds(60)
+          $ready=$false
+          do {
+            Start-Sleep -Seconds 2
+            & $env:UXP_CLI apps list
+            if($LASTEXITCODE -eq 0){$ready=$true;break}
+            if($svc.HasExited){break}
+          } while([DateTime]::UtcNow -lt $deadline)
+
           if(Test-Path $log){Get-Content -LiteralPath $log -Raw}
-          if($rc -ne 0){throw "uxp apps list failed rc=$rc"}
+          if(-not $ready){
+            $exitText=if($svc.HasExited){" exited=$($svc.ExitCode)"}else{''}
+            throw "UXP service did not become ready within 60s$exitText"
+          }
+          Write-Host 'PHOTOSHOP_UXP_HOST_DISCOVERY=PASS'
 
       - name: Load patched Photoshop panel through official UXP CLI
         shell: powershell
