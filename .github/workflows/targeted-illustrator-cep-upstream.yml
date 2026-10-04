@@ -76,7 +76,9 @@ jobs:
           }
           Write-Host 'CEP_STARTON_PATCH=PASS'
 
-          # Runtime probe executes before the Vite/React module.
+          # Runtime marker executes before the Vite/React entry. The previous
+          # raw WebSocket diagnostic has been removed now that networking is
+          # proven, so only the real panel can own the bridge protocol socket.
           $index=Join-Path $cep 'dist\index.html'
           $html=[IO.File]::ReadAllText($index)
           $moduleMarker='<script type="module"'
@@ -95,15 +97,6 @@ jobs:
             "    window.addEventListener('unhandledrejection', function (event) {",
             "      log('UNHANDLED:' + String(event && event.reason ? event.reason : 'unknown'));",
             '    });',
-            '    try {',
-            "      var socket = new WebSocket('ws://127.0.0.1:8081');",
-            "      socket.onopen = function () { log('WS_OPEN'); };",
-            "      socket.onerror = function () { log('WS_ERROR'); };",
-            "      socket.onclose = function (event) { log('WS_CLOSE:' + event.code); };",
-            '      window.__mcpAdobeProbeSocket = socket;',
-            '    } catch (error) {',
-            "      log('WS_CREATE_ERROR:' + String(error));",
-            '    }',
             '    setTimeout(function () {',
             "      var root = document.getElementById('root');",
             "      log('ROOT_LEN:' + (root ? root.innerHTML.length : -1));",
@@ -119,16 +112,18 @@ jobs:
           if($pos -lt 0){throw 'Vite module script marker not found in built index.html'}
           $html=$html.Insert($pos,$probe + "`r`n  ")
 
-          # Illustrator 2023 runs CEP 11. Prove whether Vite's module entry is the
-          # compatibility blocker by loading the already-single-file entry as a
-          # classic script. No source/runtime behavior is otherwise changed.
+          # Vite moves the production entry into <head>. A plain classic script
+          # executes synchronously there before <div id="root"> exists, which
+          # produced React invariant #299. Keep classic mode for CEP 11 but
+          # preserve module-like document timing with defer.
           $html=[regex]::Replace(
             $html,
             '<script type="module"\s+crossorigin\s+src="(\./assets/[^\"]+\.js)"></script>',
-            '<script src="$1"></script>'
+            '<script defer src="$1"></script>'
           )
-          if($html -match '<script type="module"'){throw 'CEP classic-entry rewrite failed'}
-          Write-Host 'CEP_CLASSIC_ENTRY_PATCH=PASS'
+          if($html -match '<script type="module"'){throw 'CEP deferred classic-entry rewrite failed'}
+          if($html -notmatch '<script defer src="\./assets/[^\"]+\.js"></script>'){throw 'CEP deferred classic-entry verification failed'}
+          Write-Host 'CEP_DEFERRED_CLASSIC_ENTRY_PATCH=PASS'
 
           [IO.File]::WriteAllText($index,$html,(New-Object Text.UTF8Encoding($false)))
           if([IO.File]::ReadAllText($index) -notmatch 'mcp_adobe_cep_inline_probe'){throw 'CEP inline runtime probe injection failed'}
