@@ -17,6 +17,52 @@ def _looks_connected(payload: object) -> bool:
     )
 
 
+def _dump_cep_runtime() -> None:
+    if os.name != "nt":
+        return
+    command = r"""
+$ErrorActionPreference='Continue'
+Write-Host '=== CEPHtmlEngine runtime diagnostics ==='
+Get-CimInstance Win32_Process -Filter "Name='CEPHtmlEngine.exe'" -ErrorAction SilentlyContinue |
+  Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine |
+  Format-List
+Write-Host '=== Illustrator runtime diagnostics ==='
+Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" -ErrorAction SilentlyContinue |
+  Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine |
+  Format-List
+Write-Host '=== CEP targeted log paths ==='
+$dirs=@(
+  (Join-Path $env:LOCALAPPDATA 'Temp\CEPHtmlEngine'),
+  (Join-Path $env:LOCALAPPDATA 'Adobe\CEP'),
+  (Join-Path $env:LOCALAPPDATA 'Adobe\CSXS'),
+  (Join-Path $env:APPDATA 'Adobe\CEP'),
+  (Join-Path $env:APPDATA 'Adobe\CSXS')
+)
+foreach($dir in $dirs){
+  Write-Host "LOGDIR=$dir EXISTS=$(Test-Path -LiteralPath $dir)"
+  if(Test-Path -LiteralPath $dir){
+    Get-ChildItem -LiteralPath $dir -Recurse -File -ErrorAction SilentlyContinue |
+      Sort-Object LastWriteTime -Descending |
+      Select-Object -First 20 FullName,Length,LastWriteTime |
+      Format-Table -AutoSize
+  }
+}
+"""
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", command],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        print(completed.stdout, flush=True)
+        if completed.stderr:
+            print(completed.stderr, flush=True)
+    except Exception as exc:
+        print(f"CEP_DIAGNOSTIC_EXCEPTION={exc!r}", flush=True)
+
+
 def main() -> int:
     upstream_python = os.environ["UPSTREAM_PYTHON"]
     illustrator_exe = os.environ["ILLUSTRATOR_EXE"]
@@ -38,8 +84,9 @@ def main() -> int:
             raise RuntimeError(f"missing required tools: {sorted(missing)!r}")
 
         subprocess.Popen([illustrator_exe])
-        deadline = time.time() + 75
+        deadline = time.time() + 35
         last: object = None
+        dumped = False
         while time.time() < deadline:
             try:
                 last = client.call_tool(
@@ -51,8 +98,13 @@ def main() -> int:
             except Exception as exc:  # diagnostic retry while panel starts
                 last = {"exception": repr(exc)}
                 print(f"CONNECTION_RETRY={last!r}", flush=True)
+            if not dumped and time.time() > deadline - 20:
+                _dump_cep_runtime()
+                dumped = True
             time.sleep(2)
         else:
+            if not dumped:
+                _dump_cep_runtime()
             raise RuntimeError(f"CEP panel did not connect: {last!r}")
 
         result = client.call_tool(
