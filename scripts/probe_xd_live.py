@@ -10,7 +10,7 @@ def emit(marker: str, payload: object | None = None) -> None:
     if payload is None:
         print(marker, flush=True)
     else:
-        print(f"{marker}={json.dumps(payload, ensure_ascii=False, default=str)}", flush=True)
+        print(f"{marker}={json.dumps(payload, ensure_ascii=True, default=str)}", flush=True)
 
 
 def main() -> int:
