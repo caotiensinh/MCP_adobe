@@ -43,7 +43,7 @@ jobs:
           $actual=(git -C $dst rev-parse HEAD).Trim()
           Write-Host "UPSTREAM_HEAD=$actual"
           if($actual -ne '5d7a3edc8ebc89a0fc56b059e1311d3b2bfca815'){throw 'Pinned upstream checkout mismatch'}
-      - name: Build and install CEP panel
+      - name: Build and install CEP panel with StartOn
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -60,6 +60,30 @@ jobs:
             node validate-panel.mjs $cep
             if($LASTEXITCODE -ne 0){throw 'CEP validation failed'}
           } finally { Pop-Location }
+
+          # Upstream has AutoVisible=true but no StartOn. For this isolated proof,
+          # start the panel when Illustrator activates so the React hook can auto-connect.
+          $manifest=Join-Path $cep 'CSXS\manifest.xml'
+          $xml=[IO.File]::ReadAllText($manifest)
+          if($xml -notmatch '<StartOn>') {
+            $needle='<AutoVisible>true</AutoVisible>'
+            $replacement=@'
+<AutoVisible>true</AutoVisible>
+                    <StartOn>
+                        <Event>applicationActivate</Event>
+                        <Event>com.adobe.csxs.events.ApplicationActivate</Event>
+                    </StartOn>
+'@
+            if(-not $xml.Contains($needle)){throw 'CEP manifest AutoVisible marker not found'}
+            $xml=$xml.Replace($needle,$replacement.TrimEnd())
+            [IO.File]::WriteAllText($manifest,$xml,(New-Object Text.UTF8Encoding($false)))
+          }
+          $installedXml=[IO.File]::ReadAllText($manifest)
+          if($installedXml -notmatch '<StartOn>' -or $installedXml -notmatch 'applicationActivate'){
+            throw 'StartOn patch verification failed'
+          }
+          Write-Host 'CEP_STARTON_PATCH=PASS'
+
           $target=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel'
           if(Test-Path -LiteralPath $target){Remove-Item -Recurse -Force $target}
           New-Item -ItemType Directory -Force -Path $target | Out-Null
@@ -104,7 +128,12 @@ jobs:
           }
           if(-not $target){throw 'Illustrator executable not found'}
           Write-Host "ILLUSTRATOR_EXE=$target"
-          Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Get-Process -Name Illustrator,CEPHtmlEngine -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
           $env:UPSTREAM_PYTHON=$upstreamPython
           $env:ILLUSTRATOR_EXE=$target
           uv run python scripts/probe_illustrator_cep_upstream.py
+          if($LASTEXITCODE -ne 0){throw 'CEP live create probe failed'}
+          $cep=Get-Process -Name CEPHtmlEngine -ErrorAction SilentlyContinue | Select-Object -First 1
+          if(-not $cep){throw 'CEP live probe passed without a CEPHtmlEngine process'}
+          Write-Host "CEP_HTML_ENGINE=PASS PID=$($cep.Id) SESSION=$($cep.SessionId)"
