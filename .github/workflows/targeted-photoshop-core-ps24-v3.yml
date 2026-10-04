@@ -92,12 +92,17 @@ jobs:
           Write-Host 'ADOBE_UXP_SOURCE_151_PIN=PASS'
 
       - name: Install Adobe UXP CLI 1.5.1 source workspace
+        timeout-minutes: 6
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           Push-Location $env:ADOBE_CLI_ROOT
           try {
-            npx -y yarn@1.22.22 install --ignore-scripts --non-interactive
+            $yarn=(npx -y yarn@1.22.22 --version).Trim()
+            Write-Host "YARN_VERSION=$yarn"
+            npx -y yarn@1.22.22 config set registry https://registry.npmjs.org
+            npx -y yarn@1.22.22 config set network-timeout 300000
+            npx -y yarn@1.22.22 install --ignore-scripts --non-interactive --network-concurrency 1 --network-timeout 300000
             if($LASTEXITCODE -ne 0){throw 'Adobe UXP 1.5.1 workspace install failed'}
             $helperSetup=Join-Path $env:ADOBE_CLI_ROOT 'packages\uxp-devtools-helper\scripts\devtools_setup.js'
             if(-not (Test-Path $helperSetup)){throw "helper setup missing: $helperSetup"}
