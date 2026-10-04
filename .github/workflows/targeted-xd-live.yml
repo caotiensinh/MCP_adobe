@@ -70,14 +70,55 @@ jobs:
             Write-Host "XD_BRIDGE_SYNC=CURRENT main=$installedMain"
           }
 
-          # The files on disk and XD's loaded plugin runtime are separate states.
-          # Always force a dev-plugin reload before the live probe so CURRENT cannot
-          # accidentally mean the old runtime is still executing.
-          $shell=New-Object -ComObject WScript.Shell
-          $activated=$shell.AppActivate([int]$xd.Id)
-          if(-not $activated){$activated=$shell.AppActivate('Adobe XD')}
-          if(-not $activated){throw 'Could not focus Adobe XD to reload development plugins'}
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          using System.Text;
+          public static class Win32XdFocus {
+            public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+            [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lp);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+            [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+          }
+          '@
+
+          $windows = New-Object System.Collections.Generic.List[object]
+          $callback = [Win32XdFocus+EnumWindowsProc]{
+            param([IntPtr]$hWnd,[IntPtr]$lParam)
+            if(-not [Win32XdFocus]::IsWindowVisible($hWnd)){ return $true }
+            $len=[Win32XdFocus]::GetWindowTextLength($hWnd)
+            if($len -le 0){ return $true }
+            $sb=New-Object System.Text.StringBuilder ($len+1)
+            [void][Win32XdFocus]::GetWindowText($hWnd,$sb,$sb.Capacity)
+            [uint32]$pid=0
+            [void][Win32XdFocus]::GetWindowThreadProcessId($hWnd,[ref]$pid)
+            $title=$sb.ToString()
+            $windows.Add([pscustomobject]@{Hwnd=$hWnd;Pid=$pid;Title=$title})
+            return $true
+          }
+          [void][Win32XdFocus]::EnumWindows($callback,[IntPtr]::Zero)
+
+          $target=$windows | Where-Object {
+            $_.Pid -eq [uint32]$xd.Id -or $_.Title -match '(?i)Adobe XD|\bXD\b'
+          } | Select-Object -First 1
+
+          if(-not $target){
+            Write-Host 'XD_WINDOW_CANDIDATES_BEGIN'
+            $windows | ForEach-Object { Write-Host ("PID={0} HWND={1} TITLE={2}" -f $_.Pid,$_.Hwnd,$_.Title) }
+            Write-Host 'XD_WINDOW_CANDIDATES_END'
+            throw 'Could not find a visible Adobe XD top-level window'
+          }
+
+          [void][Win32XdFocus]::ShowWindow($target.Hwnd,9)
+          $focused=[Win32XdFocus]::SetForegroundWindow($target.Hwnd)
+          Write-Host ("XD_WINDOW_TARGET=PID={0} HWND={1} TITLE={2} FOCUSED={3}" -f $target.Pid,$target.Hwnd,$target.Title,$focused)
+          if(-not $focused){throw 'SetForegroundWindow failed for Adobe XD'}
           Start-Sleep -Milliseconds 700
+          $shell=New-Object -ComObject WScript.Shell
           $shell.SendKeys('^+r')
           Write-Host 'XD_DEV_PLUGIN_RELOAD=SENT'
           Start-Sleep -Seconds 3
