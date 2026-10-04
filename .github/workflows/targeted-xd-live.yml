@@ -35,7 +35,7 @@ jobs:
           uv python install 3.12
           uv sync --python 3.12
 
-      - name: Verify Adobe XD is running and bridge is installed
+      - name: Verify Adobe XD is running and bridge is already installed
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -44,14 +44,26 @@ jobs:
           } | Select-Object -First 1
           if(-not $xd){throw 'Adobe XD is not running in the interactive desktop session'}
           Write-Host "XD_PROCESS=PASS PID=$($xd.Id) SESSION=$($xd.SessionId)"
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_xd_plugin.ps1 -NoReloadHint
-          if($LASTEXITCODE -ne 0){throw 'Adobe XD bridge installation failed'}
+
+          $packagesRoot=Join-Path $env:LOCALAPPDATA 'Packages'
+          $manifest=Get-ChildItem -LiteralPath $packagesRoot -Directory -Filter 'Adobe.XD_*' -ErrorAction SilentlyContinue |
+            ForEach-Object { Join-Path $_.FullName 'LocalState\develop\MCPAdobeBridge\manifest.json' } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
+          if(-not $manifest){
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_xd_plugin.ps1 -NoReloadHint
+            if($LASTEXITCODE -ne 0){throw 'Adobe XD bridge installation failed'}
+            Write-Host 'XD_BRIDGE_INSTALL=PASS'
+          } else {
+            Write-Host "XD_BRIDGE_PRESERVED=PASS manifest=$manifest"
+          }
 
       - name: Live XD bridge read plus approval write gate
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           Write-Host "Keep Plugins > MCP Adobe Bridge panel open in Adobe XD."
+          Write-Host "If needed press Ctrl+Shift+R once before opening the panel."
           Write-Host "When Pending approvals becomes 1, click Apply pending."
           uv run python scripts/probe_xd_live.py
           if($LASTEXITCODE -ne 0){throw 'Adobe XD live approval probe failed'}
