@@ -1,0 +1,64 @@
+name: Targeted Illustrator direct JSX transport
+
+on:
+  push:
+    branches: [fix/photoshop-path-override]
+    paths:
+      - ".github/workflows/targeted-illustrator-cli.yml"
+
+concurrency:
+  group: targeted-illustrator-cli-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  direct-jsx:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    steps:
+      - name: Resolve Illustrator executable
+        id: resolve
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $p=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
+          $target=$null
+          if($p){$target=$p.Path}
+          if(-not $target){
+            $shell=New-Object -ComObject WScript.Shell
+            $roots=@((Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),(Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'))
+            foreach($root in $roots){
+              if(-not (Test-Path -LiteralPath $root)){continue}
+              foreach($lnk in @(Get-ChildItem -LiteralPath $root -Recurse -Filter '*.lnk' -File -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'Illustrator'})){
+                $candidate=$shell.CreateShortcut($lnk.FullName).TargetPath
+                if($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)){$target=$candidate;break}
+              }
+              if($target){break}
+            }
+          }
+          if(-not $target){throw 'Illustrator executable not found'}
+          Write-Host "ILLUSTRATOR_EXE=$target"
+          "exe=$target" >> $env:GITHUB_OUTPUT
+      - name: Probe JSX as direct command-line argument
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $target='${{ steps.resolve.outputs.exe }}'
+          Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          $marker=Join-Path $env:RUNNER_TEMP 'mcp_adobe_illustrator_direct_marker.txt'
+          $jsx=Join-Path $env:RUNNER_TEMP 'mcp_adobe_illustrator_direct_probe.jsx'
+          Remove-Item -Force $marker,$jsx -ErrorAction SilentlyContinue
+          $markerJs=$marker.Replace('\','/')
+          $script="#target illustrator`nvar f=new File('$markerJs'); if(!f.open('w')){throw new Error('open marker failed');} f.write('PASS:'+app.version); f.close();"
+          [IO.File]::WriteAllText($jsx,$script,(New-Object Text.UTF8Encoding($false)))
+          Write-Host "JSX=$jsx"
+          Start-Process -FilePath $target -ArgumentList @($jsx) | Out-Null
+          $deadline=[DateTime]::UtcNow.AddSeconds(45)
+          while(-not (Test-Path -LiteralPath $marker) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 500}
+          if(-not (Test-Path -LiteralPath $marker)){throw 'Illustrator direct JSX probe did not create marker within 45 seconds'}
+          $value=Get-Content -LiteralPath $marker -Raw
+          Write-Host "DIRECT_JSX_RESULT=$value"
+          if($value -notmatch '^PASS:'){throw "Unexpected Illustrator JSX marker: $value"}
