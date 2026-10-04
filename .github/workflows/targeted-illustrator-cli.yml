@@ -1,4 +1,4 @@
-name: Targeted Illustrator direct JSX transport
+name: Targeted Illustrator session diagnostics
 
 on:
   push:
@@ -14,51 +14,28 @@ permissions:
   contents: read
 
 jobs:
-  direct-jsx:
+  session-diagnostics:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
-      - name: Resolve Illustrator executable
-        id: resolve
+      - name: Inspect runner and Adobe Windows sessions
         shell: powershell
         run: |
-          $ErrorActionPreference='Stop'
-          $p=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
-          $target=$null
-          if($p){$target=$p.Path}
-          if(-not $target){
-            $shell=New-Object -ComObject WScript.Shell
-            $roots=@((Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),(Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'))
-            foreach($root in $roots){
-              if(-not (Test-Path -LiteralPath $root)){continue}
-              foreach($lnk in @(Get-ChildItem -LiteralPath $root -Recurse -Filter '*.lnk' -File -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'Illustrator'})){
-                $candidate=$shell.CreateShortcut($lnk.FullName).TargetPath
-                if($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)){$target=$candidate;break}
-              }
-              if($target){break}
-            }
-          }
-          if(-not $target){throw 'Illustrator executable not found'}
-          Write-Host "ILLUSTRATOR_EXE=$target"
-          "exe=$target" >> $env:GITHUB_OUTPUT
-      - name: Probe JSX as direct command-line argument
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          $target='${{ steps.resolve.outputs.exe }}'
-          Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 2
-          $marker=Join-Path $env:RUNNER_TEMP 'mcp_adobe_illustrator_direct_marker.txt'
-          $jsx=Join-Path $env:RUNNER_TEMP 'mcp_adobe_illustrator_direct_probe.jsx'
-          Remove-Item -Force $marker,$jsx -ErrorAction SilentlyContinue
-          $markerJs=$marker.Replace('\','/')
-          $script="#target illustrator`nvar f=new File('$markerJs'); if(!f.open('w')){throw new Error('open marker failed');} f.write('PASS:'+app.version); f.close();"
-          [IO.File]::WriteAllText($jsx,$script,(New-Object Text.UTF8Encoding($false)))
-          Write-Host "JSX=$jsx"
-          Start-Process -FilePath $target -ArgumentList @($jsx) | Out-Null
-          $deadline=[DateTime]::UtcNow.AddSeconds(45)
-          while(-not (Test-Path -LiteralPath $marker) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 500}
-          if(-not (Test-Path -LiteralPath $marker)){throw 'Illustrator direct JSX probe did not create marker within 45 seconds'}
-          $value=Get-Content -LiteralPath $marker -Raw
-          Write-Host "DIRECT_JSX_RESULT=$value"
-          if($value -notmatch '^PASS:'){throw "Unexpected Illustrator JSX marker: $value"}
+          $ErrorActionPreference='Continue'
+          Write-Host "CURRENT_USER=$env:USERNAME"
+          Write-Host "CURRENT_SESSION_ID=$([System.Diagnostics.Process]::GetCurrentProcess().SessionId)"
+          Write-Host '=== Relevant processes ==='
+          Get-Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProcessName -match 'Runner|Illustrator|Photoshop|powershell|explorer' } |
+            Sort-Object SessionId,ProcessName |
+            Select-Object ProcessName,Id,SessionId,Path |
+            Format-Table -AutoSize
+          Write-Host '=== quser ==='
+          quser 2>&1
+          Write-Host '=== qwinsta ==='
+          qwinsta 2>&1
+          Write-Host '=== service status ==='
+          Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match 'actions.runner|github' -or $_.DisplayName -match 'Actions Runner|GitHub' } |
+            Select-Object Name,State,StartName,ProcessId,PathName |
+            Format-List
