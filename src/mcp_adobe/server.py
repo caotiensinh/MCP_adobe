@@ -190,6 +190,10 @@ def _adapter_info_payload(info: AdapterInfo) -> dict[str, Any]:
     return {
         "application": info.application,
         "connected": info.connected,
+        "transport_connected": info.connected,
+        "connection_semantics": "transport_only",
+        "readiness_probe": info.readiness_probe,
+        "readiness_status": "not_probed" if info.readiness_probe else "not_declared",
         "version": info.version,
         "common_capabilities": sorted(info.common_capabilities),
         "native_capabilities": sorted(info.native_capabilities),
@@ -351,7 +355,7 @@ def build_server(
         ),
     )
     def creative_discover() -> dict[str, Any]:
-        """List Adobe adapters, connection state, capability names and risk classes."""
+        """List Adobe adapters, transport state, readiness probes, capabilities and risks."""
         audit("creative_discover", "allowed")
         oauth_policy = None
         if oauth_config is not None:
@@ -368,6 +372,11 @@ def build_server(
             "applications": [
                 _adapter_info_payload(info) for info in current_runtime().describe()
             ],
+            "connection_contract": {
+                "connected_means": "transport_connected",
+                "application_ready_requires": "declared_readiness_probe",
+                "discovery_probes_application": False,
+            },
             "transports": ["stdio", "streamable-http"],
             "oauth_protected": oauth_config is not None,
             "oauth_policy": oauth_policy,
