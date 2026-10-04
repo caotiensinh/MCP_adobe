@@ -106,7 +106,7 @@ function Install-GitHubCliPortable {
         New-Item -ItemType Directory -Force -Path $extract | Out-Null
         try {
             Write-Host "Downloading $($asset.name)..."
-            Invoke-WebRequest -Uri $downloadUrl -Headers $headers -OutFile $archive -UseBasicParsing
+            Invoke-WebRequest -Uri $downloadUrl -Headers $headers -OutFile $archive -UseBasicParsing | Out-Null
 
             $digest = $null
             if ($asset.PSObject.Properties.Name -contains 'digest') {
@@ -138,9 +138,13 @@ function Install-GitHubCliPortable {
             throw 'Portable GitHub CLI extraction completed but gh.exe was not created.'
         }
 
-        & $portableGh --version
-        if ($LASTEXITCODE -ne 0) {
-            throw "Portable GitHub CLI failed its version probe with exit code $LASTEXITCODE."
+        $versionLines = @(& $portableGh --version 2>&1)
+        $versionExitCode = $LASTEXITCODE
+        foreach ($line in $versionLines) {
+            Write-Host $line
+        }
+        if ($versionExitCode -ne 0) {
+            throw "Portable GitHub CLI failed its version probe with exit code $versionExitCode."
         }
         Write-Host "PASS: Portable GitHub CLI ready: $portableGh"
         return (Resolve-Path -LiteralPath $portableGh).Path
@@ -158,8 +162,12 @@ function Install-GitHubCli {
 
     if ($winget) {
         Write-Host 'GitHub CLI was not found. Installing GitHub CLI with winget...'
-        & $winget.Source install --id GitHub.cli --exact --source winget --accept-source-agreements --accept-package-agreements
-        if ($LASTEXITCODE -eq 0) {
+        $wingetLines = @(& $winget.Source install --id GitHub.cli --exact --source winget --accept-source-agreements --accept-package-agreements 2>&1)
+        $wingetExitCode = $LASTEXITCODE
+        foreach ($line in $wingetLines) {
+            Write-Host $line
+        }
+        if ($wingetExitCode -eq 0) {
             $installed = Resolve-GitHubCli
             if ($installed) {
                 Write-Host "PASS: GitHub CLI installed: $installed"
@@ -167,7 +175,7 @@ function Install-GitHubCli {
             }
             Write-Warning 'winget completed but gh.exe could not be located; falling back to portable GitHub CLI.'
         } else {
-            Write-Warning "winget GitHub CLI installation failed with exit code $LASTEXITCODE; falling back to portable GitHub CLI."
+            Write-Warning "winget GitHub CLI installation failed with exit code $wingetExitCode; falling back to portable GitHub CLI."
         }
     } elseif ($forcePortable) {
         Write-Host 'Portable GitHub CLI bootstrap explicitly selected by MCP_ADOBE_GH_INSTALL_MODE=portable.'
@@ -189,9 +197,13 @@ if (-not $ghPath) {
 Write-Host "GitHub CLI=$ghPath"
 
 if ($BootstrapOnly) {
-    & $ghPath --version
-    if ($LASTEXITCODE -ne 0) {
-        throw "GitHub CLI bootstrap version probe failed with exit code $LASTEXITCODE."
+    $bootstrapVersionLines = @(& $ghPath --version 2>&1)
+    $bootstrapVersionExitCode = $LASTEXITCODE
+    foreach ($line in $bootstrapVersionLines) {
+        Write-Host $line
+    }
+    if ($bootstrapVersionExitCode -ne 0) {
+        throw "GitHub CLI bootstrap version probe failed with exit code $bootstrapVersionExitCode."
     }
     Write-Host 'PASS: GitHub CLI bootstrap ready.'
     return
