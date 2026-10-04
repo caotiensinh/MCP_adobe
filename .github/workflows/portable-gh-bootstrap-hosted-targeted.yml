@@ -1,0 +1,32 @@
+name: Portable GitHub CLI bootstrap hosted targeted
+
+on:
+  push:
+    branches: [fix/portable-gh-bootstrap]
+
+permissions:
+  contents: read
+
+jobs:
+  portable-gh-bootstrap-hosted:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Force no-gh no-winget portable bootstrap
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $portable = Join-Path $env:RUNNER_TEMP 'mcp-adobe-gh-portable-hosted'
+          Remove-Item -LiteralPath $portable -Recurse -Force -ErrorAction SilentlyContinue
+          $env:MCP_ADOBE_GH_PORTABLE_DIR = $portable
+          $env:MCP_ADOBE_GH_INSTALL_MODE = 'portable'
+          $env:MCP_ADOBE_GH_PATH = ''
+          $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          & $powershellExe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/dispatch_adobe_live_e2e.ps1 -BootstrapOnly
+          if ($LASTEXITCODE -ne 0) { throw "portable bootstrap script failed with exit code $LASTEXITCODE" }
+          $gh = Join-Path $portable 'gh.exe'
+          if (-not (Test-Path -LiteralPath $gh -PathType Leaf)) { throw 'portable gh.exe was not created' }
+          & $gh --version
+          if ($LASTEXITCODE -ne 0) { throw 'portable gh version probe failed' }
