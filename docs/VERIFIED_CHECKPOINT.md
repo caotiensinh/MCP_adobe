@@ -4,17 +4,17 @@ Last updated: 2026-10-04 JST
 
 ## Exact verified software head
 
-- GitHub Actions run: `#63` (`37177808470`)
-- Exact code head: `a21c09b1030fcec57c4b300cbd36208c20a03e6f`
+- GitHub Actions run: `#65` (`37179530076`)
+- Exact code head: `e83d172d0cc87840ec03b92651cb4919d665838c`
 - Windows self-hosted runner: `windows` on `MRCAO`
-- Unit/regression result: **122/122 PASS**
+- Unit/regression result: **125/125 PASS**
 - Claude Desktop MCPB validate/pack: **PASS**
 - Packaged MCP `tools/list`: **PASS**
 - Packaged Photoshop/Illustrator/XD adapter discovery: **PASS**
 - MCPB packaged runtime smoke: **PASS**
 - MCPB artifact upload: **PASS**
-- MCPB artifact ID: `11293849010`
-- Uploaded artifact SHA-256: `36c97030b94499b41e0265c3cab8ac9005d2fbe14a8662b7c2fb763ce5b632f9`
+- MCPB artifact ID: `11300147127`
+- Uploaded artifact SHA-256: `793bf44546f34321097e77bf9c59b94d0a59dc3832cd87c56cbb51f15ae9161d`
 - Adobe XD manifest/main.js static validation: **PASS**
 
 ## Reliability boundaries now enforced
@@ -50,12 +50,12 @@ Successful readiness is cached briefly to avoid probing the Adobe app on every m
 The `.mcpb` artifact must expose:
 
 - top-level `connection_contract` with `connected_means="transport_connected"`;
-- `connection_semantics="transport_only"` for Photoshop, Illustrator, and XD;
+- `connection_semantics="transport_only"` for Photoshop/Illustrator/XD;
 - `transport_connected == connected` for backward compatibility;
 - `readiness_probe="creative.health"` for all built-in adapters;
 - `readiness_status="not_probed"` during discovery.
 
-Run #63 proved this contract again against the actual packed Claude Desktop artifact. The packaged smoke reported:
+Run #65 proved this contract again against the actual packed Claude Desktop artifact. The packaged smoke reported:
 
 ```text
 Photoshop:   transport_connected=true  readiness_status=not_probed
@@ -83,30 +83,53 @@ application ready != operation verified
 
 ## One-command interactive Adobe live E2E
 
-The verified main now includes two guarded Windows helpers:
+The verified main includes two guarded Windows helpers:
 
 - `scripts/dispatch_adobe_live_e2e.ps1`
 - `scripts/run_adobe_live_e2e.ps1`
 
-The one-command launcher intentionally performs GitHub authentication preflight **before** changing the dedicated MCP_adobe runner service. It then reuses the existing preparation helper to install/update the XD bridge, move only `D:\actions-runner-adobe` into the logged-in interactive desktop session, and dispatch the existing workflow with explicit live inputs.
+The launcher performs GitHub authentication preflight **before** changing the dedicated MCP_adobe runner service. It then reuses the preparation helper to install/update the XD bridge, move only `D:\actions-runner-adobe` into the logged-in interactive desktop session, and dispatch the existing workflow with explicit live inputs.
 
-Safety/approval behavior:
+### Portable GitHub CLI bootstrap
 
-- no live workflow dispatch occurs if GitHub CLI preflight fails;
+The exact MRCAO blocker where both `gh` and `winget` were missing is fixed on main.
+
+Fallback order now keeps explicit/local installs first and can bootstrap GitHub CLI directly from the official `cli/cli` release:
+
+```text
+MCP_ADOBE_GH_PATH
+→ PATH
+→ Program Files
+→ WinGet links
+→ existing MCPAdobe portable cache
+→ winget install when available
+→ official portable GitHub CLI ZIP
+```
+
+The portable path:
+
+- downloads the official Windows AMD64 ZIP;
+- validates the GitHub release URL;
+- verifies the release-provided SHA-256 digest when present;
+- fails closed on digest mismatch;
+- extracts `gh.exe` into the dedicated MCPAdobe tools directory;
+- probes `gh --version` before use;
+- uses the resolved absolute executable path;
+- never changes the runner service before GitHub authentication succeeds.
+
+Fresh evidence before merge included:
+
+- MRCAO targeted run `37178920755`: real no-gh/no-winget path downloaded `gh_2.102.0_windows_amd64.zip`, verified SHA-256 `ae64e556ecc240b200f7eba60d550e4bb60d78e860e69dd88c449405b86067f4`, extracted and executed `gh.exe`;
+- hosted Windows run `37179397968`: forced portable mode completed official download → SHA verification → extraction → `gh --version`;
+- regression proving installer diagnostic output cannot contaminate the resolved executable path.
+
+Safety/approval behavior remains:
+
+- no live workflow dispatch if GitHub CLI/auth preflight fails;
 - `-XdWrite` is rejected together with `-NoXdLive`;
 - default dispatch sets `run_adobe_live=true` and `xd_live=true`;
 - `-XdWrite` sets `xd_write=true`, but XD mutation still cannot PASS until the user clicks **Apply pending** in the MCP Adobe Bridge panel;
 - the helper does not treat service-session transport connectivity as desktop readiness.
-
-Fresh converge evidence before merge:
-
-- targeted run `37177709041` on MRCAO;
-- `tests.test_windows_helpers`: **5/5 PASS**;
-- all PowerShell helpers parse;
-- guarded dispatch arguments verified with a fake `gh` executable;
-- invalid XD flag combination fails closed;
-- wrapper proves GitHub preflight happens before the non-interactive/runner-service guard;
-- modern `Adobe.XD_*` sandbox installation test still passes.
 
 ## Adobe XD Windows package compatibility
 
@@ -119,28 +142,29 @@ The live-E2E preparation path supports the current Windows XD package identity o
 
 `prepare_adobe_live_e2e.ps1` launches XD before automatic bridge installation so a freshly installed package can create its per-user `LocalState` sandbox. The installer then resolves that sandbox and installs the local MCP Adobe Bridge into `LocalState\develop`.
 
-## Evidence from run #63
+## Evidence from run #65
 
 The full exact-head log reported:
 
 ```text
-Ran 122 tests in 61.822s
+Ran 125 tests in 61.346s
 OK
 ```
 
-The packaged runtime smoke passed against `mcp-adobe-creative-gateway.mcpb`, including the transport/readiness contract gate. The artifact was uploaded with SHA-256 `36c97030b94499b41e0265c3cab8ac9005d2fbe14a8662b7c2fb763ce5b632f9`.
+The packaged MCPB was validated and packed successfully. Packaged runtime smoke passed with the transport/readiness contract intact, and artifact `11300147127` was uploaded with SHA-256 `793bf44546f34321097e77bf9c59b94d0a59dc3832cd87c56cbb51f15ae9161d`.
 
-The packaged runtime can launch and discover the pinned Photoshop and Illustrator downstream MCP servers, but that does **not** claim the desktop applications themselves are ready. The same run inventory reported:
+The same exact-head run still showed the service-session boundary clearly:
 
 ```text
-User=NT AUTHORITY\NETWORK SERVICE
+User=nt authority\network service
 UserInteractive=False
 Photoshop=<not visible in service session>
 Illustrator=<not visible in service session>
 Adobe XD=57.1.12.2 installed
+LIVE_E2E=SKIPPED: push CI never writes to Adobe applications.
 ```
 
-Push CI intentionally skipped all real desktop-write steps.
+Therefore run #65 verifies the gateway, packaging, bootstrap regression and static bridge contract, but does not claim real Adobe desktop application readiness.
 
 ## Still not claimed
 
@@ -150,4 +174,4 @@ Push CI intentionally skipped all real desktop-write steps.
 - production ChatGPT + external OAuth provider E2E;
 - production Claude client + real Adobe desktop E2E.
 
-The first three are now blocked only by running the verified one-command launcher from the logged-in MRCAO desktop session; they remain explicit blockers rather than simulated PASS results.
+The first three now require only the verified one-command launcher to be executed from the logged-in MRCAO desktop session. They remain explicit blockers rather than simulated PASS results.
