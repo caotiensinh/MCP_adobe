@@ -31,6 +31,11 @@ Write-Host '=== Illustrator runtime diagnostics ==='
 Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" -ErrorAction SilentlyContinue |
   Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine |
   Format-List
+Write-Host '=== Relevant Python processes ==='
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+  Where-Object {{ $_.CommandLine -match 'illustrator_mcp|Illustrator_MCP_venv' }} |
+  Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine |
+  Format-List
 Write-Host '=== Top-level TEMP CEP/CSXS/PlugPlug files ==='
 Get-ChildItem -LiteralPath $env:TEMP -File -ErrorAction SilentlyContinue |
   Where-Object {{ $_.Name -match 'cep|csxs|plugplug|illustrator' }} |
@@ -78,12 +83,16 @@ def main() -> int:
             command=upstream_python,
             args=("-B", "-m", "illustrator_mcp.server"),
             env={"WS_HOST": "127.0.0.1", "WS_PORT": "8081", "TIMEOUT": "30"},
-            startup_timeout_seconds=45,
+            startup_timeout_seconds=90,
             call_timeout_seconds=90,
         )
     )
     try:
-        client.start()
+        try:
+            client.start()
+        except Exception:
+            _dump_cep_runtime("startup-failure")
+            raise
         print(f"TOOLS_COUNT={len(client.tool_names)}", flush=True)
         required = {"illustrator_connection_status", "illustrator_document"}
         missing = required - set(client.tool_names)
