@@ -103,76 +103,87 @@ jobs:
           if($LASTEXITCODE -ne 0){throw "devtools enable failed rc=$LASTEXITCODE"}
           Write-Host 'UXP_DEVTOOLS_ENABLE=PASS'
 
-      - name: Start UXP service directly and discover Photoshop 24
+      - name: Live UXP transaction — service load create save export
+        timeout-minutes: 5
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $stdout=Join-Path $env:RUNNER_TEMP 'uxp-service-v3.out.log'
-          $stderr=Join-Path $env:RUNNER_TEMP 'uxp-service-v3.err.log'
-          Remove-Item -Force $stdout,$stderr -ErrorAction SilentlyContinue
-          $svc=Start-Process -FilePath node -ArgumentList @($env:UXP_JS,'service','start','--port','14001') -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-          "UXP_SERVICE_PID=$($svc.Id)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          Start-Sleep 2
-          if($svc.HasExited){
-            if(Test-Path $stdout){Get-Content $stdout -Raw}
-            if(Test-Path $stderr){Get-Content $stderr -Raw}
-            throw "UXP service exited early rc=$($svc.ExitCode)"
-          }
-          $deadline=[DateTime]::UtcNow.AddSeconds(60); $ready=$false
-          do {
+          $svc=$null
+          $probe=$null
+          $svcOut=Join-Path $env:RUNNER_TEMP 'uxp-service-v3.out.log'
+          $svcErr=Join-Path $env:RUNNER_TEMP 'uxp-service-v3.err.log'
+          $probeOut=Join-Path $env:RUNNER_TEMP 'ps24-probe-v3.out.log'
+          $probeErr=Join-Path $env:RUNNER_TEMP 'ps24-probe-v3.err.log'
+          Remove-Item -Force $svcOut,$svcErr,$probeOut,$probeErr -ErrorAction SilentlyContinue
+          try {
+            # Keep the Adobe service process alive in THIS SAME Actions step.
+            $svc=Start-Process -FilePath node -ArgumentList @($env:UXP_JS,'service','start','--port','14001') -PassThru -RedirectStandardOutput $svcOut -RedirectStandardError $svcErr
             Start-Sleep 2
-            node $env:UXP_JS apps list
-            if($LASTEXITCODE -eq 0){$ready=$true;break}
-            if($svc.HasExited){break}
-          } while([DateTime]::UtcNow -lt $deadline)
-          if(Test-Path $stdout){Get-Content $stdout -Raw}
-          if(Test-Path $stderr){Get-Content $stderr -Raw}
-          if(-not $ready){throw "UXP service/Photoshop discovery failed; serviceExited=$($svc.HasExited)"}
-          Write-Host 'PHOTOSHOP_24_UXP_DISCOVERY=PASS'
+            if($svc.HasExited){
+              if(Test-Path $svcOut){Get-Content $svcOut -Raw}
+              if(Test-Path $svcErr){Get-Content $svcErr -Raw}
+              throw "UXP service exited early rc=$($svc.ExitCode)"
+            }
 
-      - name: Start direct UXP bridge probe
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          $out=Join-Path $env:RUNNER_TEMP 'photoshop-core-probe-v3'; New-Item -ItemType Directory -Force $out | Out-Null
-          "PHOTOSHOP_PROBE_OUT=$out" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          $stdout=Join-Path $env:RUNNER_TEMP 'ps24-probe-v3.out.log'; $stderr=Join-Path $env:RUNNER_TEMP 'ps24-probe-v3.err.log'
-          $p=Start-Process node -ArgumentList @((Join-Path $env:GITHUB_WORKSPACE 'scripts\probe_photoshop_core_live.cjs')) -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-          "PHOTOSHOP_PROBE_PID=$($p.Id)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "PHOTOSHOP_PROBE_STDOUT=$stdout" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "PHOTOSHOP_PROBE_STDERR=$stderr" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          Start-Sleep 2
-          if($p.HasExited){if(Test-Path $stderr){Get-Content $stderr -Raw}; throw "probe exited early rc=$($p.ExitCode)"}
-          Write-Host 'PHOTOSHOP_CORE_PROBE_STARTED=PASS'
+            $deadline=[DateTime]::UtcNow.AddSeconds(60)
+            $ready=$false
+            do {
+              Start-Sleep 2
+              node $env:UXP_JS apps list
+              if($LASTEXITCODE -eq 0){$ready=$true;break}
+              if($svc.HasExited){break}
+            } while([DateTime]::UtcNow -lt $deadline)
+            if(-not $ready){
+              if(Test-Path $svcOut){Get-Content $svcOut -Raw}
+              if(Test-Path $svcErr){Get-Content $svcErr -Raw}
+              throw "UXP service/Photoshop discovery failed; serviceExited=$($svc.HasExited)"
+            }
+            Write-Host 'PHOTOSHOP_24_UXP_DISCOVERY=PASS'
 
-      - name: Load PS24 UXP panel
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          node $env:UXP_JS plugin load --manifest $env:CORE_PANEL --apps "PS@$env:PHOTOSHOP_VERSION"
-          if($LASTEXITCODE -ne 0){throw "plugin load failed rc=$LASTEXITCODE"}
-          Write-Host 'PHOTOSHOP_24_UXP_PLUGIN_LOAD=PASS'
-          Write-Host 'Open Photoshop > Plugins > MCP Bridge if the panel is not visible; the test copy auto-connects.'
+            $out=Join-Path $env:RUNNER_TEMP 'photoshop-core-probe-v3'
+            New-Item -ItemType Directory -Force $out | Out-Null
+            $env:PHOTOSHOP_PROBE_OUT=$out
+            $probe=Start-Process -FilePath node -ArgumentList @((Join-Path $env:GITHUB_WORKSPACE 'scripts\probe_photoshop_core_live.cjs')) -PassThru -RedirectStandardOutput $probeOut -RedirectStandardError $probeErr
+            Start-Sleep 2
+            if($probe.HasExited){
+              if(Test-Path $probeOut){Get-Content $probeOut -Raw}
+              if(Test-Path $probeErr){Get-Content $probeErr -Raw}
+              throw "probe exited early rc=$($probe.ExitCode)"
+            }
+            Write-Host 'PHOTOSHOP_CORE_PROBE_STARTED=PASS'
 
-      - name: Verify live create save export
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          $probePid=[int]$env:PHOTOSHOP_PROBE_PID
-          $deadline=[DateTime]::UtcNow.AddSeconds(190)
-          do { Start-Sleep 2; $p=Get-Process -Id $probePid -ErrorAction SilentlyContinue; if(-not $p){break} } while([DateTime]::UtcNow -lt $deadline)
-          $p=Get-Process -Id $probePid -ErrorAction SilentlyContinue
-          if($p){Stop-Process -Id $probePid -Force -ErrorAction SilentlyContinue; $timedOut=$true}else{$timedOut=$false}
-          if(Test-Path $env:PHOTOSHOP_PROBE_STDOUT){Get-Content $env:PHOTOSHOP_PROBE_STDOUT -Raw}
-          if(Test-Path $env:PHOTOSHOP_PROBE_STDERR){Get-Content $env:PHOTOSHOP_PROBE_STDERR -Raw}
-          if($timedOut){throw 'live probe timed out'}
-          $text=if(Test-Path $env:PHOTOSHOP_PROBE_STDOUT){Get-Content $env:PHOTOSHOP_PROBE_STDOUT -Raw}else{''}
-          if($text -notmatch 'PHOTOSHOP_24_LIVE_OPERATION_VERIFY=PASS'){throw 'live operation PASS marker missing'}
-          Write-Host 'PHOTOSHOP_24_PRODUCTION_CANDIDATE=PASS'
+            # Service must remain alive while plugin load talks to it.
+            if($svc.HasExited){throw "UXP service died before plugin load rc=$($svc.ExitCode)"}
+            $manifest=Join-Path $env:CORE_PANEL 'manifest.json'
+            node $env:UXP_JS plugin load --manifest $manifest --apps "PS@$env:PHOTOSHOP_VERSION"
+            if($LASTEXITCODE -ne 0){
+              if(Test-Path $svcOut){Get-Content $svcOut -Raw}
+              if(Test-Path $svcErr){Get-Content $svcErr -Raw}
+              throw "plugin load failed rc=$LASTEXITCODE"
+            }
+            Write-Host 'PHOTOSHOP_24_UXP_PLUGIN_LOAD=PASS'
+            Write-Host 'If MCP Bridge is not visible, open Photoshop > Plugins > MCP Bridge once; the test copy auto-connects.'
 
-      - name: Cleanup
-        if: always()
-        shell: powershell
-        run: |
-          if($env:PHOTOSHOP_PROBE_PID){Stop-Process -Id ([int]$env:PHOTOSHOP_PROBE_PID) -Force -ErrorAction SilentlyContinue}
-          if($env:UXP_SERVICE_PID){Stop-Process -Id ([int]$env:UXP_SERVICE_PID) -Force -ErrorAction SilentlyContinue}
+            $verifyDeadline=[DateTime]::UtcNow.AddSeconds(190)
+            do {
+              Start-Sleep 2
+              $p=Get-Process -Id $probe.Id -ErrorAction SilentlyContinue
+              if(-not $p){break}
+            } while([DateTime]::UtcNow -lt $verifyDeadline)
+
+            $p=Get-Process -Id $probe.Id -ErrorAction SilentlyContinue
+            if($p){
+              if(Test-Path $probeOut){Get-Content $probeOut -Raw}
+              if(Test-Path $probeErr){Get-Content $probeErr -Raw}
+              throw 'live probe timed out'
+            }
+            if(Test-Path $probeOut){Get-Content $probeOut -Raw}
+            if(Test-Path $probeErr){Get-Content $probeErr -Raw}
+            $text=if(Test-Path $probeOut){Get-Content $probeOut -Raw}else{''}
+            if($text -notmatch 'PHOTOSHOP_24_LIVE_OPERATION_VERIFY=PASS'){throw 'live operation PASS marker missing'}
+            Write-Host 'PHOTOSHOP_24_PRODUCTION_CANDIDATE=PASS'
+          }
+          finally {
+            if($probe -and -not $probe.HasExited){Stop-Process -Id $probe.Id -Force -ErrorAction SilentlyContinue}
+            if($svc -and -not $svc.HasExited){Stop-Process -Id $svc.Id -Force -ErrorAction SilentlyContinue}
+          }
