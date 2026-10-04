@@ -56,12 +56,26 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          $identity = (whoami).Trim()
           Write-Host "Runner=$env:RUNNER_NAME"
           Write-Host "Machine=$env:COMPUTERNAME"
-          Write-Host "User=$(whoami)"
+          Write-Host "User=$identity"
           Write-Host "Session=$env:SESSIONNAME"
-          $interactive = [Environment]::UserInteractive -and -not [string]::IsNullOrWhiteSpace($env:SESSIONNAME)
-          Write-Host "UserInteractive=$interactive"
+          Write-Host "InteractiveMarker=$env:MCP_ADOBE_INTERACTIVE_RUNNER"
+
+          $adobeRunnerServices = @(Get-CimInstance Win32_Service | Where-Object {
+            $_.Name -like 'actions.runner.caotiensinh-MCP_adobe.*' -or $_.PathName -like '*actions-runner-adobe*'
+          })
+          $serviceListenerRunning = @($adobeRunnerServices | Where-Object { $_.State -eq 'Running' }).Count -gt 0
+          $serviceIdentity = $identity -match '^(nt authority\\(network service|local service|system)|nt authority\\system)$'
+          $explicitInteractive = $env:MCP_ADOBE_INTERACTIVE_RUNNER -eq '1'
+          # SESSIONNAME is not reliable inside a GitHub Actions child process. The
+          # live runner is considered desktop-user mode only when it is not a
+          # service identity and the dedicated MCP_adobe service listener is not running.
+          $interactive = (-not $serviceIdentity) -and (-not $serviceListenerRunning)
+          if ($explicitInteractive) { $interactive = $interactive -and $true }
+          Write-Host "DesktopRunnerEvidence: explicit_marker=$explicitInteractive service_listener_running=$serviceListenerRunning service_identity=$serviceIdentity"
+          Write-Host "InteractiveRunner=$interactive"
 
           Write-Host '--- runner service ---'
           Get-CimInstance Win32_Service | Where-Object {
@@ -257,7 +271,7 @@ jobs:
         shell: powershell
         run: |
           if ('${{ steps.inventory.outputs.interactive }}' -ne 'true') {
-            throw 'BLOCKED: Adobe live E2E requires the repository runner in an interactive desktop session. Run scripts/start_adobe_runner_interactive.ps1 -StopService from an elevated logged-in PowerShell, keep the runner console open, then dispatch this workflow again.'
+            throw 'BLOCKED: Adobe live E2E requires the dedicated MCP_adobe service runner to be stopped and the runner listener to execute as the logged-in desktop user. Run scripts/start_adobe_runner_interactive.ps1 -StopService from an elevated logged-in PowerShell, keep the runner console open, then dispatch this workflow again.'
           }
           if ('${{ steps.inventory.outputs.photoshop_found }}' -ne 'true') { throw 'BLOCKED: Photoshop installation is not visible to the interactive runner account.' }
           if ('${{ steps.inventory.outputs.illustrator_found }}' -ne 'true') { throw 'BLOCKED: Illustrator installation is not visible to the interactive runner account.' }
