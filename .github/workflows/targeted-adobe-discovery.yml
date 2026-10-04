@@ -1,0 +1,81 @@
+name: Targeted Adobe custom install discovery
+
+on:
+  push:
+    branches: [fix/adobe-custom-install-discovery]
+    paths:
+      - "scripts/prepare_adobe_live_e2e.ps1"
+      - ".github/workflows/adobe-windows-e2e.yml"
+      - "tests/test_adobe_install_discovery_contract.py"
+      - ".github/workflows/targeted-adobe-discovery.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  targeted:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Verify custom Adobe installations are discoverable
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Find-AdobeExe {
+            param(
+              [Parameter(Mandatory = $true)][string]$ProcessName,
+              [Parameter(Mandatory = $true)][string]$ExeName,
+              [Parameter(Mandatory = $true)][string[]]$Patterns
+            )
+            $running = Get-Process -Name $ProcessName -ErrorAction SilentlyContinue |
+              Where-Object { $_.Path -and (Test-Path -LiteralPath $_.Path -PathType Leaf) } |
+              Select-Object -First 1
+            if ($running) { return $running.Path }
+
+            $fixedDrives = @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | ForEach-Object { $_.DeviceID })
+            foreach ($drive in $fixedDrives) {
+              foreach ($pattern in $Patterns) {
+                $hit = Get-ChildItem -Path $pattern.Replace('{DRIVE}', $drive) -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($hit) { return $hit.FullName }
+              }
+            }
+
+            $shell = New-Object -ComObject WScript.Shell
+            foreach ($root in @(
+              (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),
+              (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
+            )) {
+              if (-not (Test-Path -LiteralPath $root)) { continue }
+              foreach ($shortcut in @(Get-ChildItem -LiteralPath $root -Recurse -Filter '*.lnk' -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match [Regex]::Escape($ProcessName) })) {
+                $target = $shell.CreateShortcut($shortcut.FullName).TargetPath
+                if ($target -and (Split-Path -Leaf $target) -ieq $ExeName -and (Test-Path -LiteralPath $target -PathType Leaf)) { return $target }
+              }
+            }
+            return $null
+          }
+
+          $photoshop = Find-AdobeExe -ProcessName 'Photoshop' -ExeName 'Photoshop.exe' -Patterns @(
+            '{DRIVE}\Program Files\Adobe\Adobe Photoshop *\Photoshop.exe',
+            '{DRIVE}\Adobe\Adobe Photoshop *\Photoshop.exe',
+            '{DRIVE}\Adobe Photoshop *\Photoshop.exe'
+          )
+          $illustrator = Find-AdobeExe -ProcessName 'Illustrator' -ExeName 'Illustrator.exe' -Patterns @(
+            '{DRIVE}\Program Files\Adobe\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe',
+            '{DRIVE}\Adobe\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe',
+            '{DRIVE}\Adobe Illustrator *\Support Files\Contents\Windows\Illustrator.exe'
+          )
+          Write-Host "Photoshop=$photoshop"
+          Write-Host "Illustrator=$illustrator"
+          if (-not $photoshop) { throw 'Photoshop custom install discovery failed' }
+          if (-not $illustrator) { throw 'Illustrator custom install discovery failed' }
+
+      - name: PowerShell parse and regression contract
+        shell: powershell
+        run: |
+          $tokens=$null; $errors=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile("$PWD\scripts\prepare_adobe_live_e2e.ps1", [ref]$tokens, [ref]$errors)
+          if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 }
+          py -3 -m unittest tests.test_adobe_install_discovery_contract -v
