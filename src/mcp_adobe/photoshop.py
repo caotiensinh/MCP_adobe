@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
@@ -9,6 +10,7 @@ from .verification import capture_file_snapshot, evaluate_file_snapshot, unverif
 
 UPSTREAM_REPOSITORY = "alisaitteke/photoshop-mcp"
 UPSTREAM_SNAPSHOT = "ecd502c666f0e5b3889d3ef7bc42e5b3eb1119c2"
+READINESS_TTL_SECONDS = 30.0
 
 
 class UpstreamToolClient(Protocol):
@@ -67,6 +69,7 @@ class PhotoshopAdapter:
         self._client = client
         self._version = version
         self._writes_enabled = writes_enabled
+        self._ready_until = 0.0
 
     def info(self) -> AdapterInfo:
         common = frozenset(name for name in _BINDINGS if name.startswith("creative."))
@@ -83,6 +86,7 @@ class PhotoshopAdapter:
             transport="mcp",
             upstream_repository=UPSTREAM_REPOSITORY,
             upstream_snapshot=UPSTREAM_SNAPSHOT,
+            readiness_probe="creative.health",
         )
 
     @staticmethod
@@ -100,6 +104,46 @@ class PhotoshopAdapter:
     def _is_mutating(capability: str) -> bool:
         return _BINDINGS[capability].risk is not RiskClass.READ
 
+    @staticmethod
+    def _ping_ready(result: Mapping[str, Any]) -> bool:
+        if result.get("connected") is True:
+            return True
+        for key in ("text", "value", "message"):
+            value = result.get(key)
+            if isinstance(value, str) and "successfully connected to photoshop" in value.lower():
+                return True
+        return False
+
+    def probe_ready(self) -> Mapping[str, Any]:
+        now = time.monotonic()
+        if self._ready_until > now:
+            return {
+                "ready": True,
+                "application": "photoshop",
+                "source": "photoshop_ping",
+                "cached": True,
+            }
+        try:
+            result = self._client.call_tool("photoshop_ping", {})
+        except Exception:
+            self._ready_until = 0.0
+            return {
+                "ready": False,
+                "application": "photoshop",
+                "source": "photoshop_ping",
+                "cached": False,
+                "reason": "photoshop_ping_failed",
+            }
+        ready = self._ping_ready(result)
+        self._ready_until = now + READINESS_TTL_SECONDS if ready else 0.0
+        return {
+            "ready": ready,
+            "application": "photoshop",
+            "source": "photoshop_ping",
+            "cached": False,
+            "reason": None if ready else "photoshop_ping_not_connected",
+        }
+
     def execute(self, capability: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         try:
             binding = _BINDINGS[capability]
@@ -116,8 +160,14 @@ class PhotoshopAdapter:
             result = self._client.call_tool(binding.upstream_tool, upstream_args)
         except TimeoutError as exc:
             if self._is_mutating(capability):
+                self._ready_until = 0.0
                 raise OperationUnknownError(capability, binding.upstream_tool) from exc
             raise
+
+        if capability == "creative.health":
+            self._ready_until = (
+                time.monotonic() + READINESS_TTL_SECONDS if self._ping_ready(result) else 0.0
+            )
 
         payload: dict[str, Any] = {
             "ok": True,
