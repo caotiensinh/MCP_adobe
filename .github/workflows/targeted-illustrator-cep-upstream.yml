@@ -1,0 +1,159 @@
+name: Targeted Illustrator CEP upstream
+
+on:
+  push:
+    branches: [fix/photoshop-path-override]
+    paths:
+      - ".github/workflows/targeted-illustrator-cep-upstream.yml"
+
+concurrency:
+  group: targeted-illustrator-cep-upstream-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  live-cep:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '20'
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: '0.12.17'
+          enable-cache: false
+      - name: Prepare gateway test environment
+        shell: powershell
+        run: |
+          uv python install 3.12
+          uv sync --python 3.12
+      - name: Checkout pinned CEP upstream
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $dst=Join-Path $env:RUNNER_TEMP 'Illustrator_MCP_upstream'
+          if(Test-Path $dst){Remove-Item -Recurse -Force $dst}
+          git clone https://github.com/jinkeda/Illustrator_MCP.git $dst
+          git -C $dst checkout --detach 5d7a3edc8ebc89a0fc56b059e1311d3b2bfca815
+          $actual=(git -C $dst rev-parse HEAD).Trim()
+          Write-Host "UPSTREAM_HEAD=$actual"
+          if($actual -ne '5d7a3edc8ebc89a0fc56b059e1311d3b2bfca815'){throw 'Pinned upstream checkout mismatch'}
+      - name: Build and install CEP panel
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $src=Join-Path $env:RUNNER_TEMP 'Illustrator_MCP_upstream'
+          $cep=Join-Path $src 'cep-extension'
+          Push-Location $cep
+          try {
+            npm ci
+            if($LASTEXITCODE -ne 0){throw 'npm ci failed'}
+            npm run typecheck
+            if($LASTEXITCODE -ne 0){throw 'npm typecheck failed'}
+            npm run build
+            if($LASTEXITCODE -ne 0){throw 'npm build failed'}
+            node validate-panel.mjs $cep
+            if($LASTEXITCODE -ne 0){throw 'CEP validation failed'}
+          } finally { Pop-Location }
+          $target=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel'
+          if(Test-Path -LiteralPath $target){Remove-Item -Recurse -Force $target}
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+          Copy-Item -Path (Join-Path $cep '*') -Destination $target -Recurse -Force
+          reg add 'HKEY_CURRENT_USER\Software\Adobe\CSXS.11' /v PlayerDebugMode /t REG_SZ /d 1 /f | Out-Null
+          reg add 'HKEY_CURRENT_USER\Software\Adobe\CSXS.12' /v PlayerDebugMode /t REG_SZ /d 1 /f | Out-Null
+          node (Join-Path $target 'validate-panel.mjs') $target
+          if($LASTEXITCODE -ne 0){throw 'Installed CEP validation failed'}
+          Write-Host "CEP_TARGET=$target"
+      - name: Install pinned upstream Python server
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $src=Join-Path $env:RUNNER_TEMP 'Illustrator_MCP_upstream'
+          $venv=Join-Path $env:RUNNER_TEMP 'Illustrator_MCP_venv'
+          if(Test-Path $venv){Remove-Item -Recurse -Force $venv}
+          uv venv --python 3.12 $venv
+          $python=Join-Path $venv 'Scripts\python.exe'
+          uv pip install --python $python -e $src
+          if($LASTEXITCODE -ne 0){throw 'Pinned upstream Python install failed'}
+          & $python -c "import illustrator_mcp; print('UPSTREAM_PYTHON_IMPORT=PASS')"
+      - name: Live CEP connection and document create gate
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $src=Join-Path $env:RUNNER_TEMP 'Illustrator_MCP_upstream'
+          $venv=Join-Path $env:RUNNER_TEMP 'Illustrator_MCP_venv'
+          $upstreamPython=Join-Path $venv 'Scripts\python.exe'
+
+          $p=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
+          $target=$null
+          if($p){$target=$p.Path}
+          if(-not $target){
+            $shell=New-Object -ComObject WScript.Shell
+            $roots=@((Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),(Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'))
+            foreach($root in $roots){
+              if(-not (Test-Path -LiteralPath $root)){continue}
+              foreach($lnk in @(Get-ChildItem -LiteralPath $root -Recurse -Filter '*.lnk' -File -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'Illustrator'})){
+                $candidate=$shell.CreateShortcut($lnk.FullName).TargetPath
+                if($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)){$target=$candidate;break}
+              }
+              if($target){break}
+            }
+          }
+          if(-not $target){throw 'Illustrator executable not found'}
+          Write-Host "ILLUSTRATOR_EXE=$target"
+          Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+          $probe=Join-Path $env:RUNNER_TEMP 'probe_jinkeda_cep.py'
+          $py=@'
+import os, subprocess, sys, time
+from mcp_adobe.mcp_stdio import McpSubprocessToolClient, SubprocessMcpConfig
+
+upstream_python = os.environ['UPSTREAM_PYTHON']
+illustrator_exe = os.environ['ILLUSTRATOR_EXE']
+client = McpSubprocessToolClient(SubprocessMcpConfig(
+    command=upstream_python,
+    args=('-B','-m','illustrator_mcp.server'),
+    env={'WS_HOST':'127.0.0.1','WS_PORT':'8081','TIMEOUT':'30'},
+    startup_timeout_seconds=45,
+    call_timeout_seconds=90,
+))
+try:
+    client.start()
+    print('TOOLS_COUNT='+str(len(client.tool_names)), flush=True)
+    required={'illustrator_connection_status','illustrator_document'}
+    missing=required-set(client.tool_names)
+    if missing:
+        raise RuntimeError('missing required tools: '+repr(sorted(missing)))
+    subprocess.Popen([illustrator_exe])
+    deadline=time.time()+75
+    last=None
+    while time.time()<deadline:
+        try:
+            last=client.call_tool('illustrator_connection_status', {'params': {'probe': True}})
+            print('CONNECTION_STATUS='+repr(last), flush=True)
+            text=repr(last).lower()
+            if 'connected' in text and 'false' not in text:
+                break
+        except Exception as exc:
+            last={'exception':repr(exc)}
+            print('CONNECTION_RETRY='+repr(last), flush=True)
+        time.sleep(2)
+    else:
+        raise RuntimeError('CEP panel did not connect: '+repr(last))
+    result=client.call_tool('illustrator_document', {'params': {'action':'create'}})
+    print('CREATE_RESULT='+repr(result), flush=True)
+    low=repr(result).lower()
+    if 'error' in low and ('true' in low or 'failed' in low or 'not connected' in low):
+        raise RuntimeError('document create returned error: '+repr(result))
+    print('CEP_LIVE_CREATE=PASS', flush=True)
+finally:
+    client.close()
+'@
+          [IO.File]::WriteAllText($probe,$py,(New-Object Text.UTF8Encoding($false)))
+          $env:UPSTREAM_PYTHON=$upstreamPython
+          $env:ILLUSTRATOR_EXE=$target
+          uv run python $probe
