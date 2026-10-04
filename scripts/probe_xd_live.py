@@ -41,17 +41,19 @@ def main() -> int:
         emit("XD_HEALTH_PASS", health)
 
         before = client.call_tool("xd.document.info", {})
-        before_count = int(before.get("rootChildren", 0))
         emit("XD_DOCUMENT_BEFORE", before)
 
+        expected_name = "MCP Adobe Live Probe"
+        expected_width = 120
+        expected_height = 80
         queued = client.call_tool(
             "xd.queue.rectangle_create",
             {
-                "name": "MCP Adobe Live Probe",
+                "name": expected_name,
                 "x": 24,
                 "y": 24,
-                "width": 120,
-                "height": 80,
+                "width": expected_width,
+                "height": expected_height,
                 "fill": "#4F7CFF",
             },
         )
@@ -64,9 +66,12 @@ def main() -> int:
         print("XD_ACTION_REQUIRED=Click 'Apply pending' in the MCP Adobe Bridge panel now", flush=True)
 
         deadline = time.time() + 120
-        last_status: object = None
+        last_status: dict[str, object] | None = None
         while time.time() < deadline:
-            last_status = client.call_tool("xd.queue.status", {"operation_id": operation_id})
+            status_payload = client.call_tool("xd.queue.status", {"operation_id": operation_id})
+            if not isinstance(status_payload, dict):
+                raise RuntimeError(f"XD queue status was not an object: {status_payload!r}")
+            last_status = status_payload
             emit("XD_QUEUE_STATUS", last_status)
             status = last_status.get("status")
             if status == "applied":
@@ -77,18 +82,33 @@ def main() -> int:
         else:
             raise RuntimeError(f"XD approval timed out; final status: {last_status!r}")
 
-        after = client.call_tool("xd.document.info", {})
-        after_count = int(after.get("rootChildren", 0))
-        emit("XD_DOCUMENT_AFTER", after)
-        if after_count <= before_count:
-            raise RuntimeError(
-                f"XD operation reported applied but document child count did not increase: "
-                f"before={before_count} after={after_count}"
-            )
+        result = last_status.get("result") if last_status else None
+        if not isinstance(result, dict):
+            raise RuntimeError(f"XD applied operation missing mutation result: {last_status!r}")
+        bounds = result.get("bounds")
+        if not isinstance(bounds, dict):
+            raise RuntimeError(f"XD applied rectangle missing bounds: {result!r}")
+        if (
+            not result.get("guid")
+            or result.get("type") != "Rectangle"
+            or result.get("name") != expected_name
+            or int(bounds.get("width", 0)) != expected_width
+            or int(bounds.get("height", 0)) != expected_height
+        ):
+            raise RuntimeError(f"XD applied rectangle result did not match expected effect: {result!r}")
+        emit("XD_MUTATION_RESULT_VERIFIED", result)
 
+        after = client.call_tool("xd.document.info", {})
+        emit("XD_DOCUMENT_AFTER", after)
         emit(
             "XD_LIVE_WRITE_VERIFY_PASS",
-            {"operation_id": operation_id, "before": before_count, "after": after_count},
+            {
+                "operation_id": operation_id,
+                "guid": result.get("guid"),
+                "type": result.get("type"),
+                "name": result.get("name"),
+                "bounds": bounds,
+            },
         )
         return 0
     finally:
