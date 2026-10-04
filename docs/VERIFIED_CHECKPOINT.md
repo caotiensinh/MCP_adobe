@@ -4,17 +4,17 @@ Last updated: 2026-10-04 JST
 
 ## Exact verified software head
 
-- GitHub Actions run: `#60` (`37174780754`)
-- Exact code head: `2113d03176478db118ee315273bade007f94fddb`
+- GitHub Actions run: `#61` (`37175389894`)
+- Exact code head: `d00e786649c55a331ac384f05d1867175b6d48a3`
 - Windows self-hosted runner: `windows` on `MRCAO`
-- Unit/regression result: **113/113 PASS**
+- Unit/regression result: **114/114 PASS**
 - Claude Desktop MCPB validate/pack: **PASS**
 - Packaged MCP `tools/list`: **PASS**
 - Packaged Photoshop/Illustrator/XD adapter discovery: **PASS**
 - MCPB packaged runtime smoke: **PASS**
 - MCPB artifact upload: **PASS**
-- MCPB artifact ID: `11292309730`
-- Uploaded artifact SHA-256: `42cce94b53dd7c3c25a5762ae2a7157e0790d341c594490afd0a751b23af2c1b`
+- MCPB artifact ID: `11293825026`
+- Uploaded artifact SHA-256: `23e8ee1949723b7454fa999456f281c295e4f5f7c0b9b543f9d9881feceef13e`
 - Adobe XD manifest/main.js static validation: **PASS**
 
 ## Reliability boundaries now enforced
@@ -23,7 +23,7 @@ Last updated: 2026-10-04 JST
 
 `AdapterInfo.connected` remains a transport-level compatibility field. It only means the downstream MCP/WebSocket transport is alive.
 
-Client-facing `creative_discover` now makes that contract explicit without probing Adobe applications:
+Client-facing `creative_discover` makes that contract explicit without probing Adobe applications:
 
 - `connected` — retained for backward compatibility;
 - `transport_connected` — explicit transport-level state;
@@ -59,14 +59,33 @@ transport connected != application ready
 application ready != operation verified
 ```
 
-## Evidence from run #60
+## Adobe XD Windows package compatibility
 
-The two discovery-readiness contract tests were included in the full suite; the final log reported:
+The live-E2E preparation path now supports the current Windows XD package identity observed on MRCAO as well as the legacy identity:
+
+- current package sandboxes matching `Adobe.XD_*`;
+- legacy package sandboxes matching `Adobe.CC.XD_*`;
+- the actual logged-in user's XD `PackageFamilyName` is preferred when available;
+- the old documented package path remains a compatibility fallback.
+
+`prepare_adobe_live_e2e.ps1` launches XD before automatic bridge installation so a freshly installed package can create its per-user `LocalState` sandbox. The installer then resolves that sandbox and installs the local MCP Adobe Bridge into `LocalState\develop`.
+
+Targeted Windows evidence before merge:
+
+- run `37175271407` on MRCAO;
+- PowerShell helper parse test: **PASS**;
+- real installer against a fake modern `Adobe.XD_*` LocalState sandbox: **PASS**.
+
+## Evidence from run #61
+
+The full exact-head log reported:
 
 ```text
-Ran 113 tests in 79.635s
+Ran 114 tests in 47.446s
 OK
 ```
+
+The modern XD package installer test was discovered in the full suite and passed.
 
 The packaged runtime can launch and discover the pinned Photoshop and Illustrator downstream MCP servers, but that does **not** claim the desktop applications themselves are ready. The same run inventory reported:
 
