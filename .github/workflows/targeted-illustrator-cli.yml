@@ -1,4 +1,4 @@
-name: Targeted Illustrator startup script bootstrap
+name: Targeted Illustrator persistent file bridge
 
 on:
   push:
@@ -14,11 +14,11 @@ permissions:
   contents: read
 
 jobs:
-  startup-script:
+  persistent-bridge:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 8
     steps:
-      - name: Probe Illustrator Startup Scripts bootstrap
+      - name: Prove persistent BridgeTalk file queue
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -39,40 +39,86 @@ jobs:
           }
           if(-not $target){throw 'Illustrator executable not found'}
           Write-Host "ILLUSTRATOR_EXE=$target"
+
           $windowsDir=Split-Path $target -Parent
           $contentsDir=Split-Path $windowsDir -Parent
           $supportDir=Split-Path $contentsDir -Parent
           $installRoot=Split-Path $supportDir -Parent
           $startupDir=Join-Path $installRoot 'Startup Scripts'
           New-Item -ItemType Directory -Force -Path $startupDir | Out-Null
-          Write-Host "STARTUP_DIR=$startupDir"
-          $probe=Join-Path $startupDir 'mcp_adobe_bootstrap_probe.jsx'
-          $marker=Join-Path $env:RUNNER_TEMP 'mcp_adobe_illustrator_startup_marker.txt'
-          Remove-Item -Force $marker,$probe -ErrorAction SilentlyContinue
-          $markerJs=$marker.Replace('\','/')
-          $lines=@(
+
+          $queue=Join-Path $env:RUNNER_TEMP 'mcp_adobe_illustrator_bridge_probe'
+          if(Test-Path $queue){Remove-Item -Recurse -Force $queue}
+          New-Item -ItemType Directory -Force -Path $queue | Out-Null
+          $ready=Join-Path $queue 'ready.txt'
+          $request=Join-Path $queue 'request.jsx'
+          $result=Join-Path $queue 'result.txt'
+          $errorFile=Join-Path $queue 'error.txt'
+          $stop=Join-Path $queue 'stop.txt'
+          $probe=Join-Path $startupDir 'mcp_adobe_persistent_bridge_probe.jsx'
+          Remove-Item -Force $probe -ErrorAction SilentlyContinue
+
+          $q=$queue.Replace('\','/')
+          $bridgeLines=@(
             '#target illustrator',
-            "try { app.preferences.setBooleanPreference('ShowExternalJSXWarning', false); } catch(e) {}",
-            "var f=new File('$markerJs');",
-            "if(!f.open('w')){throw new Error('open marker failed');}",
-            "f.write('PASS:'+app.version);",
-            'f.close();'
+            '#targetengine "mcp_adobe_bridge"',
+            "var MCP_ADOBE_QUEUE='$q';",
+            'function mcpAdobeWrite(path,text){var f=new File(path);if(f.open("w")){f.write(text);f.close();}}',
+            'function mcpAdobePoll(){',
+            '  try {',
+            '    var stopFile=new File(MCP_ADOBE_QUEUE+"/stop.txt");',
+            '    if(stopFile.exists){return;}',
+            '    var req=new File(MCP_ADOBE_QUEUE+"/request.jsx");',
+            '    if(req.exists){',
+            '      var code="";',
+            '      if(req.open("r")){code=req.read();req.close();req.remove();}',
+            '      if(code){try{eval(code);}catch(e){mcpAdobeWrite(MCP_ADOBE_QUEUE+"/error.txt",e.toString());}}',
+            '    }',
+            '  } catch(e) { mcpAdobeWrite(MCP_ADOBE_QUEUE+"/error.txt",e.toString()); }',
+            '  $.sleep(100);',
+            '  var bt=new BridgeTalk();',
+            '  bt.target=BridgeTalk.appSpecifier;',
+            '  bt.body="#targetengine \\"mcp_adobe_bridge\\"\\nmcpAdobePoll();";',
+            '  bt.send();',
+            '}',
+            'try { app.preferences.setBooleanPreference("ShowExternalJSXWarning", false); } catch(e) {}',
+            'mcpAdobeWrite(MCP_ADOBE_QUEUE+"/ready.txt","PASS:"+app.version);',
+            'var first=new BridgeTalk();',
+            'first.target=BridgeTalk.appSpecifier;',
+            'first.body="#targetengine \\"mcp_adobe_bridge\\"\\nmcpAdobePoll();";',
+            'first.send();'
           )
-          [IO.File]::WriteAllLines($probe,$lines,(New-Object Text.UTF8Encoding($false)))
+          [IO.File]::WriteAllLines($probe,$bridgeLines,(New-Object Text.UTF8Encoding($false)))
+
           try {
             Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
             Start-Process -FilePath $target | Out-Null
             $deadline=[DateTime]::UtcNow.AddSeconds(45)
-            while(-not (Test-Path -LiteralPath $marker) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 500}
-            if(-not (Test-Path -LiteralPath $marker)){
-              $proc=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Select-Object -First 1
-              Write-Host "ILLUSTRATOR_RUNNING=$([bool]$proc)"
-              throw 'Illustrator Startup Scripts probe did not create marker within 45 seconds'
-            }
-            $value=Get-Content -LiteralPath $marker -Raw
-            Write-Host "STARTUP_SCRIPT_RESULT=$value"
-            if($value -notmatch '^PASS:'){throw "Unexpected startup marker: $value"}
+            while(-not (Test-Path -LiteralPath $ready) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 500}
+            if(-not (Test-Path -LiteralPath $ready)){throw 'Persistent bridge did not become ready'}
+            $readyValue=Get-Content -LiteralPath $ready -Raw
+            Write-Host "BRIDGE_READY=$readyValue"
+            Remove-Item -Force $probe -ErrorAction SilentlyContinue
+
+            $r=$result.Replace('\','/')
+            $requestLines=@(
+              'var d=app.documents.add();',
+              "var f=new File('$r');",
+              'if(!f.open("w")){throw new Error("open result failed");}',
+              'f.write("PASS:DOCS="+app.documents.length);',
+              'f.close();',
+              'd.close(SaveOptions.DONOTSAVECHANGES);'
+            )
+            [IO.File]::WriteAllLines($request,$requestLines,(New-Object Text.UTF8Encoding($false)))
+            $deadline=[DateTime]::UtcNow.AddSeconds(30)
+            while(-not (Test-Path -LiteralPath $result) -and -not (Test-Path -LiteralPath $errorFile) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 200}
+            if(Test-Path -LiteralPath $errorFile){throw "Bridge request failed: $(Get-Content -LiteralPath $errorFile -Raw)"}
+            if(-not (Test-Path -LiteralPath $result)){throw 'Bridge did not process request after startup script returned'}
+            $value=Get-Content -LiteralPath $result -Raw
+            Write-Host "BRIDGE_REQUEST_RESULT=$value"
+            if($value -notmatch '^PASS:DOCS='){throw "Unexpected bridge result: $value"}
           } finally {
+            New-Item -ItemType File -Force -Path $stop | Out-Null
             Remove-Item -Force $probe -ErrorAction SilentlyContinue
           }
