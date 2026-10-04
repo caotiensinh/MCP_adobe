@@ -1,4 +1,4 @@
-name: Targeted Photoshop 24 CORE live v4
+name: Targeted Photoshop 24 CORE live v5
 
 on:
   pull_request:
@@ -8,7 +8,7 @@ on:
       - "scripts/probe_photoshop_core_live.cjs"
 
 concurrency:
-  group: targeted-photoshop-core-ps24-v4-${{ github.event.pull_request.number }}
+  group: targeted-photoshop-core-ps24-v5-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
@@ -17,7 +17,7 @@ permissions:
 jobs:
   live-ps24-core:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 12
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7.0.0
@@ -39,7 +39,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $core=Join-Path $env:RUNNER_TEMP 'core-photoshop-mcp-v4'
+          $core=Join-Path $env:RUNNER_TEMP 'core-photoshop-mcp-v5'
           if(Test-Path $core){Remove-Item -Recurse -Force $core}
           git clone https://github.com/CORE-Automate-WSS/photoshop-mcp.git $core
           git -C $core checkout --detach 586b66499852c801bcdb3b718c036f16f043c1d7
@@ -54,12 +54,11 @@ jobs:
           $src=$src.Replace($needle,$needle+"`r`n  setTimeout(connect, 500);")
           [IO.File]::WriteAllText($main,$src,(New-Object Text.UTF8Encoding($false)))
 
-          $adobe=Join-Path $env:RUNNER_TEMP 'adobe-uxp-cli-151-v4'
+          $adobe=Join-Path $env:RUNNER_TEMP 'adobe-uxp-cli-151-v5'
           if(Test-Path $adobe){Remove-Item -Recurse -Force $adobe}
           git clone https://github.com/adobe-uxp/devtools-cli.git $adobe
           git -C $adobe checkout --detach 175d01fc4f4e4354e6d095fc54bbc99c67f3aa22
           if((git -C $adobe rev-parse HEAD).Trim() -ne '175d01fc4f4e4354e6d095fc54bbc99c67f3aa22'){throw 'Adobe 1.5.1 source pin mismatch'}
-
           "CORE_PANEL=$panel" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "ADOBE_CLI_ROOT=$adobe" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "CORE_MIN_VERSION=$($manifest.host[0].minVersion)"
@@ -96,20 +95,21 @@ jobs:
           Write-Host 'UXP_DEVTOOLS_151_ENABLE=PASS'
 
       - name: Live CORE Photoshop 24 operation proof
-        timeout-minutes: 5
+        timeout-minutes: 3
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $svc=$null
-          $probe=$null
-          $svcOut=Join-Path $env:RUNNER_TEMP 'uxp151-v4-service.out.log'
-          $svcErr=Join-Path $env:RUNNER_TEMP 'uxp151-v4-service.err.log'
-          $probeOut=Join-Path $env:RUNNER_TEMP 'ps24-v4-probe.out.log'
-          $probeErr=Join-Path $env:RUNNER_TEMP 'ps24-v4-probe.err.log'
-          Remove-Item -Force $svcOut,$svcErr,$probeOut,$probeErr -ErrorAction SilentlyContinue
+          $svc=$null; $probe=$null; $loader=$null
+          $svcOut=Join-Path $env:RUNNER_TEMP 'uxp151-v5-service.out.log'
+          $svcErr=Join-Path $env:RUNNER_TEMP 'uxp151-v5-service.err.log'
+          $probeOut=Join-Path $env:RUNNER_TEMP 'ps24-v5-probe.out.log'
+          $probeErr=Join-Path $env:RUNNER_TEMP 'ps24-v5-probe.err.log'
+          $loadOut=Join-Path $env:RUNNER_TEMP 'ps24-v5-load.out.log'
+          $loadErr=Join-Path $env:RUNNER_TEMP 'ps24-v5-load.err.log'
+          Remove-Item -Force $svcOut,$svcErr,$probeOut,$probeErr,$loadOut,$loadErr -ErrorAction SilentlyContinue
           try {
             $svc=Start-Process -FilePath node -ArgumentList @($env:UXP_JS,'service','start','--port','14001') -PassThru -RedirectStandardOutput $svcOut -RedirectStandardError $svcErr
-            $deadline=[DateTime]::UtcNow.AddSeconds(60); $ready=$false
+            $deadline=[DateTime]::UtcNow.AddSeconds(45); $ready=$false
             do {
               Start-Sleep 2
               node $env:UXP_JS apps list
@@ -119,7 +119,7 @@ jobs:
             if(-not $ready){throw 'UXP service/Photoshop discovery failed'}
             Write-Host 'PHOTOSHOP_24_UXP_151_DISCOVERY=PASS'
 
-            $out=Join-Path $env:RUNNER_TEMP 'photoshop-core-probe-v4'
+            $out=Join-Path $env:RUNNER_TEMP 'photoshop-core-probe-v5'
             New-Item -ItemType Directory -Force $out | Out-Null
             $env:PHOTOSHOP_PROBE_OUT=$out
             $probe=Start-Process -FilePath node -ArgumentList @((Join-Path $env:GITHUB_WORKSPACE 'scripts\probe_photoshop_core_live.cjs')) -PassThru -RedirectStandardOutput $probeOut -RedirectStandardError $probeErr
@@ -128,27 +128,30 @@ jobs:
             Write-Host 'PHOTOSHOP_CORE_PROBE_STARTED=PASS'
 
             $manifest=Join-Path $env:CORE_PANEL 'manifest.json'
-            node $env:UXP_JS plugin load --manifest $manifest --apps 'PS'
-            $loadRc=$LASTEXITCODE
-            Write-Host "CORE_PLUGIN_LOAD_RC=$loadRc"
-            if($loadRc -ne 0){
-              Write-Host 'CORE plugin load command failed; probe remains authoritative if an already-loaded panel reconnects.'
+            Write-Host "CORE_PLUGIN_LOAD_BEGIN=$manifest"
+            $loader=Start-Process -FilePath node -ArgumentList @($env:UXP_JS,'plugin','load','--manifest',$manifest,'--apps','PS') -PassThru -RedirectStandardOutput $loadOut -RedirectStandardError $loadErr
+            if(-not $loader.WaitForExit(20000)){
+              Write-Host 'CORE_PLUGIN_LOAD_TIMEOUT=20s'
+              Stop-Process -Id $loader.Id -Force -ErrorAction SilentlyContinue
             } else {
-              Write-Host 'PHOTOSHOP_24_CORE_PLUGIN_LOAD_151=PASS'
+              Write-Host "CORE_PLUGIN_LOAD_RC=$($loader.ExitCode)"
+              if($loader.ExitCode -eq 0){Write-Host 'PHOTOSHOP_24_CORE_PLUGIN_LOAD_151=PASS'}
             }
+            if(Test-Path $loadOut){Write-Host '--- CORE LOAD STDOUT ---';Get-Content $loadOut -Raw}
+            if(Test-Path $loadErr){Write-Host '--- CORE LOAD STDERR ---';Get-Content $loadErr -Raw}
 
-            $verifyDeadline=[DateTime]::UtcNow.AddSeconds(190)
+            Write-Host 'Keep Photoshop open. If Plugins > MCP Bridge is visible, open it once now.'
+            $verifyDeadline=[DateTime]::UtcNow.AddSeconds(75)
             do {
               Start-Sleep 2
               $p=Get-Process -Id $probe.Id -ErrorAction SilentlyContinue
               if(-not $p){break}
             } while([DateTime]::UtcNow -lt $verifyDeadline)
-
             $p=Get-Process -Id $probe.Id -ErrorAction SilentlyContinue
             if($p){
               if(Test-Path $probeOut){Get-Content $probeOut -Raw}
               if(Test-Path $probeErr){Get-Content $probeErr -Raw}
-              throw 'live probe timed out'
+              throw 'live probe timed out waiting for CORE panel connection/operation'
             }
             if(Test-Path $probeOut){Get-Content $probeOut -Raw}
             if(Test-Path $probeErr){Get-Content $probeErr -Raw}
@@ -164,6 +167,7 @@ jobs:
             throw
           }
           finally {
+            if($loader -and -not $loader.HasExited){Stop-Process -Id $loader.Id -Force -ErrorAction SilentlyContinue}
             if($probe -and -not $probe.HasExited){Stop-Process -Id $probe.Id -Force -ErrorAction SilentlyContinue}
             if($svc -and -not $svc.HasExited){Stop-Process -Id $svc.Id -Force -ErrorAction SilentlyContinue}
           }
