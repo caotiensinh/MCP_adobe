@@ -37,6 +37,11 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           uv run python -c "from mcp_adobe.mcp_stdio import photoshop_stdio_config; c=photoshop_stdio_config(); p=c.env.get('PHOTOSHOP_PATH'); print('PHOTOSHOP_PATH='+str(p)); assert p and p.lower().endswith('photoshop.exe')"
+      - name: Expose upstream startup exception
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          uv run python -c "from mcp_adobe.mcp_stdio import McpSubprocessToolClient,photoshop_stdio_config; c=McpSubprocessToolClient(photoshop_stdio_config()); c.start(); print(sorted(c.tool_names)); c.close()"
       - name: Photoshop live read E2E
         shell: powershell
         run: |
