@@ -66,7 +66,15 @@ jobs:
             powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_xd_plugin.ps1 -NoReloadHint
             if($LASTEXITCODE -ne 0){throw 'Adobe XD bridge installation failed'}
             Write-Host 'XD_BRIDGE_SYNC=UPDATED'
-            Write-Host 'Reload the XD development plugins once with Ctrl+Shift+R before opening MCP Adobe Bridge.'
+
+            $shell=New-Object -ComObject WScript.Shell
+            $activated=$shell.AppActivate([int]$xd.Id)
+            if(-not $activated){$activated=$shell.AppActivate('Adobe XD')}
+            if(-not $activated){throw 'Could not focus Adobe XD to reload development plugins'}
+            Start-Sleep -Milliseconds 700
+            $shell.SendKeys('^+r')
+            Write-Host 'XD_DEV_PLUGIN_RELOAD=SENT'
+            Start-Sleep -Seconds 3
           } else {
             Write-Host "XD_BRIDGE_SYNC=CURRENT main=$installedMain"
           }
@@ -76,7 +84,6 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           Write-Host "Keep Plugins > MCP Adobe Bridge panel open in Adobe XD."
-          Write-Host "If the previous step printed XD_BRIDGE_SYNC=UPDATED, press Ctrl+Shift+R once before opening the panel."
           Write-Host "When Pending approvals becomes 1, click Apply pending."
           uv run python scripts/probe_xd_live.py
           if($LASTEXITCODE -ne 0){throw 'Adobe XD live approval probe failed'}
