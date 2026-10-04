@@ -19,6 +19,7 @@ EXPECTED_TOOLS = {
     "creative_authorized_write",
 }
 EXPECTED_APPLICATIONS = {"photoshop", "illustrator", "xd"}
+EXPECTED_READINESS_PROBE = "creative.health"
 DEFAULT_TIMEOUT_SECONDS = 180.0
 
 
@@ -45,6 +46,49 @@ def _validate_archive(package: Path) -> None:
     if forbidden:
         raise AssertionError(f"MCPB archive contains generated/development files: {forbidden}")
     _emit("PASS", "archive_contents", {"files": len(names)})
+
+
+def _validate_discovery_contract(
+    payload: dict[str, object],
+    by_name: dict[str, dict[str, object]],
+) -> dict[str, dict[str, object]]:
+    contract = payload.get("connection_contract")
+    expected_contract = {
+        "connected_means": "transport_connected",
+        "application_ready_requires": "declared_readiness_probe",
+        "discovery_probes_application": False,
+    }
+    if contract != expected_contract:
+        raise AssertionError(
+            "packaged creative_discover connection contract drifted: "
+            f"expected={expected_contract!r} actual={contract!r}"
+        )
+
+    readiness: dict[str, dict[str, object]] = {}
+    for application in sorted(EXPECTED_APPLICATIONS):
+        item = by_name[application]
+        if item.get("connection_semantics") != "transport_only":
+            raise AssertionError(
+                f"packaged {application} connection_semantics must be transport_only: {item}"
+            )
+        if item.get("transport_connected") != item.get("connected"):
+            raise AssertionError(
+                f"packaged {application} transport_connected must mirror backward-compatible connected: {item}"
+            )
+        if item.get("readiness_probe") != EXPECTED_READINESS_PROBE:
+            raise AssertionError(
+                f"packaged {application} readiness_probe drifted from {EXPECTED_READINESS_PROBE}: {item}"
+            )
+        if item.get("readiness_status") != "not_probed":
+            raise AssertionError(
+                f"packaged {application} discovery must remain non-probing: {item}"
+            )
+        readiness[application] = {
+            "transport_connected": bool(item.get("transport_connected")),
+            "readiness_probe": item.get("readiness_probe"),
+            "readiness_status": item.get("readiness_status"),
+        }
+    return readiness
 
 
 async def _exercise_bundle(
@@ -98,8 +142,9 @@ async def _exercise_bundle(
         if set(by_name) != EXPECTED_APPLICATIONS:
             raise AssertionError(f"unexpected packaged applications: {sorted(by_name)}")
 
+        readiness = _validate_discovery_contract(payload, by_name)
         connection_state = {
-            application: bool(by_name[application].get("connected"))
+            application: bool(by_name[application].get("transport_connected"))
             for application in sorted(EXPECTED_APPLICATIONS)
         }
         upstreams = {
@@ -115,20 +160,19 @@ async def _exercise_bundle(
             "packaged_adapter_discovery",
             {
                 "applications": sorted(by_name),
-                "connected": connection_state,
+                "transport_connected": connection_state,
+                "readiness": readiness,
                 "upstreams": upstreams,
             },
         )
 
-        # Connectivity is a separate live-environment assertion. In particular,
-        # the pinned Photoshop MCP documents that Photoshop itself must be running.
-        # A non-interactive packaging runner therefore must not manufacture a
-        # desktop-connectivity PASS. Callers that have the required applications
-        # running may opt into an explicit connected requirement per application.
+        # Transport connectivity is a separate live-environment assertion. It is
+        # not application readiness: all built-in mutations perform the declared
+        # readiness probe before touching an Adobe document.
         for application in sorted(require_connected):
             if not connection_state[application]:
                 raise AssertionError(
-                    f"packaged {application} adapter was required to be connected but reported disconnected: "
+                    f"packaged {application} adapter was required to have transport connectivity but reported disconnected: "
                     f"{by_name[application]}"
                 )
         if require_connected:
@@ -159,8 +203,8 @@ def main() -> int:
         choices=sorted(EXPECTED_APPLICATIONS),
         default=[],
         help=(
-            "Additionally require one application adapter to report connected. Repeat for multiple apps. "
-            "Use only when the corresponding desktop/bridge prerequisite is actually running."
+            "Additionally require one application adapter transport to report connected. Repeat for multiple apps. "
+            "This does not claim that the Adobe application itself passed its readiness probe."
         ),
     )
     parser.add_argument(
