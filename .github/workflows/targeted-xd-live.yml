@@ -66,18 +66,21 @@ jobs:
             powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_xd_plugin.ps1 -NoReloadHint
             if($LASTEXITCODE -ne 0){throw 'Adobe XD bridge installation failed'}
             Write-Host 'XD_BRIDGE_SYNC=UPDATED'
-
-            $shell=New-Object -ComObject WScript.Shell
-            $activated=$shell.AppActivate([int]$xd.Id)
-            if(-not $activated){$activated=$shell.AppActivate('Adobe XD')}
-            if(-not $activated){throw 'Could not focus Adobe XD to reload development plugins'}
-            Start-Sleep -Milliseconds 700
-            $shell.SendKeys('^+r')
-            Write-Host 'XD_DEV_PLUGIN_RELOAD=SENT'
-            Start-Sleep -Seconds 3
           } else {
             Write-Host "XD_BRIDGE_SYNC=CURRENT main=$installedMain"
           }
+
+          # The files on disk and XD's loaded plugin runtime are separate states.
+          # Always force a dev-plugin reload before the live probe so CURRENT cannot
+          # accidentally mean the old runtime is still executing.
+          $shell=New-Object -ComObject WScript.Shell
+          $activated=$shell.AppActivate([int]$xd.Id)
+          if(-not $activated){$activated=$shell.AppActivate('Adobe XD')}
+          if(-not $activated){throw 'Could not focus Adobe XD to reload development plugins'}
+          Start-Sleep -Milliseconds 700
+          $shell.SendKeys('^+r')
+          Write-Host 'XD_DEV_PLUGIN_RELOAD=SENT'
+          Start-Sleep -Seconds 3
 
       - name: Live XD bridge read plus approval write gate
         shell: powershell
