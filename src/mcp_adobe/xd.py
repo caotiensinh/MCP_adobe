@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -9,6 +10,7 @@ from .verification import pending_user_approval, unverified_mutation
 
 OFFICIAL_API_REPOSITORY = "AdobeXD/plugin-docs"
 OFFICIAL_API_SNAPSHOT = "c1abde873604a1606a5fdd5a578fba4502a7bdfc"
+READINESS_TTL_SECONDS = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +50,7 @@ class XdAdapter:
         self._client = client
         self._version = version
         self._writes_enabled = writes_enabled
+        self._ready_until = 0.0
 
     def info(self) -> AdapterInfo:
         common = frozenset(name for name in _BINDINGS if name.startswith("creative."))
@@ -64,11 +67,51 @@ class XdAdapter:
             transport="uxp-websocket-approval",
             upstream_repository=OFFICIAL_API_REPOSITORY,
             upstream_snapshot=OFFICIAL_API_SNAPSHOT,
+            readiness_probe="creative.health",
         )
 
     @staticmethod
     def _is_mutating(capability: str) -> bool:
         return _BINDINGS[capability].risk is not RiskClass.READ
+
+    @staticmethod
+    def _health_ready(result: Mapping[str, Any]) -> bool:
+        status = result.get("status")
+        if isinstance(status, str) and status.lower() in {"ok", "ready", "connected"}:
+            return True
+        if result.get("bridge") == "connected":
+            return True
+        return result.get("application") == "xd" and result.get("error") is not True
+
+    def probe_ready(self) -> Mapping[str, Any]:
+        now = time.monotonic()
+        if self._ready_until > now:
+            return {
+                "ready": True,
+                "application": "xd",
+                "source": "xd.health",
+                "cached": True,
+            }
+        try:
+            result = self._client.call_tool("xd.health", {})
+        except Exception:
+            self._ready_until = 0.0
+            return {
+                "ready": False,
+                "application": "xd",
+                "source": "xd.health",
+                "cached": False,
+                "reason": "xd_health_probe_failed",
+            }
+        ready = self._health_ready(result)
+        self._ready_until = now + READINESS_TTL_SECONDS if ready else 0.0
+        return {
+            "ready": ready,
+            "application": "xd",
+            "source": "xd.health",
+            "cached": False,
+            "reason": None if ready else "xd_health_probe_not_ready",
+        }
 
     def execute(self, capability: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         try:
@@ -80,8 +123,14 @@ class XdAdapter:
             result = self._client.call_tool(binding.bridge_method, dict(arguments))
         except TimeoutError as exc:
             if self._is_mutating(capability):
+                self._ready_until = 0.0
                 raise OperationUnknownError(capability, binding.bridge_method) from exc
             raise
+
+        if capability == "creative.health":
+            self._ready_until = (
+                time.monotonic() + READINESS_TTL_SECONDS if self._health_ready(result) else 0.0
+            )
 
         payload: dict[str, Any] = {
             "ok": True,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -10,6 +11,7 @@ from .verification import capture_file_snapshot, evaluate_file_snapshot, unverif
 UPSTREAM_REPOSITORY = "ie3jp/illustrator-mcp-server"
 UPSTREAM_SNAPSHOT = "57c5c101a5192c61535493f39b653e6f92b8eb29"
 UPSTREAM_PACKAGE = "illustrator-mcp-server@1.10.3"
+READINESS_TTL_SECONDS = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +21,7 @@ class ToolBinding:
 
 
 _BINDINGS: dict[str, ToolBinding] = {
+    "creative.health": ToolBinding("list_fonts", RiskClass.READ),
     "creative.document.info": ToolBinding("get_document_info", RiskClass.READ),
     "creative.document.structure": ToolBinding("get_document_structure", RiskClass.READ),
     "creative.selection.get": ToolBinding("get_selection", RiskClass.READ),
@@ -44,6 +47,7 @@ class IllustratorAdapter:
         self._client = client
         self._version = version
         self._writes_enabled = writes_enabled
+        self._ready_until = 0.0
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -57,10 +61,13 @@ class IllustratorAdapter:
             transport="mcp",
             upstream_repository=UPSTREAM_REPOSITORY,
             upstream_snapshot=UPSTREAM_SNAPSHOT,
+            readiness_probe="creative.health",
         )
 
     @staticmethod
     def _translate_arguments(capability: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        if capability == "creative.health":
+            return {"limit": 1}
         args = dict(arguments)
         if capability in {"creative.document.export", "creative.document.export_pdf"}:
             path = args.pop("path", None)
@@ -71,6 +78,42 @@ class IllustratorAdapter:
     @staticmethod
     def _is_mutating(capability: str) -> bool:
         return _BINDINGS[capability].risk is not RiskClass.READ
+
+    @staticmethod
+    def _health_ready(result: Mapping[str, Any]) -> bool:
+        if result.get("error") is True:
+            return False
+        return any(key in result for key in ("totalAvailable", "count", "fonts"))
+
+    def probe_ready(self) -> Mapping[str, Any]:
+        now = time.monotonic()
+        if self._ready_until > now:
+            return {
+                "ready": True,
+                "application": "illustrator",
+                "source": "list_fonts",
+                "cached": True,
+            }
+        try:
+            result = self._client.call_tool("list_fonts", {"limit": 1})
+        except Exception:
+            self._ready_until = 0.0
+            return {
+                "ready": False,
+                "application": "illustrator",
+                "source": "list_fonts",
+                "cached": False,
+                "reason": "illustrator_health_probe_failed",
+            }
+        ready = self._health_ready(result)
+        self._ready_until = now + READINESS_TTL_SECONDS if ready else 0.0
+        return {
+            "ready": ready,
+            "application": "illustrator",
+            "source": "list_fonts",
+            "cached": False,
+            "reason": None if ready else "illustrator_health_probe_not_ready",
+        }
 
     def execute(self, capability: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         try:
@@ -90,8 +133,14 @@ class IllustratorAdapter:
             )
         except TimeoutError as exc:
             if self._is_mutating(capability):
+                self._ready_until = 0.0
                 raise OperationUnknownError(capability, binding.upstream_tool) from exc
             raise
+
+        if capability == "creative.health":
+            self._ready_until = (
+                time.monotonic() + READINESS_TTL_SECONDS if self._health_ready(result) else 0.0
+            )
 
         payload: dict[str, Any] = {
             "ok": True,

@@ -29,7 +29,13 @@ class ExecutionPolicy:
 
 @dataclass(frozen=True, slots=True)
 class AdapterInfo:
-    """Runtime capabilities advertised by one Adobe application adapter."""
+    """Runtime capabilities advertised by one Adobe application adapter.
+
+    ``connected`` is intentionally transport-level for backward compatibility:
+    it means the downstream MCP/bridge transport is alive, not that the Adobe
+    desktop application has passed its runtime health probe. Built-in adapters
+    advertise ``readiness_probe`` and mutations are preflighted against it.
+    """
 
     application: str
     connected: bool
@@ -42,6 +48,7 @@ class AdapterInfo:
     transport: str | None = None
     upstream_repository: str | None = None
     upstream_snapshot: str | None = None
+    readiness_probe: str | None = None
 
     def supports(self, capability: str) -> bool:
         return capability in self.common_capabilities or capability in self.native_capabilities
@@ -64,7 +71,7 @@ class CreativeAdapter(Protocol):
 
 
 class CapabilityRegistry:
-    """Deterministic registry, policy gate, and router for Adobe adapters."""
+    """Deterministic registry, policy gate, readiness preflight, and router."""
 
     def __init__(self) -> None:
         self._adapters: dict[str, CreativeAdapter] = {}
@@ -93,7 +100,7 @@ class CapabilityRegistry:
 
         info = adapter.info()
         if not info.connected:
-            raise RuntimeError(f"application is not connected: {key}")
+            raise RuntimeError(f"adapter transport is not connected: {key}")
         if not info.supports(capability):
             raise LookupError(f"capability not supported by {key}: {capability}")
         return adapter
@@ -129,6 +136,20 @@ class CapabilityRegistry:
             if (wants_overwrite or path_exists) and not policy.allow_overwrite:
                 raise PolicyError("overwriting an existing output requires explicit authorization")
 
+    @staticmethod
+    def _enforce_application_ready(adapter: CreativeAdapter, info: AdapterInfo) -> None:
+        if info.readiness_probe is None:
+            return
+        probe = getattr(adapter, "probe_ready", None)
+        if not callable(probe):
+            raise RuntimeError(
+                f"application readiness probe is declared but unavailable: {info.application}"
+            )
+        readiness = probe()
+        if readiness.get("ready") is not True:
+            reason = str(readiness.get("reason") or "application readiness probe failed")
+            raise RuntimeError(f"application is not ready: {info.application} ({reason})")
+
     def execute(
         self,
         application: str,
@@ -139,5 +160,8 @@ class CapabilityRegistry:
     ) -> Mapping[str, Any]:
         adapter = self.resolve(application, capability)
         args = arguments or {}
-        self._enforce_policy(adapter.info(), capability, args, policy or ExecutionPolicy())
+        info = adapter.info()
+        self._enforce_policy(info, capability, args, policy or ExecutionPolicy())
+        if info.risk_for(capability) is not RiskClass.READ:
+            self._enforce_application_ready(adapter, info)
         return adapter.execute(capability, args)
