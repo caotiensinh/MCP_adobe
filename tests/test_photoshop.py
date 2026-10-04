@@ -20,6 +20,8 @@ class FakeClient:
         self.calls.append((name, dict(arguments)))
         if name in self.timeout_tools:
             raise TimeoutError(name)
+        if name == "photoshop_ping":
+            return {"text": "Successfully connected to Photoshop"}
         return {"tool": name, "arguments": dict(arguments)}
 
 
@@ -111,6 +113,7 @@ class PhotoshopAdapterTests(unittest.TestCase):
             policy=ExecutionPolicy(allow_native_script=True),
         )
         self.assertTrue(result["ok"])
+        self.assertEqual(client.calls[0][0], "photoshop_ping")
         self.assertEqual(client.calls[-1][0], "photoshop_execute_script")
 
 

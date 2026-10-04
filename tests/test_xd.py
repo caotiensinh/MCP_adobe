@@ -58,8 +58,11 @@ class XdAdapterTests(unittest.TestCase):
             {"width": 320, "height": 180, "fill": "#112233"},
         )
 
-        self.assertEqual(client.calls[0][0], "xd.queue.rectangle_create")
-        self.assertEqual(client.calls[0][1]["width"], 320)
+        self.assertEqual(
+            [name for name, _ in client.calls],
+            ["xd.health", "xd.queue.rectangle_create"],
+        )
+        self.assertEqual(client.calls[1][1]["width"], 320)
         self.assertTrue(result["result"]["approval_required"])
 
     def test_writes_can_be_disabled_by_gateway(self) -> None:
