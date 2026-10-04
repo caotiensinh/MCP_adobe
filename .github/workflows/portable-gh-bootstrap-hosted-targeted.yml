@@ -17,11 +17,16 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $portable = Join-Path $env:RUNNER_TEMP 'mcp-adobe-gh-portable-hosted'
-          Remove-Item -LiteralPath $portable -Recurse -Force -ErrorAction SilentlyContinue
+          $sandbox = Join-Path $env:RUNNER_TEMP 'mcp-adobe-gh-sandbox'
+          $portable = Join-Path $sandbox 'portable'
+          Remove-Item -LiteralPath $sandbox -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $sandbox | Out-Null
           $env:MCP_ADOBE_GH_PORTABLE_DIR = $portable
           $env:MCP_ADOBE_GH_INSTALL_MODE = 'portable'
           $env:MCP_ADOBE_GH_PATH = ''
+          $env:ProgramFiles = Join-Path $sandbox 'program-files'
+          ${env:ProgramFiles(x86)} = Join-Path $sandbox 'program-files-x86'
+          $env:LOCALAPPDATA = Join-Path $sandbox 'local-app-data'
           $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
           & $powershellExe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/dispatch_adobe_live_e2e.ps1 -BootstrapOnly
