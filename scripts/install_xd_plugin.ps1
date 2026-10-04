@@ -27,15 +27,39 @@ function Resolve-XdDevelopFolder {
     }
 
     $packagesRoot = Join-Path $env:LOCALAPPDATA 'Packages'
-    $candidates = @(
-        Get-ChildItem -LiteralPath $packagesRoot -Directory -Filter 'Adobe.CC.XD_*' -ErrorAction SilentlyContinue |
-            ForEach-Object { Join-Path $_.FullName 'LocalState\develop' }
-    )
-
-    $documented = Join-Path $packagesRoot 'Adobe.CC.XD_adky2gkssdxte\LocalState\develop'
-    if ($candidates -notcontains $documented) {
-        $candidates = @($documented) + $candidates
+    if (-not (Test-Path $packagesRoot)) {
+        throw "Windows app Packages directory was not found: $packagesRoot"
     }
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    # Prefer the actual package family registered for the logged-in user. Current
+    # XD releases can use Adobe.XD_<publisherId>; older releases used Adobe.CC.XD_*.
+    $registeredXdPackages = @(
+        Get-AppxPackage -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match 'Adobe.*XD|XD.*Adobe' }
+    )
+    foreach ($package in $registeredXdPackages) {
+        if (-not [string]::IsNullOrWhiteSpace($package.PackageFamilyName)) {
+            $candidates.Add(
+                (Join-Path $packagesRoot "$($package.PackageFamilyName)\LocalState\develop")
+            )
+        }
+    }
+
+    # Also inspect existing package sandboxes so local/internal installs work even
+    # when Get-AppxPackage metadata is unavailable to the current PowerShell host.
+    foreach ($pattern in @('Adobe.XD_*', 'Adobe.CC.XD_*')) {
+        Get-ChildItem -LiteralPath $packagesRoot -Directory -Filter $pattern -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $candidates.Add((Join-Path $_.FullName 'LocalState\develop'))
+            }
+    }
+
+    # Keep the documented legacy package path as the last compatibility fallback.
+    $candidates.Add(
+        (Join-Path $packagesRoot 'Adobe.CC.XD_adky2gkssdxte\LocalState\develop')
+    )
 
     foreach ($candidate in $candidates | Select-Object -Unique) {
         $localState = Split-Path -Parent $candidate
@@ -49,8 +73,9 @@ function Resolve-XdDevelopFolder {
 
     throw @'
 Adobe XD LocalState/develop folder was not found for the current Windows user.
-Open Adobe XD and use: Plugins > Development > Show Develop Folder
-Then rerun this script with -DevelopFolder "<that folder>".
+Open Adobe XD once so its LocalState sandbox is created, then rerun this script.
+If needed, use: Plugins > Development > Show Develop Folder
+and rerun with -DevelopFolder "<that folder>".
 '@
 }
 
