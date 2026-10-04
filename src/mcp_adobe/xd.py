@@ -5,6 +5,7 @@ from typing import Any, Mapping
 
 from .core import AdapterInfo, RiskClass
 from .photoshop import OperationUnknownError, UpstreamToolClient
+from .verification import pending_user_approval, unverified_mutation
 
 OFFICIAL_API_REPOSITORY = "AdobeXD/plugin-docs"
 OFFICIAL_API_SNAPSHOT = "c1abde873604a1606a5fdd5a578fba4502a7bdfc"
@@ -59,8 +60,6 @@ class XdAdapter:
             native_capabilities=native,
             capability_risks={name: binding.risk for name, binding in _BINDINGS.items()},
             writes_enabled=self._writes_enabled,
-            # Each approved batch is an atomic XD edit operation / Undo step, but
-            # no documented programmatic undo primitive was found in the audited API.
             undo_supported=False,
             transport="uxp-websocket-approval",
             upstream_repository=OFFICIAL_API_REPOSITORY,
@@ -84,10 +83,26 @@ class XdAdapter:
                 raise OperationUnknownError(capability, binding.bridge_method) from exc
             raise
 
-        return {
+        payload: dict[str, Any] = {
             "ok": True,
             "application": "xd",
             "capability": capability,
             "bridge_method": binding.bridge_method,
             "result": result,
         }
+        if binding.risk is RiskClass.READ:
+            payload["outcome"] = "read"
+            payload["verification"] = {"status": "not_applicable"}
+            return payload
+
+        if isinstance(result, Mapping) and (
+            result.get("approval_required") is True or result.get("status") == "queued"
+        ):
+            outcome, verification = pending_user_approval(result.get("operation_id"))
+        else:
+            outcome, verification = unverified_mutation(
+                "xd-mutation-response-not-confirmed-applied"
+            )
+        payload["outcome"] = outcome
+        payload["verification"] = verification
+        return payload
