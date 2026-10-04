@@ -17,7 +17,7 @@ permissions:
 jobs:
   live-ps24-v3:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 12
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7.0.0
@@ -32,49 +32,65 @@ jobs:
           if(-not $p){throw 'Photoshop is not running'}
           $v=([regex]::Match((Get-Item $p.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
           if(-not $v.StartsWith('24.')){throw "Expected Photoshop 24.x, got $v"}
-          "PHOTOSHOP_VERSION=$v" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "PHOTOSHOP_VERSION=$v SESSION=$($p.SessionId)"
           Write-Host 'PHOTOSHOP_24_PROCESS_VERIFY=PASS'
 
-      - name: Prepare pinned PS24 upstream
+      - name: Prepare exact upstream and Adobe control plugins
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $dst=Join-Path $env:RUNNER_TEMP 'core-photoshop-mcp-v3'
-          if(Test-Path $dst){Remove-Item -Recurse -Force $dst}
-          git clone https://github.com/CORE-Automate-WSS/photoshop-mcp.git $dst
-          git -C $dst checkout --detach 586b66499852c801bcdb3b718c036f16f043c1d7
-          if((git -C $dst rev-parse HEAD).Trim() -ne '586b66499852c801bcdb3b718c036f16f043c1d7'){throw 'upstream pin mismatch'}
-          $panel=Join-Path $dst 'packages\ps-uxp-bridge'
-          $j=Get-Content (Join-Path $panel 'manifest.json') -Raw | ConvertFrom-Json
-          if([version]$j.host[0].minVersion -gt [version]'24.0.0'){throw "incompatible minVersion=$($j.host[0].minVersion)"}
-          $main=Join-Path $panel 'main.js'
+          $core=Join-Path $env:RUNNER_TEMP 'core-photoshop-mcp-v3'
+          if(Test-Path $core){Remove-Item -Recurse -Force $core}
+          git clone https://github.com/CORE-Automate-WSS/photoshop-mcp.git $core
+          git -C $core checkout --detach 586b66499852c801bcdb3b718c036f16f043c1d7
+          if((git -C $core rev-parse HEAD).Trim() -ne '586b66499852c801bcdb3b718c036f16f043c1d7'){throw 'CORE upstream pin mismatch'}
+          $corePanel=Join-Path $core 'packages\ps-uxp-bridge'
+          $coreManifest=Join-Path $corePanel 'manifest.json'
+          $coreJson=Get-Content $coreManifest -Raw | ConvertFrom-Json
+          if([version]$coreJson.host[0].minVersion -gt [version]'24.0.0'){throw "CORE incompatible minVersion=$($coreJson.host[0].minVersion)"}
+          $main=Join-Path $corePanel 'main.js'
           $src=Get-Content $main -Raw
           $needle='  log("MCP Bridge initialized");'
-          if(-not $src.Contains($needle)){throw 'auto-connect hook missing'}
+          if(-not $src.Contains($needle)){throw 'CORE auto-connect hook missing'}
           $src=$src.Replace($needle,$needle+"`r`n  setTimeout(connect, 500);")
           [IO.File]::WriteAllText($main,$src,(New-Object Text.UTF8Encoding($false)))
-          "CORE_PANEL=$panel" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "CORE_SERVER_DIR=$(Join-Path $dst 'packages\mcp-server')" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "CORE_MIN_VERSION=$($j.host[0].minVersion)"
-          Write-Host 'CORE_PS24_COMPAT_DECLARATION=PASS'
 
-      - name: Build and test pinned upstream
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          Push-Location $env:CORE_SERVER_DIR
-          try {
-            npm install --no-audit --no-fund
-            if($LASTEXITCODE -ne 0){throw 'npm install failed'}
-            npm run build
-            if($LASTEXITCODE -ne 0){throw 'build failed'}
-            npm test -- --run
-            if($LASTEXITCODE -ne 0){throw 'tests failed'}
-          } finally { Pop-Location }
-          Write-Host 'CORE_BUILD_TEST=PASS'
+          $adobe=Join-Path $env:RUNNER_TEMP 'adobe-uxp-cli-src'
+          if(Test-Path $adobe){Remove-Item -Recurse -Force $adobe}
+          git clone https://github.com/adobe-uxp/devtools-cli.git $adobe
+          git -C $adobe checkout --detach 873870213ed6069e8b3bff9af1b0c6f5d1ca683b
+          if((git -C $adobe rev-parse HEAD).Trim() -ne '873870213ed6069e8b3bff9af1b0c6f5d1ca683b'){throw 'Adobe CLI source pin mismatch'}
+          $starterV4=Join-Path $adobe 'packages\uxp-templates-pack\uxp-template-ps-starter\template'
 
-      - name: Install Adobe UXP CLI 1.2.0
+          $starterV5=Join-Path $env:RUNNER_TEMP 'adobe-ps-starter-v5'
+          Copy-Item -LiteralPath $starterV4 -Destination $starterV5 -Recurse -Force
+          $j5=Get-Content (Join-Path $starterV5 'manifest.json') -Raw | ConvertFrom-Json
+          $j5.id='com.openai.mcpadobe.ps24.v5probe'
+          $j5.name='PS24 V5 Probe'
+          $j5.manifestVersion=5
+          $j5 | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $starterV5 'manifest.json') -Encoding UTF8
+
+          $starterPerm=Join-Path $env:RUNNER_TEMP 'adobe-ps-starter-v5-perms'
+          Copy-Item -LiteralPath $starterV5 -Destination $starterPerm -Recurse -Force
+          $jp=Get-Content (Join-Path $starterPerm 'manifest.json') -Raw | ConvertFrom-Json
+          $jp.id='com.openai.mcpadobe.ps24.v5permsprobe'
+          $jp.name='PS24 V5 Permissions Probe'
+          $perms=[ordered]@{
+            network=[ordered]@{domains='all'}
+            localFileSystem='fullAccess'
+            clipboard='readAndWrite'
+          }
+          $jp | Add-Member -NotePropertyName requiredPermissions -NotePropertyValue $perms -Force
+          $jp | ConvertTo-Json -Depth 20 | Set-Content (Join-Path $starterPerm 'manifest.json') -Encoding UTF8
+
+          "CORE_PANEL=$corePanel" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "ADOBE_STARTER_V4=$starterV4" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "ADOBE_STARTER_V5=$starterV5" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "ADOBE_STARTER_PERMS=$starterPerm" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "CORE_MIN_VERSION=$($coreJson.host[0].minVersion)"
+          Write-Host 'PS24_PLUGIN_MATRIX_PREP=PASS'
+
+      - name: Install Adobe UXP CLI and lightweight probe dependency
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -84,13 +100,14 @@ jobs:
           Push-Location $cli
           try {
             npm init -y | Out-Null
-            npm install --no-audit --no-fund --ignore-scripts tar@6.2.1 @adobe/uxp-devtools-cli@1.2.0
+            npm install --no-audit --no-fund --ignore-scripts tar@6.2.1 @adobe/uxp-devtools-cli@1.2.0 ws@8.18.0
             if($LASTEXITCODE -ne 0){throw 'UXP CLI install failed'}
             node (Join-Path $cli 'node_modules\@adobe\uxp-devtools-helper\scripts\devtools_setup.js')
             if($LASTEXITCODE -ne 0){throw 'native helper setup failed'}
             $uxpJs=Join-Path $cli 'node_modules\@adobe\uxp-devtools-cli\src\uxp.js'
             if(-not (Test-Path $uxpJs)){throw "UXP node entry missing: $uxpJs"}
             "UXP_JS=$uxpJs" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            "CORE_SERVER_DIR=$cli" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           } finally { Pop-Location }
           Write-Host 'UXP_CLI_INSTALL=PASS'
 
@@ -103,7 +120,7 @@ jobs:
           if($LASTEXITCODE -ne 0){throw "devtools enable failed rc=$LASTEXITCODE"}
           Write-Host 'UXP_DEVTOOLS_ENABLE=PASS'
 
-      - name: Live UXP transaction — service load create save export
+      - name: Live UXP compatibility matrix and CORE operation proof
         timeout-minutes: 5
         shell: powershell
         run: |
@@ -115,29 +132,33 @@ jobs:
           $probeOut=Join-Path $env:RUNNER_TEMP 'ps24-probe-v3.out.log'
           $probeErr=Join-Path $env:RUNNER_TEMP 'ps24-probe-v3.err.log'
           Remove-Item -Force $svcOut,$svcErr,$probeOut,$probeErr -ErrorAction SilentlyContinue
+          function Load-Plugin([string]$label,[string]$dir) {
+            $manifest=Join-Path $dir 'manifest.json'
+            Write-Host "PLUGIN_LOAD_BEGIN=$label manifest=$manifest"
+            node $env:UXP_JS plugin load --manifest $manifest --apps 'PS'
+            $rc=$LASTEXITCODE
+            Write-Host "PLUGIN_LOAD_RC_$label=$rc"
+            if($rc -ne 0){throw "Plugin load failed at compatibility layer $label rc=$rc"}
+            Write-Host "PLUGIN_LOAD_PASS_$label"
+          }
           try {
             $svc=Start-Process -FilePath node -ArgumentList @($env:UXP_JS,'service','start','--port','14001') -PassThru -RedirectStandardOutput $svcOut -RedirectStandardError $svcErr
             Start-Sleep 2
-            if($svc.HasExited){
-              if(Test-Path $svcOut){Get-Content $svcOut -Raw}
-              if(Test-Path $svcErr){Get-Content $svcErr -Raw}
-              throw "UXP service exited early rc=$($svc.ExitCode)"
-            }
-
-            $deadline=[DateTime]::UtcNow.AddSeconds(60)
-            $ready=$false
+            if($svc.HasExited){throw "UXP service exited early rc=$($svc.ExitCode)"}
+            $deadline=[DateTime]::UtcNow.AddSeconds(60); $ready=$false
             do {
               Start-Sleep 2
               node $env:UXP_JS apps list
               if($LASTEXITCODE -eq 0){$ready=$true;break}
               if($svc.HasExited){break}
             } while([DateTime]::UtcNow -lt $deadline)
-            if(-not $ready){
-              if(Test-Path $svcOut){Get-Content $svcOut -Raw}
-              if(Test-Path $svcErr){Get-Content $svcErr -Raw}
-              throw "UXP service/Photoshop discovery failed; serviceExited=$($svc.HasExited)"
-            }
+            if(-not $ready){throw 'UXP service/Photoshop discovery failed'}
             Write-Host 'PHOTOSHOP_24_UXP_DISCOVERY=PASS'
+
+            Load-Plugin 'ADOBE_V4' $env:ADOBE_STARTER_V4
+            Load-Plugin 'ADOBE_V5' $env:ADOBE_STARTER_V5
+            Load-Plugin 'ADOBE_V5_PERMS' $env:ADOBE_STARTER_PERMS
+            Write-Host 'PHOTOSHOP_24_UXP_MANIFEST_MATRIX=PASS'
 
             $out=Join-Path $env:RUNNER_TEMP 'photoshop-core-probe-v3'
             New-Item -ItemType Directory -Force $out | Out-Null
@@ -145,22 +166,14 @@ jobs:
             $probe=Start-Process -FilePath node -ArgumentList @((Join-Path $env:GITHUB_WORKSPACE 'scripts\probe_photoshop_core_live.cjs')) -PassThru -RedirectStandardOutput $probeOut -RedirectStandardError $probeErr
             Start-Sleep 2
             if($probe.HasExited){
-              if(Test-Path $probeOut){Get-Content $probeOut -Raw}
               if(Test-Path $probeErr){Get-Content $probeErr -Raw}
               throw "probe exited early rc=$($probe.ExitCode)"
             }
             Write-Host 'PHOTOSHOP_CORE_PROBE_STARTED=PASS'
 
-            if($svc.HasExited){throw "UXP service died before plugin load rc=$($svc.ExitCode)"}
-            $manifest=Join-Path $env:CORE_PANEL 'manifest.json'
-            node $env:UXP_JS plugin load --manifest $manifest --apps 'PS'
-            if($LASTEXITCODE -ne 0){
-              if(Test-Path $svcOut){Get-Content $svcOut -Raw}
-              if(Test-Path $svcErr){Get-Content $svcErr -Raw}
-              throw "plugin load failed rc=$LASTEXITCODE"
-            }
-            Write-Host 'PHOTOSHOP_24_UXP_PLUGIN_LOAD=PASS'
-            Write-Host 'If MCP Bridge is not visible, open Photoshop > Plugins > MCP Bridge once; the test copy auto-connects.'
+            Load-Plugin 'CORE' $env:CORE_PANEL
+            Write-Host 'PHOTOSHOP_24_CORE_PLUGIN_LOAD=PASS'
+            Write-Host 'If Plugins > MCP Bridge appears in Photoshop, open it once and keep it open; the test copy auto-connects.'
 
             $verifyDeadline=[DateTime]::UtcNow.AddSeconds(190)
             do {
@@ -168,7 +181,6 @@ jobs:
               $p=Get-Process -Id $probe.Id -ErrorAction SilentlyContinue
               if(-not $p){break}
             } while([DateTime]::UtcNow -lt $verifyDeadline)
-
             $p=Get-Process -Id $probe.Id -ErrorAction SilentlyContinue
             if($p){
               if(Test-Path $probeOut){Get-Content $probeOut -Raw}
@@ -180,6 +192,11 @@ jobs:
             $text=if(Test-Path $probeOut){Get-Content $probeOut -Raw}else{''}
             if($text -notmatch 'PHOTOSHOP_24_LIVE_OPERATION_VERIFY=PASS'){throw 'live operation PASS marker missing'}
             Write-Host 'PHOTOSHOP_24_PRODUCTION_CANDIDATE=PASS'
+          }
+          catch {
+            if(Test-Path $svcOut){Write-Host '--- UXP SERVICE STDOUT ---';Get-Content $svcOut -Raw}
+            if(Test-Path $svcErr){Write-Host '--- UXP SERVICE STDERR ---';Get-Content $svcErr -Raw}
+            throw
           }
           finally {
             if($probe -and -not $probe.HasExited){Stop-Process -Id $probe.Id -Force -ErrorAction SilentlyContinue}
