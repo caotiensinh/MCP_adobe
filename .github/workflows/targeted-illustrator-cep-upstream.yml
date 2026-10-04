@@ -5,6 +5,7 @@ on:
     branches: [fix/photoshop-path-override]
     paths:
       - ".github/workflows/targeted-illustrator-cep-upstream.yml"
+      - "scripts/probe_illustrator_cep_upstream.py"
 
 concurrency:
   group: targeted-illustrator-cep-upstream-${{ github.ref }}
@@ -84,10 +85,8 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $src=Join-Path $env:RUNNER_TEMP 'Illustrator_MCP_upstream'
           $venv=Join-Path $env:RUNNER_TEMP 'Illustrator_MCP_venv'
           $upstreamPython=Join-Path $venv 'Scripts\python.exe'
-
           $p=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
           $target=$null
           if($p){$target=$p.Path}
@@ -106,54 +105,6 @@ jobs:
           if(-not $target){throw 'Illustrator executable not found'}
           Write-Host "ILLUSTRATOR_EXE=$target"
           Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-
-          $probe=Join-Path $env:RUNNER_TEMP 'probe_jinkeda_cep.py'
-          $py=@'
-import os, subprocess, sys, time
-from mcp_adobe.mcp_stdio import McpSubprocessToolClient, SubprocessMcpConfig
-
-upstream_python = os.environ['UPSTREAM_PYTHON']
-illustrator_exe = os.environ['ILLUSTRATOR_EXE']
-client = McpSubprocessToolClient(SubprocessMcpConfig(
-    command=upstream_python,
-    args=('-B','-m','illustrator_mcp.server'),
-    env={'WS_HOST':'127.0.0.1','WS_PORT':'8081','TIMEOUT':'30'},
-    startup_timeout_seconds=45,
-    call_timeout_seconds=90,
-))
-try:
-    client.start()
-    print('TOOLS_COUNT='+str(len(client.tool_names)), flush=True)
-    required={'illustrator_connection_status','illustrator_document'}
-    missing=required-set(client.tool_names)
-    if missing:
-        raise RuntimeError('missing required tools: '+repr(sorted(missing)))
-    subprocess.Popen([illustrator_exe])
-    deadline=time.time()+75
-    last=None
-    while time.time()<deadline:
-        try:
-            last=client.call_tool('illustrator_connection_status', {'params': {'probe': True}})
-            print('CONNECTION_STATUS='+repr(last), flush=True)
-            text=repr(last).lower()
-            if 'connected' in text and 'false' not in text:
-                break
-        except Exception as exc:
-            last={'exception':repr(exc)}
-            print('CONNECTION_RETRY='+repr(last), flush=True)
-        time.sleep(2)
-    else:
-        raise RuntimeError('CEP panel did not connect: '+repr(last))
-    result=client.call_tool('illustrator_document', {'params': {'action':'create'}})
-    print('CREATE_RESULT='+repr(result), flush=True)
-    low=repr(result).lower()
-    if 'error' in low and ('true' in low or 'failed' in low or 'not connected' in low):
-        raise RuntimeError('document create returned error: '+repr(result))
-    print('CEP_LIVE_CREATE=PASS', flush=True)
-finally:
-    client.close()
-'@
-          [IO.File]::WriteAllText($probe,$py,(New-Object Text.UTF8Encoding($false)))
           $env:UPSTREAM_PYTHON=$upstreamPython
           $env:ILLUSTRATOR_EXE=$target
-          uv run python $probe
+          uv run python scripts/probe_illustrator_cep_upstream.py
