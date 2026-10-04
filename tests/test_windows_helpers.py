@@ -170,6 +170,51 @@ class WindowsHelperSyntaxTests(unittest.TestCase):
         combined = result.stdout + result.stderr
         self.assertIn("-XdWrite requires XD live E2E", combined)
 
+    def test_one_command_wrapper_preflights_github_before_interactive_guard(self) -> None:
+        launcher = ROOT / "scripts" / "run_adobe_live_e2e.ps1"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            gh_log = temp / "gh.log"
+            fake_gh = temp / "gh.cmd"
+            fake_gh.write_text(
+                "@echo off\r\n"
+                ">>\"%GH_LOG%\" echo %*\r\n"
+                "exit /b 0\r\n",
+                encoding="utf-8",
+            )
+
+            env = os.environ.copy()
+            env["GH_LOG"] = str(gh_log)
+            env["PATH"] = str(temp) + os.pathsep + env.get("PATH", "")
+            result = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(launcher),
+                ],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            calls = gh_log.read_text(encoding="utf-8", errors="replace")
+            self.assertIn("auth status --hostname github.com", calls)
+            self.assertNotIn("workflow run", calls)
+            self.assertIn("PASS: GitHub CLI live-E2E dispatch preflight", result.stdout)
+            combined = result.stdout + result.stderr
+            self.assertIn("logged-in MRCAO desktop session", combined)
+
 
 if __name__ == "__main__":
     unittest.main()
