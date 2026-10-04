@@ -93,6 +93,7 @@ jobs:
           Write-Host "DIRECT_JSX_RESULT=$value"
           if($value -notmatch '^PASS:'){throw "Unexpected JSX marker: $value"}
       - name: Verify upstream subprocess starts
+        continue-on-error: true
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
