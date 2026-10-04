@@ -144,17 +144,35 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           uv run python scripts/real_e2e.py illustrator
-      - name: Illustrator live write E2E
+      - name: Reset Illustrator smoke output
+        shell: powershell
+        run: |
+          $out=Join-Path $env:RUNNER_TEMP 'mcp_adobe_targeted\illustrator'
+          if(Test-Path $out){Remove-Item -Recurse -Force $out}
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+      - name: Illustrator create document hard gate
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           $out=Join-Path $env:RUNNER_TEMP 'mcp_adobe_targeted\illustrator'
-          if(Test-Path $out){Remove-Item -Recurse -Force $out}
-          New-Item -ItemType Directory -Force -Path $out | Out-Null
-          uv run python scripts/real_e2e.py illustrator --write --output-dir $out
-          $files=@(Get-ChildItem -Path $out -File)
-          $files | Select-Object Name,Length,LastWriteTime
-          if($files.Count -eq 0){throw 'Illustrator write E2E produced no output files'}
+          uv run python scripts/real_e2e.py illustrator --write --write-stage create --output-dir $out
+      - name: Illustrator save document hard gate
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $out=Join-Path $env:RUNNER_TEMP 'mcp_adobe_targeted\illustrator'
+          uv run python scripts/real_e2e.py illustrator --write --write-stage save --output-dir $out
+          $ai=Join-Path $out 'mcp_adobe_smoke.ai'
+          if(-not (Test-Path -LiteralPath $ai -PathType Leaf)){throw 'Illustrator save produced no AI file'}
+      - name: Illustrator export PNG hard gate
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $out=Join-Path $env:RUNNER_TEMP 'mcp_adobe_targeted\illustrator'
+          uv run python scripts/real_e2e.py illustrator --write --write-stage export --output-dir $out
+          $png=Join-Path $out 'mcp_adobe_smoke.png'
+          if(-not (Test-Path -LiteralPath $png -PathType Leaf)){throw 'Illustrator export produced no PNG file'}
+          Get-ChildItem -Path $out -File | Select-Object Name,Length,LastWriteTime
       - name: Photoshop live read E2E
         continue-on-error: true
         shell: powershell
