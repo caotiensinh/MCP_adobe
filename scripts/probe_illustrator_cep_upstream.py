@@ -150,7 +150,10 @@ def main() -> int:
             raise RuntimeError(f"missing required tools: {sorted(missing)!r}")
 
         subprocess.Popen([illustrator_exe])
-        deadline = time.time() + 35
+        # Illustrator 2023 can take well over 35 seconds on a cold start before
+        # CEPHtmlEngine is spawned. Run #13 showed the CEP processes only during
+        # runner cleanup after the previous 35-second gate had already failed.
+        deadline = time.time() + 90
         last: object = None
         dumped_mid = False
         while time.time() < deadline:
@@ -165,7 +168,9 @@ def main() -> int:
             except Exception as exc:  # diagnostic retry while panel starts
                 last = {"exception": repr(exc)}
                 print(f"CONNECTION_RETRY={last!r}", flush=True)
-            if not dumped_mid and time.time() > deadline - 20:
+            # Keep diagnostics late enough that their process/log scan does not
+            # steal the cold-start window from Illustrator/CEP initialization.
+            if not dumped_mid and time.time() > deadline - 30:
                 _dump_cep_runtime("mid-wait")
                 dumped_mid = True
             time.sleep(2)
