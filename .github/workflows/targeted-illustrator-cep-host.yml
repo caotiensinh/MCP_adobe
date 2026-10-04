@@ -16,7 +16,7 @@ permissions:
 jobs:
   cep-host:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
       - name: Inspect CEP host configuration and logs
         shell: powershell
@@ -25,26 +25,18 @@ jobs:
           Write-Host "USER=$env:USERDOMAIN\\$env:USERNAME"
           Write-Host "PROFILE=$env:USERPROFILE"
           Write-Host "APPDATA=$env:APPDATA"
+          Write-Host "LOCALAPPDATA=$env:LOCALAPPDATA"
           Write-Host "SESSION_ID=$([Diagnostics.Process]::GetCurrentProcess().SessionId)"
 
-          Write-Host '=== Illustrator process ==='
-          Get-Process -Name Illustrator -ErrorAction SilentlyContinue |
-            Select-Object ProcessName,Id,SessionId,Path | Format-List
-
-          Write-Host '=== CEPHtmlEngine processes before restart ==='
-          Get-Process -Name CEPHtmlEngine -ErrorAction SilentlyContinue |
-            Select-Object ProcessName,Id,SessionId,Path | Format-List
-
           Write-Host '=== CSXS registry keys ==='
-          foreach($root in @('HKCU:\Software\Adobe','HKLM:\Software\Adobe','HKLM:\Software\WOW6432Node\Adobe')) {
-            if(Test-Path $root) {
-              Get-ChildItem $root -ErrorAction SilentlyContinue |
-                Where-Object {$_.PSChildName -like 'CSXS*'} |
-                ForEach-Object {
-                  Write-Host "KEY=$($_.Name)"
-                  Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue | Format-List *
-                }
-            }
+          foreach($key in @(
+            'HKCU:\Software\Adobe\CSXS.9',
+            'HKCU:\Software\Adobe\CSXS.10',
+            'HKCU:\Software\Adobe\CSXS.11',
+            'HKCU:\Software\Adobe\CSXS.12'
+          )) {
+            Write-Host "KEY=$key EXISTS=$(Test-Path $key)"
+            if(Test-Path $key){Get-ItemProperty $key -ErrorAction SilentlyContinue | Format-List *}
           }
 
           Write-Host '=== CEP extension locations ==='
@@ -61,14 +53,13 @@ jobs:
             }
           }
 
-          Write-Host '=== Installed MCP panel manifest ==='
           $panel=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel'
           $manifest=Join-Path $panel 'CSXS\manifest.xml'
           Write-Host "PANEL=$panel EXISTS=$(Test-Path -LiteralPath $panel)"
           Write-Host "MANIFEST=$manifest EXISTS=$(Test-Path -LiteralPath $manifest)"
           if(Test-Path -LiteralPath $manifest){Get-Content -LiteralPath $manifest -Raw}
 
-          Write-Host '=== Restart Illustrator and inspect CEP host ==='
+          Write-Host '=== Resolve and restart Illustrator ==='
           $p=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
           $target=$null
           if($p){$target=$p.Path}
@@ -84,30 +75,31 @@ jobs:
               if($target){break}
             }
           }
+          if(-not $target){throw 'Illustrator executable not found'}
           Write-Host "ILLUSTRATOR_EXE=$target"
-          if($target) {
-            Get-Process -Name Illustrator,CEPHtmlEngine -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 2
-            Start-Process -FilePath $target | Out-Null
-            Start-Sleep -Seconds 20
-          }
+          Get-Process -Name Illustrator,CEPHtmlEngine -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Start-Process -FilePath $target | Out-Null
+          Start-Sleep -Seconds 20
+
+          Write-Host '=== Adobe host processes after restart ==='
           Get-Process -Name Illustrator,CEPHtmlEngine -ErrorAction SilentlyContinue |
             Select-Object ProcessName,Id,SessionId,Path | Format-Table -AutoSize
 
-          Write-Host '=== Recent Adobe/CEP/PlugPlug logs ==='
-          $logRoots=@(
-            (Join-Path $env:LOCALAPPDATA 'Temp'),
-            (Join-Path $env:LOCALAPPDATA 'Adobe'),
-            (Join-Path $env:APPDATA 'Adobe')
+          Write-Host '=== Targeted CEP/CSXS log locations ==='
+          $logDirs=@(
+            (Join-Path $env:LOCALAPPDATA 'Temp\CEPHtmlEngine'),
+            (Join-Path $env:LOCALAPPDATA 'Adobe\CEP'),
+            (Join-Path $env:LOCALAPPDATA 'Adobe\CSXS'),
+            (Join-Path $env:APPDATA 'Adobe\CEP'),
+            (Join-Path $env:APPDATA 'Adobe\CSXS')
           )
-          foreach($root in $logRoots) {
-            if(-not (Test-Path -LiteralPath $root)){continue}
-            Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
-              Where-Object {
-                $_.LastWriteTime -gt (Get-Date).AddMinutes(-15) -and
-                ($_.Name -match 'cep|plugplug|illustrator|csxs' -or $_.DirectoryName -match 'cep|plugplug|csxs')
-              } |
-              Sort-Object LastWriteTime -Descending |
-              Select-Object -First 40 FullName,Length,LastWriteTime |
-              Format-Table -AutoSize
+          foreach($dir in $logDirs) {
+            Write-Host "LOGDIR=$dir EXISTS=$(Test-Path -LiteralPath $dir)"
+            if(Test-Path -LiteralPath $dir) {
+              Get-ChildItem -LiteralPath $dir -Recurse -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -First 20 FullName,Length,LastWriteTime |
+                Format-Table -AutoSize
+            }
           }
