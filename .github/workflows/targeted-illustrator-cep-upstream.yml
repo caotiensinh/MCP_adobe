@@ -76,45 +76,47 @@ jobs:
           }
           Write-Host 'CEP_STARTON_PATCH=PASS'
 
-          # Runtime probe executes before the Vite/React module. It proves whether
-          # CEP page JS, Node integration, and a raw WebSocket can work independently.
+          # Runtime probe executes before the Vite/React module. Build it from a
+          # PowerShell string array so GitHub Actions YAML cannot be broken by a
+          # column-zero here-string body.
           $index=Join-Path $cep 'dist\index.html'
           $html=[IO.File]::ReadAllText($index)
           $moduleMarker='<script type="module"'
-          $probe=@'
-<script>
-(function () {
-  try {
-    var fs = require('fs');
-    var path = require('path');
-    var marker = path.join(process.env.TEMP, 'mcp_adobe_cep_inline_probe.txt');
-    function log(value) { try { fs.appendFileSync(marker, String(value) + '\n'); } catch (_) {} }
-    fs.writeFileSync(marker, 'INLINE_START\n');
-    window.addEventListener('error', function (event) {
-      log('WINDOW_ERROR:' + (event && event.message ? event.message : 'unknown'));
-    });
-    window.addEventListener('unhandledrejection', function (event) {
-      log('UNHANDLED:' + String(event && event.reason ? event.reason : 'unknown'));
-    });
-    try {
-      var socket = new WebSocket('ws://127.0.0.1:8081');
-      socket.onopen = function () { log('WS_OPEN'); };
-      socket.onerror = function () { log('WS_ERROR'); };
-      socket.onclose = function (event) { log('WS_CLOSE:' + event.code); };
-      window.__mcpAdobeProbeSocket = socket;
-    } catch (error) {
-      log('WS_CREATE_ERROR:' + String(error));
-    }
-    setTimeout(function () {
-      var root = document.getElementById('root');
-      log('ROOT_LEN:' + (root ? root.innerHTML.length : -1));
-    }, 5000);
-  } catch (error) {
-    try { document.title = 'MCP_PROBE_ERROR:' + String(error); } catch (_) {}
-  }
-})();
-</script>
-'@
+          $probeLines=@(
+            '<script>',
+            '(function () {',
+            '  try {',
+            "    var fs = require('fs');",
+            "    var path = require('path');",
+            "    var marker = path.join(process.env.TEMP, 'mcp_adobe_cep_inline_probe.txt');",
+            "    function log(value) { try { fs.appendFileSync(marker, String(value) + '\n'); } catch (_) {} }",
+            "    fs.writeFileSync(marker, 'INLINE_START\n');",
+            "    window.addEventListener('error', function (event) {",
+            "      log('WINDOW_ERROR:' + (event && event.message ? event.message : 'unknown'));",
+            '    });',
+            "    window.addEventListener('unhandledrejection', function (event) {",
+            "      log('UNHANDLED:' + String(event && event.reason ? event.reason : 'unknown'));",
+            '    });',
+            '    try {',
+            "      var socket = new WebSocket('ws://127.0.0.1:8081');",
+            "      socket.onopen = function () { log('WS_OPEN'); };",
+            "      socket.onerror = function () { log('WS_ERROR'); };",
+            "      socket.onclose = function (event) { log('WS_CLOSE:' + event.code); };",
+            '      window.__mcpAdobeProbeSocket = socket;',
+            '    } catch (error) {',
+            "      log('WS_CREATE_ERROR:' + String(error));",
+            '    }',
+            '    setTimeout(function () {',
+            "      var root = document.getElementById('root');",
+            "      log('ROOT_LEN:' + (root ? root.innerHTML.length : -1));",
+            '    }, 5000);',
+            '  } catch (error) {',
+            "    try { document.title = 'MCP_PROBE_ERROR:' + String(error); } catch (_) {}",
+            '  }',
+            '})();',
+            '</script>'
+          )
+          $probe=$probeLines -join "`r`n"
           $pos=$html.IndexOf($moduleMarker)
           if($pos -lt 0){throw 'Vite module script marker not found in built index.html'}
           $html=$html.Insert($pos,$probe + "`r`n  ")
