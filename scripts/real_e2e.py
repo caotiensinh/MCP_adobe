@@ -43,6 +43,16 @@ def _require_tools(client: Any, required: set[str]) -> None:
     _emit("PASS", "tools/list", {"required": sorted(required), "available_count": len(available)})
 
 
+def _photoshop_ping_ready(result: Mapping[str, Any]) -> bool:
+    if result.get("connected") is True:
+        return True
+    for key in ("text", "value", "message"):
+        value = result.get(key)
+        if isinstance(value, str) and "successfully connected to photoshop" in value.lower():
+            return True
+    return False
+
+
 def _photoshop(client: Any, write: bool, output_dir: Path) -> None:
     required = {"photoshop_ping", "photoshop_get_state"}
     if write:
@@ -50,6 +60,8 @@ def _photoshop(client: Any, write: bool, output_dir: Path) -> None:
     _require_tools(client, required)
 
     ping = _call(client, "photoshop_ping")
+    if not _photoshop_ping_ready(ping):
+        raise SmokeFailure(f"photoshop_ping not connected: {dict(ping)}")
     _emit("PASS", "photoshop_ping", ping)
     state = _call(client, "photoshop_get_state")
     _emit("PASS", "photoshop_get_state", state)
