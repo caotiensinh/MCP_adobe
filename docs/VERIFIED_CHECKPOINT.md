@@ -4,17 +4,17 @@ Last updated: 2026-10-04 JST
 
 ## Exact verified software head
 
-- GitHub Actions run: `#61` (`37175389894`)
-- Exact code head: `d00e786649c55a331ac384f05d1867175b6d48a3`
+- GitHub Actions run: `#62` (`37177148764`)
+- Exact code head: `943ab0300369d27de1ddf195ddd382ffed5f9d9c`
 - Windows self-hosted runner: `windows` on `MRCAO`
-- Unit/regression result: **114/114 PASS**
+- Unit/regression result: **119/119 PASS**
 - Claude Desktop MCPB validate/pack: **PASS**
 - Packaged MCP `tools/list`: **PASS**
 - Packaged Photoshop/Illustrator/XD adapter discovery: **PASS**
 - MCPB packaged runtime smoke: **PASS**
 - MCPB artifact upload: **PASS**
-- MCPB artifact ID: `11293825026`
-- Uploaded artifact SHA-256: `23e8ee1949723b7454fa999456f281c295e4f5f7c0b9b543f9d9881feceef13e`
+- MCPB artifact ID: `11293438904`
+- Uploaded artifact SHA-256: `17a0b1ca08e2bab03d9152e920647681ad154f53377b236b9ad870d8da63eead`
 - Adobe XD manifest/main.js static validation: **PASS**
 
 ## Reliability boundaries now enforced
@@ -43,7 +43,29 @@ Before a non-read capability is allowed, the built-in adapters reuse an applicat
 
 Successful readiness is cached briefly to avoid probing the Adobe app on every mutation. Mutating timeout invalidates the cache.
 
-### 2. Application readiness is not operation completion
+### 2. Packaged Claude Desktop discovery enforces the same contract
+
+`scripts/smoke_mcpb.py` now fails the packaged runtime smoke if any built-in adapter regresses from the discovery contract.
+
+The `.mcpb` artifact must expose:
+
+- top-level `connection_contract` with `connected_means="transport_connected"`;
+- `connection_semantics="transport_only"` for Photoshop, Illustrator, and XD;
+- `transport_connected == connected` for backward compatibility;
+- `readiness_probe="creative.health"` for all built-in adapters;
+- `readiness_status="not_probed"` during discovery.
+
+Run #62 proved this contract against the actual packed Claude Desktop artifact. The packaged smoke reported:
+
+```text
+Photoshop:   transport_connected=true  readiness_status=not_probed
+Illustrator: transport_connected=true  readiness_status=not_probed
+XD:          transport_connected=false readiness_status=not_probed
+```
+
+Those transport values are not desktop-readiness claims.
+
+### 3. Application readiness is not operation completion
 
 Mutation results keep the backward-compatible `ok`/`result` fields and additionally report explicit outcome/verification metadata.
 
@@ -61,7 +83,7 @@ application ready != operation verified
 
 ## Adobe XD Windows package compatibility
 
-The live-E2E preparation path now supports the current Windows XD package identity observed on MRCAO as well as the legacy identity:
+The live-E2E preparation path supports the current Windows XD package identity observed on MRCAO as well as the legacy identity:
 
 - current package sandboxes matching `Adobe.XD_*`;
 - legacy package sandboxes matching `Adobe.CC.XD_*`;
@@ -76,16 +98,16 @@ Targeted Windows evidence before merge:
 - PowerShell helper parse test: **PASS**;
 - real installer against a fake modern `Adobe.XD_*` LocalState sandbox: **PASS**.
 
-## Evidence from run #61
+## Evidence from run #62
 
 The full exact-head log reported:
 
 ```text
-Ran 114 tests in 47.446s
+Ran 119 tests in 84.209s
 OK
 ```
 
-The modern XD package installer test was discovered in the full suite and passed.
+The packaged runtime smoke passed against `mcp-adobe-creative-gateway.mcpb`, including the new transport/readiness contract gate. The artifact was uploaded with SHA-256 `17a0b1ca08e2bab03d9152e920647681ad154f53377b236b9ad870d8da63eead`.
 
 The packaged runtime can launch and discover the pinned Photoshop and Illustrator downstream MCP servers, but that does **not** claim the desktop applications themselves are ready. The same run inventory reported:
 
