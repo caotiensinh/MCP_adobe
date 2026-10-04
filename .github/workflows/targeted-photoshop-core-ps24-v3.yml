@@ -116,7 +116,6 @@ jobs:
           $probeErr=Join-Path $env:RUNNER_TEMP 'ps24-probe-v3.err.log'
           Remove-Item -Force $svcOut,$svcErr,$probeOut,$probeErr -ErrorAction SilentlyContinue
           try {
-            # Keep the Adobe service process alive in THIS SAME Actions step.
             $svc=Start-Process -FilePath node -ArgumentList @($env:UXP_JS,'service','start','--port','14001') -PassThru -RedirectStandardOutput $svcOut -RedirectStandardError $svcErr
             Start-Sleep 2
             if($svc.HasExited){
@@ -152,10 +151,9 @@ jobs:
             }
             Write-Host 'PHOTOSHOP_CORE_PROBE_STARTED=PASS'
 
-            # Service must remain alive while plugin load talks to it.
             if($svc.HasExited){throw "UXP service died before plugin load rc=$($svc.ExitCode)"}
             $manifest=Join-Path $env:CORE_PANEL 'manifest.json'
-            node $env:UXP_JS plugin load --manifest $manifest --apps "PS@$env:PHOTOSHOP_VERSION"
+            node $env:UXP_JS plugin load --manifest $manifest --apps 'PS'
             if($LASTEXITCODE -ne 0){
               if(Test-Path $svcOut){Get-Content $svcOut -Raw}
               if(Test-Path $svcErr){Get-Content $svcErr -Raw}
