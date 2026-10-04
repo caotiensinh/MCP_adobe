@@ -102,11 +102,17 @@ class SmokeTests(unittest.TestCase):
     def test_logical_error_true_fails(self):
         class LogicalErrorClient(IllustratorClient):
             def call_tool(self, name, arguments):
-                if name == "get_document_info":
-                    return {"error": True, "message": "Illustrator unavailable"}
+                if name == "create_document":
+                    return {"error": True, "message": "Illustrator create unavailable"}
                 return super().call_tool(name, arguments)
 
-        self.assertEqual(real_e2e.run("illustrator", write=True, client_factory=LogicalErrorClient), 1)
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(
+                real_e2e.run(
+                    "illustrator", write=True, output_dir=Path(td), client_factory=LogicalErrorClient
+                ),
+                1,
+            )
 
     def test_logical_success_false_fails(self):
         class LogicalFailureClient(IllustratorClient):
