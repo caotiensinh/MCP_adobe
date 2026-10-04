@@ -99,6 +99,39 @@ class SmokeTests(unittest.TestCase):
             self.assertTrue((Path(td) / "mcp_adobe_smoke.ai").exists())
             self.assertTrue((Path(td) / "mcp_adobe_smoke.png").exists())
 
+    def test_logical_error_true_fails(self):
+        class LogicalErrorClient(IllustratorClient):
+            def call_tool(self, name, arguments):
+                if name == "get_document_info":
+                    return {"error": True, "message": "Illustrator unavailable"}
+                return super().call_tool(name, arguments)
+
+        self.assertEqual(real_e2e.run("illustrator", write=True, client_factory=LogicalErrorClient), 1)
+
+    def test_logical_success_false_fails(self):
+        class LogicalFailureClient(IllustratorClient):
+            def call_tool(self, name, arguments):
+                if name == "create_document":
+                    return {"success": False, "message": "create failed"}
+                return super().call_tool(name, arguments)
+
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(
+                real_e2e.run(
+                    "illustrator", write=True, output_dir=Path(td), client_factory=LogicalFailureClient
+                ),
+                1,
+            )
+
+    def test_logical_ok_false_fails(self):
+        class LogicalFailureClient(PhotoshopClient):
+            def call_tool(self, name, arguments):
+                if name == "photoshop_get_state":
+                    return {"ok": False, "message": "state failed"}
+                return super().call_tool(name, arguments)
+
+        self.assertEqual(real_e2e.run("photoshop", client_factory=LogicalFailureClient), 1)
+
     def test_missing_tool_fails(self):
         class Missing(FakeClient):
             toolset = {"photoshop_ping"}
