@@ -1,4 +1,4 @@
-name: Targeted Illustrator session diagnostics
+name: Targeted Illustrator JSX CLI variants
 
 on:
   push:
@@ -14,28 +14,60 @@ permissions:
   contents: read
 
 jobs:
-  session-diagnostics:
+  cli-variants:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
-      - name: Inspect runner and Adobe Windows sessions
+      - name: Probe Illustrator JSX launch variants
         shell: powershell
         run: |
-          $ErrorActionPreference='Continue'
-          Write-Host "CURRENT_USER=$env:USERNAME"
-          Write-Host "CURRENT_SESSION_ID=$([System.Diagnostics.Process]::GetCurrentProcess().SessionId)"
-          Write-Host '=== Relevant processes ==='
-          Get-Process -ErrorAction SilentlyContinue |
-            Where-Object { $_.ProcessName -match 'Runner|Illustrator|Photoshop|powershell|explorer' } |
-            Sort-Object SessionId,ProcessName |
-            Select-Object ProcessName,Id,SessionId,Path |
-            Format-Table -AutoSize
-          Write-Host '=== quser ==='
-          quser 2>&1
-          Write-Host '=== qwinsta ==='
-          qwinsta 2>&1
-          Write-Host '=== service status ==='
-          Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match 'actions.runner|github' -or $_.DisplayName -match 'Actions Runner|GitHub' } |
-            Select-Object Name,State,StartName,ProcessId,PathName |
-            Format-List
+          $ErrorActionPreference='Stop'
+          $p=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
+          $target=$null
+          if($p){$target=$p.Path}
+          if(-not $target){
+            $shell=New-Object -ComObject WScript.Shell
+            $roots=@((Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),(Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'))
+            foreach($root in $roots){
+              if(-not (Test-Path -LiteralPath $root)){continue}
+              foreach($lnk in @(Get-ChildItem -LiteralPath $root -Recurse -Filter '*.lnk' -File -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'Illustrator'})){
+                $candidate=$shell.CreateShortcut($lnk.FullName).TargetPath
+                if($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)){$target=$candidate;break}
+              }
+              if($target){break}
+            }
+          }
+          if(-not $target){throw 'Illustrator executable not found'}
+          Write-Host "ILLUSTRATOR_EXE=$target"
+
+          $variants=@(
+            @{Name='plain'; Prefix=@()},
+            @{Name='dash_r'; Prefix=@('-r')},
+            @{Name='slash_run'; Prefix=@('/run')},
+            @{Name='dash_run'; Prefix=@('-run')}
+          )
+          $passed=$false
+          foreach($v in $variants){
+            Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+            $marker=Join-Path $env:RUNNER_TEMP ("mcp_adobe_illustrator_"+$v.Name+"_marker.txt")
+            $jsx=Join-Path $env:RUNNER_TEMP ("mcp_adobe_illustrator_"+$v.Name+"_probe.jsx")
+            Remove-Item -Force $marker,$jsx -ErrorAction SilentlyContinue
+            $markerJs=$marker.Replace('\','/')
+            $script="#target illustrator`nvar f=new File('$markerJs'); if(!f.open('w')){throw new Error('open marker failed');} f.write('PASS:'+app.version); f.close();"
+            [IO.File]::WriteAllText($jsx,$script,(New-Object Text.UTF8Encoding($false)))
+            $args=@($v.Prefix)+@($jsx)
+            Write-Host "=== VARIANT=$($v.Name) ARGS=$($args -join ' ') ==="
+            Start-Process -FilePath $target -ArgumentList $args | Out-Null
+            $deadline=[DateTime]::UtcNow.AddSeconds(20)
+            while(-not (Test-Path -LiteralPath $marker) -and [DateTime]::UtcNow -lt $deadline){Start-Sleep -Milliseconds 500}
+            if(Test-Path -LiteralPath $marker){
+              $value=Get-Content -LiteralPath $marker -Raw
+              Write-Host "VARIANT_RESULT=$($v.Name):$value"
+              if($value -match '^PASS:'){$passed=$true;break}
+            } else {
+              $proc=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Select-Object -First 1
+              Write-Host "VARIANT_RESULT=$($v.Name):NO_MARKER process_running=$([bool]$proc)"
+            }
+          }
+          if(-not $passed){throw 'All Illustrator direct JSX CLI variants failed'}
