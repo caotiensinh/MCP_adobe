@@ -66,6 +66,7 @@ jobs:
             Write-Host "COM_ERROR=$($_.Exception.Message)"
           }
       - name: Probe direct Photoshop JSX execution without COM
+        continue-on-error: true
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -116,6 +117,24 @@ jobs:
           do{Start-Sleep -Milliseconds 500;$p=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Select-Object -First 1}while(-not $p -and [DateTime]::UtcNow -lt $deadline)
           if(-not $p){throw 'Illustrator did not start within 30 seconds'}
           Start-Sleep -Seconds 5
+      - name: Diagnose Illustrator COM registration
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          Write-Host '=== Illustrator COM ProgIDs in HKCR ==='
+          Get-ChildItem 'Registry::HKEY_CLASSES_ROOT' -ErrorAction SilentlyContinue |
+            Where-Object { $_.PSChildName -like 'Illustrator.Application*' } |
+            ForEach-Object { Write-Host "PROGID=$($_.PSChildName)" }
+          try {
+            $app=New-Object -ComObject Illustrator.Application -ErrorAction Stop
+            Write-Host 'ILLUSTRATOR_COM_ACTIVATION=PASS'
+            try { Write-Host "ILLUSTRATOR_COM_VERSION=$($app.Version)" } catch {}
+            [Runtime.InteropServices.Marshal]::FinalReleaseComObject($app) | Out-Null
+          } catch {
+            Write-Host 'ILLUSTRATOR_COM_ACTIVATION=FAIL'
+            Write-Host "ILLUSTRATOR_COM_HRESULT=0x$('{0:X8}' -f ($_.Exception.HResult -band 0xffffffffL))"
+            Write-Host "ILLUSTRATOR_COM_ERROR=$($_.Exception.Message)"
+          }
       - name: Illustrator live read E2E
         continue-on-error: true
         shell: powershell
