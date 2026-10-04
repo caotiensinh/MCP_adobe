@@ -76,9 +76,7 @@ jobs:
           }
           Write-Host 'CEP_STARTON_PATCH=PASS'
 
-          # Runtime probe executes before the Vite/React module. Build it from a
-          # PowerShell string array so GitHub Actions YAML cannot be broken by a
-          # column-zero here-string body.
+          # Runtime probe executes before the Vite/React module.
           $index=Join-Path $cep 'dist\index.html'
           $html=[IO.File]::ReadAllText($index)
           $moduleMarker='<script type="module"'
@@ -120,6 +118,18 @@ jobs:
           $pos=$html.IndexOf($moduleMarker)
           if($pos -lt 0){throw 'Vite module script marker not found in built index.html'}
           $html=$html.Insert($pos,$probe + "`r`n  ")
+
+          # Illustrator 2023 runs CEP 11. Prove whether Vite's module entry is the
+          # compatibility blocker by loading the already-single-file entry as a
+          # classic script. No source/runtime behavior is otherwise changed.
+          $html=[regex]::Replace(
+            $html,
+            '<script type="module"\s+crossorigin\s+src="(\./assets/[^\"]+\.js)"></script>',
+            '<script src="$1"></script>'
+          )
+          if($html -match '<script type="module"'){throw 'CEP classic-entry rewrite failed'}
+          Write-Host 'CEP_CLASSIC_ENTRY_PATCH=PASS'
+
           [IO.File]::WriteAllText($index,$html,(New-Object Text.UTF8Encoding($false)))
           if([IO.File]::ReadAllText($index) -notmatch 'mcp_adobe_cep_inline_probe'){throw 'CEP inline runtime probe injection failed'}
           Write-Host 'CEP_INLINE_RUNTIME_PROBE=INSTALLED'
