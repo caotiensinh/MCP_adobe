@@ -3,7 +3,10 @@ const path = require('path');
 
 const serverDir = process.env.CORE_SERVER_DIR;
 if (!serverDir) throw new Error('CORE_SERVER_DIR is required');
-const { WebSocketServer } = require(path.join(serverDir, 'node_modules', 'ws'));
+const wsModule = require(path.join(serverDir, 'node_modules', 'ws'));
+const WebSocketServer = wsModule.WebSocketServer || wsModule.Server;
+const OPEN = wsModule.OPEN !== undefined ? wsModule.OPEN : 1;
+if (!WebSocketServer) throw new Error('Unsupported ws module: missing WebSocketServer/Server export');
 
 const port = Number(process.env.PS_BRIDGE_PORT || '8765');
 const outDir = process.env.PHOTOSHOP_PROBE_OUT || process.cwd();
@@ -17,7 +20,7 @@ let nextId = 1;
 const pending = new Map();
 
 function command(command, params = {}, timeoutMs = 30000) {
-  if (!socket || socket.readyState !== socket.OPEN) throw new Error('Photoshop bridge is not connected');
+  if (!socket || socket.readyState !== OPEN) throw new Error('Photoshop bridge is not connected');
   const id = nextId++;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
