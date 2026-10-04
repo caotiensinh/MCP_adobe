@@ -36,6 +36,14 @@ function Resolve-GitHubCli {
         }
     }
 
+    $portableCandidate = Join-Path (Get-PortableGhRoot) 'gh.exe'
+    if ($env:MCP_ADOBE_GH_INSTALL_MODE -eq 'portable') {
+        if (Test-Path -LiteralPath $portableCandidate -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $portableCandidate).Path
+        }
+        return $null
+    }
+
     $command = Get-Command gh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($command) {
         return $command.Source
@@ -51,7 +59,7 @@ function Resolve-GitHubCli {
     if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
         $candidates += (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\gh.exe')
     }
-    $candidates += (Join-Path (Get-PortableGhRoot) 'gh.exe')
+    $candidates += $portableCandidate
 
     foreach ($candidate in $candidates) {
         if (Test-Path -LiteralPath $candidate -PathType Leaf) {
