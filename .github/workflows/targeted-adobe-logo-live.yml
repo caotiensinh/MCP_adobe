@@ -1,0 +1,82 @@
+name: Targeted Adobe logo live
+
+on:
+  push:
+    branches: [test/adobe-logo-live]
+    paths:
+      - "scripts/adobe_logo_live.py"
+      - ".github/workflows/targeted-adobe-logo-live.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  logo:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Inventory Adobe desktop apps
+        id: adobe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          ./scripts/adobe_inventory.ps1 -GitHubOutput
+          node --version
+          npx --version
+          uv --version
+
+      - name: Ensure Photoshop and Illustrator are interactive
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $psPath='${{ steps.adobe.outputs.photoshop }}'
+          $aiPath='${{ steps.adobe.outputs.illustrator }}'
+          if([string]::IsNullOrWhiteSpace($psPath)){ throw 'Photoshop executable was not discovered' }
+          if([string]::IsNullOrWhiteSpace($aiPath)){ throw 'Illustrator executable was not discovered' }
+
+          if(-not (Get-Process -Name Photoshop -ErrorAction SilentlyContinue)){
+            Start-Process -FilePath $psPath
+          }
+          if(-not (Get-Process -Name Illustrator -ErrorAction SilentlyContinue)){
+            Start-Process -FilePath $aiPath
+          }
+
+          $deadline=(Get-Date).AddSeconds(45)
+          do {
+            $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1
+            $ai=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1
+            if($ps -and $ai){ break }
+            Start-Sleep -Seconds 2
+          } while((Get-Date) -lt $deadline)
+
+          if(-not $ps){ throw 'Photoshop did not become interactive' }
+          if(-not $ai){ throw 'Illustrator did not become interactive' }
+          Write-Host "PHOTOSHOP_INTERACTIVE=PASS PID=$($ps.Id) SESSION=$($ps.SessionId)"
+          Write-Host "ILLUSTRATOR_INTERACTIVE=PASS PID=$($ai.Id) SESSION=$($ai.SessionId)"
+
+      - name: Install MCP Adobe runtime
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          uv sync
+
+      - name: Draw branded logo through MCP Adobe
+        shell: powershell
+        env:
+          ILLUSTRATOR_MCP_TIMEOUT_NORMAL: "120000"
+          ILLUSTRATOR_MCP_TIMEOUT_HEAVY: "180000"
+        run: |
+          $ErrorActionPreference='Stop'
+          uv run python scripts/adobe_logo_live.py
+
+      - name: Upload logo source and previews
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: adobe-brand-logo-${{ github.run_id }}
+          path: ${{ runner.temp }}\mcp-adobe-brand-logo\*
+          if-no-files-found: warn
+          retention-days: 3
