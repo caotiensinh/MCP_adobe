@@ -20,12 +20,28 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
-      - name: Install minimal plugin into per-user UXP registry
+      - name: Ensure Photoshop 24 is running outside runner ownership and install sideload probe
+        timeout-minutes: 2
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
-          if(-not $ps){throw 'Photoshop is not running'}
+          if(-not $ps){
+            $exe='D:\Photoshop_2023\Adobe Photoshop 2023\Photoshop.exe'
+            if(-not (Test-Path $exe)){throw "Photoshop executable not found: $exe"}
+            $tracking=$env:RUNNER_TRACKING_ID
+            Remove-Item Env:RUNNER_TRACKING_ID -ErrorAction SilentlyContinue
+            Start-Process -FilePath $exe | Out-Null
+            if($tracking){$env:RUNNER_TRACKING_ID=$tracking}
+            $until=[DateTime]::UtcNow.AddSeconds(50)
+            do {
+              Start-Sleep 2
+              $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq $exe -and $_.MainWindowHandle -ne 0} | Select-Object -First 1
+              if($ps){break}
+            } while([DateTime]::UtcNow -lt $until)
+            if(-not $ps){throw 'Photoshop did not start with a main window'}
+            Write-Host "PHOTOSHOP_SELF_STARTED=PASS PID=$($ps.Id) SESSION=$($ps.SessionId)"
+          }
           $v=([regex]::Match((Get-Item $ps.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
           if(-not $v.StartsWith('24.')){throw "Expected Photoshop 24.x, got $v"}
           "PHOTOSHOP_EXE=$($ps.Path)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
@@ -48,13 +64,16 @@ jobs:
 
           if(Test-Path $psJson){
             if(-not (Test-Path ($psJson+'.mcpadobe.bak'))){Copy-Item $psJson ($psJson+'.mcpadobe.bak') -Force}
-            $db=Get-Content $psJson -Raw | ConvertFrom-Json
+            try {$db=Get-Content $psJson -Raw | ConvertFrom-Json} catch {throw "Existing PS.json invalid: $($_.Exception.Message)"}
           } else {$db=[pscustomobject]@{plugins=@()}}
           if(-not ($db.PSObject.Properties.Name -contains 'plugins')){$db | Add-Member -NotePropertyName plugins -NotePropertyValue @()}
           $plugins=@($db.plugins | Where-Object {$_.pluginId -ne $id})
           $entry=[pscustomobject]@{hostMinVersion='22.0.0';name='MCP Adobe PS24 Sideload Probe';path='$localPlugins\External\com.mcpadobe.ps24.sideloadprobe';pluginId=$id;status='enabled';type='uxp';versionString='1.0.0'}
           $db.plugins=@($plugins+$entry)
           [IO.File]::WriteAllText($psJson,($db|ConvertTo-Json -Depth 12),$utf8)
+          Write-Host "PHOTOSHOP_VERSION=$v PID=$($ps.Id) SESSION=$($ps.SessionId)"
+          Write-Host "PLUGIN_DIR=$dest"
+          Write-Host "PS_JSON=$psJson"
           Get-Content $psJson -Raw | Write-Host
           Write-Host 'PER_USER_UXP_SIDELOAD_INSTALL=PASS'
 
@@ -84,6 +103,9 @@ jobs:
           if(-not $new){throw 'Photoshop did not reopen'}
           Start-Sleep 10
           Write-Host "PHOTOSHOP_RESTARTED PID=$($new.Id) SESSION=$($new.SessionId) HWND=$($new.MainWindowHandle)"
+          $logDir=Join-Path $env:APPDATA 'Adobe\Adobe Photoshop 2023\Logs'
+          $latest=Get-ChildItem $logDir -Filter 'UXPLogs_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if($latest){Write-Host "--- UXP LOG AFTER RESTART ---";Get-Content $latest.FullName -Tail 160 | Write-Host}
           Write-Host 'PHOTOSHOP_GRACEFUL_RESTART=PASS'
 
       - name: Find and invoke plugin through native Photoshop menu
@@ -109,7 +131,13 @@ jobs:
           $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1
           if(-not $ps){throw 'Photoshop main window not found'}
           $root=[PsMenuNative]::GetMenu([IntPtr]$ps.MainWindowHandle)
-          if($root -eq [IntPtr]::Zero){throw 'GetMenu returned NULL for Photoshop'}
+          if($root -eq [IntPtr]::Zero){
+            Write-Host 'PHOTOSHOP_NATIVE_HMENU=NULL'
+            $logDir=Join-Path $env:APPDATA 'Adobe\Adobe Photoshop 2023\Logs'
+            $latest=Get-ChildItem $logDir -Filter 'UXPLogs_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if($latest){Get-Content $latest.FullName -Tail 260 | Write-Host}
+            throw 'Photoshop uses a non-HMENU menu surface; native menu invocation unavailable'
+          }
           $script:targetId=$null
           function Walk-Menu([IntPtr]$menu,[string]$prefix){
             $count=[PsMenuNative]::GetMenuItemCount($menu)
@@ -121,9 +149,7 @@ jobs:
               $sub=[PsMenuNative]::GetSubMenu($menu,$i)
               $path=if($prefix){$prefix+' > '+$name}else{$name}
               if($name){Write-Host "MENU_PATH=$path ID=$id"}
-              if($name -match 'MCP Sideload Probe|MCP Adobe PS24 Sideload Probe'){
-                if($id -ne 4294967295){$script:targetId=$id}
-              }
+              if($name -match 'MCP Sideload Probe|MCP Adobe PS24 Sideload Probe'){if($id -ne 4294967295){$script:targetId=$id}}
               if($sub -ne [IntPtr]::Zero){Walk-Menu $sub $path}
             }
           }
@@ -131,7 +157,7 @@ jobs:
           if($null -eq $script:targetId){
             $logDir=Join-Path $env:APPDATA 'Adobe\Adobe Photoshop 2023\Logs'
             $latest=Get-ChildItem $logDir -Filter 'UXPLogs_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if($latest){Write-Host "--- UXP LOG $($latest.FullName) ---";Get-Content $latest.FullName -Tail 240 | Write-Host}
+            if($latest){Write-Host "--- UXP LOG ---";Get-Content $latest.FullName -Tail 260 | Write-Host}
             throw 'SIDELOADED_PLUGIN_NOT_REGISTERED_IN_NATIVE_MENU'
           }
           Write-Host "SIDELOAD_MENU_COMMAND_ID=$script:targetId"
@@ -146,7 +172,7 @@ jobs:
           $logDir=Join-Path $env:APPDATA 'Adobe\Adobe Photoshop 2023\Logs'
           $latest=Get-ChildItem $logDir -Filter 'UXPLogs_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if(-not $latest){throw 'Photoshop UXP log not found'}
-          $tail=(Get-Content $latest.FullName -Tail 300 | Out-String)
+          $tail=(Get-Content $latest.FullName -Tail 320 | Out-String)
           Write-Host $tail
           if($tail -notmatch 'MCP_ADOBE_SIDELOAD_PROBE_BOOT=PASS'){throw 'Sideloaded UXP boot marker missing'}
           Write-Host 'PHOTOSHOP_SIDELOADED_UXP_RUNTIME=PASS'
