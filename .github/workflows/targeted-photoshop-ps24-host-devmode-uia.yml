@@ -1,0 +1,105 @@
+name: Targeted Photoshop 24 host Developer Mode UIA
+
+on:
+  pull_request:
+    branches: [fix/photoshop-path-override]
+    paths:
+      - ".github/workflows/targeted-photoshop-ps24-host-devmode-uia.yml"
+
+concurrency:
+  group: targeted-photoshop-host-devmode-uia-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Read Photoshop host Developer Mode checkbox
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class Win32Focus {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+}
+'@
+
+          $ps=Get-Process -Name Photoshop -ErrorAction Stop |
+            Where-Object {$_.Path -and $_.MainWindowHandle -ne 0} |
+            Select-Object -First 1
+          if(-not $ps){throw 'PHOTOSHOP_UIA=FAIL: interactive Photoshop process not found'}
+          $version=([regex]::Match((Get-Item $ps.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
+          Write-Host "PHOTOSHOP_VERSION=$version PID=$($ps.Id) SESSION=$($ps.SessionId) HWND=$($ps.MainWindowHandle)"
+          if(-not $version.StartsWith('24.')){throw "PHOTOSHOP_UIA=FAIL: expected Photoshop 24.x, got $version"}
+          if($ps.SessionId -ne 1){throw "PHOTOSHOP_UIA=FAIL: expected Session 1, got $($ps.SessionId)"}
+
+          [Win32Focus]::SetForegroundWindow($ps.MainWindowHandle) | Out-Null
+          Start-Sleep -Milliseconds 500
+          [System.Windows.Forms.SendKeys]::SendWait('^k')
+          Start-Sleep 2
+
+          try {
+            $root=[System.Windows.Automation.AutomationElement]::RootElement
+            $pidCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$ps.Id)
+            $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$pidCond)
+            Write-Host "PHOTOSHOP_UIA_ELEMENT_COUNT=$($all.Count)"
+
+            for($i=0;$i -lt $all.Count;$i++){
+              $e=$all.Item($i)
+              if($e.Current.ControlType -eq [System.Windows.Automation.ControlType]::Window){
+                Write-Host "UIA_WINDOW name='$($e.Current.Name)' class='$($e.Current.ClassName)' automationId='$($e.Current.AutomationId)'"
+              }
+            }
+
+            $pluginNav=$null
+            for($i=0;$i -lt $all.Count;$i++){
+              $e=$all.Item($i)
+              $n=$e.Current.Name
+              if($n -and ($n -match '^(Plugins|Plug-ins|プラグイン)$')){$pluginNav=$e;break}
+            }
+            if($pluginNav){
+              Write-Host "PHOTOSHOP_UIA_PLUGINS_NAV_FOUND=$($pluginNav.Current.Name)"
+              $pat=$null
+              if($pluginNav.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$pat)){$pat.Select()}
+              elseif($pluginNav.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pat)){$pat.Invoke()}
+              else {Write-Host 'PHOTOSHOP_UIA_PLUGINS_NAV_PATTERN=NONE'}
+              Start-Sleep 1
+              $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$pidCond)
+            } else {
+              Write-Host 'PHOTOSHOP_UIA_PLUGINS_NAV_FOUND=NO'
+            }
+
+            $dev=$null
+            $checkboxNames=@()
+            for($i=0;$i -lt $all.Count;$i++){
+              $e=$all.Item($i)
+              if($e.Current.ControlType -eq [System.Windows.Automation.ControlType]::CheckBox){
+                $checkboxNames += $e.Current.Name
+                if($e.Current.Name -match 'Developer Mode|開発者モード|デベロッパ'){$dev=$e}
+              }
+            }
+            Write-Host ('PHOTOSHOP_UIA_CHECKBOXES=' + ($checkboxNames -join ' | '))
+
+            if(-not $dev){throw 'PHOTOSHOP_HOST_DEVELOPER_MODE=UNKNOWN: checkbox not exposed through UI Automation'}
+            $toggle=$null
+            if(-not $dev.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern,[ref]$toggle)){
+              throw 'PHOTOSHOP_HOST_DEVELOPER_MODE=UNKNOWN: checkbox has no TogglePattern'
+            }
+            $state=$toggle.Current.ToggleState.ToString()
+            Write-Host "PHOTOSHOP_HOST_DEVELOPER_MODE=$state"
+            if($state -eq 'On'){Write-Host 'PHOTOSHOP_HOST_DEVELOPER_MODE_UIA=PASS'}
+            elseif($state -eq 'Off'){throw 'PHOTOSHOP_HOST_DEVELOPER_MODE_UIA=FAIL: Enable Developer Mode is unchecked'}
+            else {throw "PHOTOSHOP_HOST_DEVELOPER_MODE=UNKNOWN: state=$state"}
+          } finally {
+            [Win32Focus]::SetForegroundWindow($ps.MainWindowHandle) | Out-Null
+            [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+          }
