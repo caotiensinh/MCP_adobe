@@ -1,10 +1,6 @@
 name: Targeted Photoshop 24 host Developer Mode UIA
 
 on:
-  push:
-    branches: [test/photoshop-ps24-live]
-    paths:
-      - ".github/workflows/targeted-photoshop-ps24-host-devmode-uia.yml"
   pull_request:
     branches: [fix/photoshop-path-override]
     paths:
@@ -12,7 +8,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: targeted-photoshop-host-devmode-uia-${{ github.ref }}
+  group: targeted-photoshop-host-devmode-uia-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -22,6 +18,8 @@ jobs:
   inspect:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 5
+    env:
+      SCREENSHOT: ${{ runner.temp }}\ps24-preferences.png
     steps:
       - name: Open Preferences and capture host state
         shell: powershell
@@ -35,11 +33,11 @@ jobs:
 
           function Get-ForegroundInfo {
             $hwnd=[Win32Diag]::GetForegroundWindow()
-            [uint32]$pid=0
-            [void][Win32Diag]::GetWindowThreadProcessId($hwnd,[ref]$pid)
+            [uint32]$processId=0
+            [void][Win32Diag]::GetWindowThreadProcessId($hwnd,[ref]$processId)
             $sb=New-Object System.Text.StringBuilder 1024
             [void][Win32Diag]::GetWindowText($hwnd,$sb,$sb.Capacity)
-            [pscustomobject]@{Hwnd=$hwnd;Pid=$pid;Title=$sb.ToString()}
+            [pscustomobject]@{Hwnd=$hwnd;ProcessId=$processId;Title=$sb.ToString()}
           }
 
           $ps=Get-Process -Name Photoshop -ErrorAction Stop |
@@ -54,33 +52,31 @@ jobs:
           $set=[Win32Diag]::SetForegroundWindow([IntPtr]$ps.MainWindowHandle)
           Start-Sleep -Milliseconds 700
           $fg=Get-ForegroundInfo
-          Write-Host "SET_FOREGROUND=$set FOREGROUND_PID=$($fg.Pid) FOREGROUND_HWND=$($fg.Hwnd) FOREGROUND_TITLE=$($fg.Title)"
-          if($fg.Pid -ne $ps.Id){
+          Write-Host "SET_FOREGROUND=$set FOREGROUND_PID=$($fg.ProcessId) FOREGROUND_HWND=$($fg.Hwnd) FOREGROUND_TITLE=$($fg.Title)"
+          if($fg.ProcessId -ne $ps.Id){
             $shell=New-Object -ComObject WScript.Shell
             [void]$shell.AppActivate($ps.Id)
             Start-Sleep -Milliseconds 700
             $fg=Get-ForegroundInfo
-            Write-Host "APPACTIVATE_FOREGROUND_PID=$($fg.Pid) TITLE=$($fg.Title)"
+            Write-Host "APPACTIVATE_FOREGROUND_PID=$($fg.ProcessId) TITLE=$($fg.Title)"
           }
-          if($fg.Pid -ne $ps.Id){throw 'PHOTOSHOP_FOCUS=FAIL: refusing to send keys to a non-Photoshop foreground window'}
+          if($fg.ProcessId -ne $ps.Id){throw 'PHOTOSHOP_FOCUS=FAIL: refusing to send keys to a non-Photoshop foreground window'}
 
           [System.Windows.Forms.SendKeys]::SendWait('^k')
           Start-Sleep 2
           $after=Get-ForegroundInfo
-          Write-Host "AFTER_CTRL_K_PID=$($after.Pid) HWND=$($after.Hwnd) TITLE=$($after.Title)"
+          Write-Host "AFTER_CTRL_K_PID=$($after.ProcessId) HWND=$($after.Hwnd) TITLE=$($after.Title)"
 
           $rect=New-Object Win32Diag+RECT
           if(-not [Win32Diag]::GetWindowRect([IntPtr]$ps.MainWindowHandle,[ref]$rect)){throw 'PHOTOSHOP_SCREENSHOT=FAIL: GetWindowRect failed'}
           $w=$rect.Right-$rect.Left
           $h=$rect.Bottom-$rect.Top
           if($w -le 0 -or $h -le 0){throw "PHOTOSHOP_SCREENSHOT=FAIL: invalid rect ${w}x${h}"}
-          $shot=Join-Path $env:RUNNER_TEMP 'ps24-preferences.png'
           $bmp=New-Object System.Drawing.Bitmap $w,$h
           $gfx=[System.Drawing.Graphics]::FromImage($bmp)
           try {$gfx.CopyFromScreen($rect.Left,$rect.Top,0,0,$bmp.Size)} finally {$gfx.Dispose()}
-          try {$bmp.Save($shot,[System.Drawing.Imaging.ImageFormat]::Png)} finally {$bmp.Dispose()}
-          Write-Host "PHOTOSHOP_PREFERENCES_SCREENSHOT=$shot SIZE=$((Get-Item $shot).Length)"
-          "SCREENSHOT=$shot" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          try {$bmp.Save($env:SCREENSHOT,[System.Drawing.Imaging.ImageFormat]::Png)} finally {$bmp.Dispose()}
+          Write-Host "PHOTOSHOP_PREFERENCES_SCREENSHOT=$env:SCREENSHOT SIZE=$((Get-Item $env:SCREENSHOT).Length)"
 
           try {
             $root=[System.Windows.Automation.AutomationElement]::RootElement
@@ -95,7 +91,7 @@ jobs:
             }
             $names | Select-Object -First 120 | ForEach-Object {Write-Host "UIA=$_"}
           } finally {
-            if($after.Pid -eq $ps.Id){[System.Windows.Forms.SendKeys]::SendWait('{ESC}')}
+            if($after.ProcessId -eq $ps.Id){[System.Windows.Forms.SendKeys]::SendWait('{ESC}')}
           }
 
           Write-Host 'PHOTOSHOP_HOST_DEVELOPER_MODE=UNKNOWN_PENDING_SCREENSHOT_REVIEW'
