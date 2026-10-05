@@ -111,7 +111,11 @@ jobs:
             $loader=Start-Process node -ArgumentList @($env:UXP_JS,'plugin','load','--manifest',(Join-Path $dir 'manifest.json'),'--apps','PS') -PassThru -RedirectStandardOutput $loadOut -RedirectStandardError $loadErr
             if(-not $loader.WaitForExit(15000)){Stop-Process -Id $loader.Id -Force -ErrorAction SilentlyContinue;throw 'Minimal plugin load timeout'}
             $loader.Refresh()
-            $text=(if(Test-Path $loadOut){Get-Content $loadOut -Raw}else{''})+"`n"+(if(Test-Path $loadErr){Get-Content $loadErr -Raw}else{''})
+            $stdout=''
+            $stderr=''
+            if(Test-Path $loadOut){$stdout=Get-Content $loadOut -Raw}
+            if(Test-Path $loadErr){$stderr=Get-Content $loadErr -Raw}
+            $text=$stdout+"`n"+$stderr
             Write-Host $text
             if($loader.ExitCode -ne 0 -or $text -match 'Load command failed' -or $text -match "plugin load' failed" -or $text -match 'Failed to load'){throw 'Minimal UXP 1.2.0 plugin load failed'}
             Write-Host 'PS24_UXP120_MINIMAL_LOAD=PASS'
@@ -175,7 +179,11 @@ jobs:
             $loader=Start-Process node -ArgumentList @($env:UXP_JS,'plugin','load','--manifest',$manifest,'--apps','PS') -PassThru -RedirectStandardOutput $loadOut -RedirectStandardError $loadErr
             if(-not $loader.WaitForExit(15000)){Stop-Process -Id $loader.Id -Force -ErrorAction SilentlyContinue;throw 'CORE plugin load timeout'}
             $loader.Refresh()
-            $loadText=(if(Test-Path $loadOut){Get-Content $loadOut -Raw}else{''})+"`n"+(if(Test-Path $loadErr){Get-Content $loadErr -Raw}else{''})
+            $loadStdout=''
+            $loadStderr=''
+            if(Test-Path $loadOut){$loadStdout=Get-Content $loadOut -Raw}
+            if(Test-Path $loadErr){$loadStderr=Get-Content $loadErr -Raw}
+            $loadText=$loadStdout+"`n"+$loadStderr
             Write-Host $loadText
             if($loader.ExitCode -ne 0 -or $loadText -match 'Load command failed' -or $loadText -match "plugin load' failed" -or $loadText -match 'Failed to load'){throw 'CORE plugin load failed'}
             Write-Host 'PHOTOSHOP_CORE_PLUGIN_LOAD=PASS'
@@ -186,8 +194,10 @@ jobs:
               if(-not (Get-Process -Id $probe.Id -ErrorAction SilentlyContinue)){break}
             } while([DateTime]::UtcNow -lt $deadline)
             if(Get-Process -Id $probe.Id -ErrorAction SilentlyContinue){throw 'Photoshop operation probe timeout'}
-            $stdout=if(Test-Path $probeOut){Get-Content $probeOut -Raw}else{''}
-            $stderr=if(Test-Path $probeErr){Get-Content $probeErr -Raw}else{''}
+            $stdout=''
+            $stderr=''
+            if(Test-Path $probeOut){$stdout=Get-Content $probeOut -Raw}
+            if(Test-Path $probeErr){$stderr=Get-Content $probeErr -Raw}
             Write-Host $stdout
             Write-Host $stderr
             if($stdout -notmatch 'PHOTOSHOP_24_LIVE_OPERATION_VERIFY=PASS'){throw 'Photoshop operation PASS marker missing'}
