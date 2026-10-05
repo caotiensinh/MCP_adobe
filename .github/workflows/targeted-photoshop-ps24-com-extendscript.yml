@@ -1,0 +1,154 @@
+name: Targeted Photoshop 24 COM ExtendScript live
+
+on:
+  pull_request:
+    branches: [fix/photoshop-path-override]
+    paths:
+      - ".github/workflows/targeted-photoshop-ps24-com-extendscript.yml"
+
+concurrency:
+  group: targeted-photoshop-ps24-com-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Control Photoshop 24 through COM ExtendScript
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+
+          # Transport adapted from alisaitteke/photoshop-mcp master@1a8686853b33e56c970b50b4030fdb190f951c72
+          # src/platform/windows-executor.ts + windows-script-bridge.ts.
+          $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue |
+            Where-Object {$_.Path -and $_.MainWindowHandle -ne 0} |
+            Select-Object -First 1
+          if(-not $ps){throw 'Photoshop is not running interactively'}
+          $version=([regex]::Match((Get-Item $ps.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
+          Write-Host "PHOTOSHOP_EXE=$($ps.Path)"
+          Write-Host "PHOTOSHOP_VERSION=$version PID=$($ps.Id) SESSION=$($ps.SessionId) HWND=$($ps.MainWindowHandle)"
+          if(-not $version.StartsWith('24.')){throw "Expected Photoshop 24.x, got $version"}
+          if($ps.SessionId -ne 1){throw "Expected Photoshop in interactive Session 1, got $($ps.SessionId)"}
+
+          $out=Join-Path $env:RUNNER_TEMP 'mcp-adobe-ps24-com-live'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $psd=Join-Path $out 'mcp-adobe-com-live.psd'
+          $png=Join-Path $out 'mcp-adobe-com-live.png'
+          $jsx=Join-Path $out 'mcp-adobe-com-live.jsx'
+          $vbs=Join-Path $out 'mcp-adobe-com-bridge.vbs'
+          $resultFile=Join-Path $out 'mcp-adobe-com-result.txt'
+          Remove-Item $psd,$png,$jsx,$vbs,$resultFile -Force -ErrorAction SilentlyContinue
+
+          $psdJs=$psd.Replace('\\','/')
+          $pngJs=$png.Replace('\\','/')
+          $jsxBody=@"
+(function () {
+  var hostVersion = app.version;
+  var hostName = app.name;
+  var doc = app.documents.add(UnitValue(320, 'px'), UnitValue(240, 'px'), 72, 'MCP Adobe COM Live');
+  var psdFile = new File('$psdJs');
+  var psdOptions = new PhotoshopSaveOptions();
+  psdOptions.layers = true;
+  psdOptions.embedColorProfile = true;
+  doc.saveAs(psdFile, psdOptions, true, Extension.LOWERCASE);
+  var pngFile = new File('$pngJs');
+  var pngOptions = new PNGSaveOptions();
+  pngOptions.compression = 9;
+  pngOptions.interlaced = false;
+  doc.saveAs(pngFile, pngOptions, true, Extension.LOWERCASE);
+  return 'PHOTOSHOP_COM_LIVE=PASS|' + hostVersion + '|' + hostName + '|' + doc.name;
+})();
+"@
+          # ExtendScript evalFile detects UTF-8 reliably with BOM.
+          [IO.File]::WriteAllText($jsx,[char]0xFEFF + $jsxBody,(New-Object Text.UTF8Encoding($false)))
+
+          $vbsBody=@'
+On Error Resume Next
+Dim shell, jsxPath, outFile, photoshopApp, result, jsxForJs
+
+Sub WriteResult(text)
+    On Error Resume Next
+    Dim fso, stream, writeErr
+    Err.Clear
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Set stream = fso.CreateTextFile(outFile, True, True)
+    writeErr = Err.Number
+    If writeErr <> 0 Then
+        WScript.Echo "ERROR: Failed to write script result (" & writeErr & ")"
+        WScript.Quit 1
+    End If
+    Err.Clear
+    stream.Write text
+    writeErr = Err.Number
+    If writeErr <> 0 Then
+        WScript.Echo "ERROR: Failed to write script result (" & writeErr & ")"
+        WScript.Quit 1
+    End If
+    stream.Close
+End Sub
+
+Set shell = CreateObject("WScript.Shell")
+jsxPath = shell.Environment("PROCESS")("PSMCP_JSX")
+outFile = shell.Environment("PROCESS")("PSMCP_RESULT")
+If jsxPath = "" Or outFile = "" Then
+    WScript.Echo "ERROR: Missing Photoshop script paths"
+    WScript.Quit 1
+End If
+
+Set photoshopApp = CreateObject("Photoshop.Application")
+If Err.Number <> 0 Then
+    WriteResult "ERROR: Failed to connect to Photoshop - " & Err.Description
+    WScript.Quit 1
+End If
+
+Err.Clear
+jsxForJs = Replace(jsxPath, "\", "\\")
+jsxForJs = Replace(jsxForJs, "'", "\'")
+result = photoshopApp.DoJavaScript("$.evalFile('" & jsxForJs & "')")
+If Err.Number <> 0 Then
+    WriteResult "ERROR: " & Err.Description
+    WScript.Quit 1
+End If
+If IsNull(result) Or IsEmpty(result) Then
+    result = ""
+Else
+    result = CStr(result)
+End If
+WriteResult result
+'@
+          [IO.File]::WriteAllText($vbs,$vbsBody,(New-Object Text.UTF8Encoding($false)))
+
+          $env:PSMCP_JSX=$jsx
+          $env:PSMCP_RESULT=$resultFile
+          & cscript.exe //nologo $vbs
+          $rc=$LASTEXITCODE
+          Write-Host "CSCRIPT_RC=$rc"
+          if($rc -ne 0){throw "COM bridge cscript failed rc=$rc"}
+          if(-not (Test-Path $resultFile)){throw 'COM bridge produced no result file'}
+          $result=Get-Content $resultFile -Raw
+          Write-Host "COM_RESULT=$result"
+          if($result -match '^ERROR:'){throw $result}
+          if($result -notmatch '^PHOTOSHOP_COM_LIVE=PASS\|24\.'){throw "Unexpected COM result: $result"}
+          Write-Host 'PHOTOSHOP_COM_APP_INFO=PASS'
+          Write-Host 'PHOTOSHOP_COM_DOC_NEW=PASS'
+
+          if(-not (Test-Path $psd)){throw 'PSD was not created by Photoshop COM/ExtendScript'}
+          if(-not (Test-Path $png)){throw 'PNG was not created by Photoshop COM/ExtendScript'}
+          $pb=[IO.File]::ReadAllBytes($psd)
+          $nb=[IO.File]::ReadAllBytes($png)
+          if($pb.Length -lt 4 -or [Text.Encoding]::ASCII.GetString($pb,0,4) -ne '8BPS'){throw 'PSD signature invalid'}
+          $pngSig=@(137,80,78,71,13,10,26,10)
+          if($nb.Length -lt 8){throw 'PNG too small'}
+          for($i=0;$i -lt 8;$i++){if($nb[$i] -ne $pngSig[$i]){throw 'PNG signature invalid'}}
+          Write-Host "PSD_PATH=$psd PSD_BYTES=$($pb.Length) PSD_HEADER=$([Text.Encoding]::ASCII.GetString($pb,0,4))"
+          Write-Host "PNG_PATH=$png PNG_BYTES=$($nb.Length)"
+          Write-Host 'PHOTOSHOP_COM_PSD_VERIFY=PASS'
+          Write-Host 'PHOTOSHOP_COM_PNG_VERIFY=PASS'
+          Write-Host 'PHOTOSHOP_24_COM_LIVE_OPERATION_VERIFY=PASS'
