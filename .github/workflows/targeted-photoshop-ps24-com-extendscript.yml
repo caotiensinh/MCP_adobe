@@ -43,8 +43,12 @@ jobs:
           $resultFile=Join-Path $out 'mcp-adobe-com-result.txt'
           Remove-Item $psd,$png,$jsx,$vbs,$resultFile -Force -ErrorAction SilentlyContinue
 
-          $psdJs=$psd.Replace('\\','/')
-          $pngJs=$png.Replace('\\','/')
+          # ExtendScript File accepts forward slashes. Use char replacement so a
+          # PowerShell/JSON escaping mistake cannot silently preserve Windows backslashes.
+          $psdJs=$psd.Replace([char]92,[char]47)
+          $pngJs=$png.Replace([char]92,[char]47)
+          Write-Host "PSD_JS_PATH=$psdJs"
+          Write-Host "PNG_JS_PATH=$pngJs"
           $jsxBody=@"
           (function () {
             var hostVersion = app.version;
@@ -60,7 +64,9 @@ jobs:
             pngOptions.compression = 9;
             pngOptions.interlaced = false;
             doc.saveAs(pngFile, pngOptions, true, Extension.LOWERCASE);
-            return 'PHOTOSHOP_COM_LIVE=PASS|' + hostVersion + '|' + hostName + '|' + doc.name;
+            return 'PHOTOSHOP_COM_LIVE=PASS|' + hostVersion + '|' + hostName + '|' + doc.name +
+              '|PSD=' + psdFile.fsName + '|PSD_EXISTS=' + psdFile.exists +
+              '|PNG=' + pngFile.fsName + '|PNG_EXISTS=' + pngFile.exists;
           })();
           "@
           [IO.File]::WriteAllText($jsx,[char]0xFEFF + $jsxBody,(New-Object Text.UTF8Encoding($false)))
@@ -135,6 +141,10 @@ jobs:
           Write-Host 'PHOTOSHOP_COM_APP_INFO=PASS'
           Write-Host 'PHOTOSHOP_COM_DOC_NEW=PASS'
 
+          Write-Host '--- COM OUTPUT DIRECTORY ---'
+          Get-ChildItem $out -Force | ForEach-Object {
+            Write-Host "OUT_FILE=$($_.FullName) BYTES=$($_.Length)"
+          }
           if(-not (Test-Path $psd)){throw 'PSD was not created by Photoshop COM/ExtendScript'}
           if(-not (Test-Path $png)){throw 'PNG was not created by Photoshop COM/ExtendScript'}
           $pb=[IO.File]::ReadAllBytes($psd)
