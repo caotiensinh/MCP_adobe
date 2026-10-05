@@ -14,7 +14,7 @@ permissions:
 jobs:
   logo:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -24,6 +24,73 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           ./scripts/adobe_inventory.ps1 -GitHubOutput
+
+      - name: Bootstrap MCP runtime tools
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+
+          function Refresh-Path {
+            $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+            $user=[Environment]::GetEnvironmentVariable('Path','User')
+            $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          }
+          Refresh-Path
+
+          if(-not (Get-Command node -ErrorAction SilentlyContinue) -or -not (Get-Command npx -ErrorAction SilentlyContinue)) {
+            $standard='C:\Program Files\nodejs'
+            if(Test-Path (Join-Path $standard 'node.exe')) {
+              $env:Path="$standard;$env:Path"
+              $standard | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            }
+          }
+
+          if(-not (Get-Command node -ErrorAction SilentlyContinue) -or -not (Get-Command npx -ErrorAction SilentlyContinue)) {
+            $index=Invoke-RestMethod -Uri 'https://nodejs.org/dist/index.json' -UseBasicParsing
+            $release=$index | Where-Object { $_.lts -and ($_.files -contains 'win-x64-zip') } | Select-Object -First 1
+            if(-not $release){ throw 'Could not resolve a Node.js LTS win-x64 release' }
+            $version=$release.version
+            $zip=Join-Path $env:RUNNER_TEMP "node-$version-win-x64.zip"
+            $root=Join-Path $env:RUNNER_TEMP 'mcp-adobe-node'
+            Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Force $root | Out-Null
+            Invoke-WebRequest -Uri "https://nodejs.org/dist/$version/node-$version-win-x64.zip" -OutFile $zip -UseBasicParsing
+            Expand-Archive -LiteralPath $zip -DestinationPath $root -Force
+            $nodeDir=(Get-ChildItem $root -Directory | Select-Object -First 1).FullName
+            if(-not (Test-Path (Join-Path $nodeDir 'node.exe'))){ throw 'Portable Node.js extraction failed' }
+            $env:Path="$nodeDir;$env:Path"
+            $nodeDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            Write-Host "NODE_BOOTSTRAP=portable path=$nodeDir"
+          }
+
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+            $uvCandidates=@(
+              (Join-Path $HOME '.local\bin\uv.exe'),
+              (Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\uv.exe')
+            )
+            $uvHit=$uvCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if($uvHit) {
+              $uvDir=Split-Path -Parent $uvHit
+              $env:Path="$uvDir;$env:Path"
+              $uvDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            }
+          }
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+            Write-Host 'UV_BOOTSTRAP=official-installer'
+            $old=$env:UV_NO_MODIFY_PATH
+            try {
+              $env:UV_NO_MODIFY_PATH='1'
+              $installer=Invoke-RestMethod -Uri 'https://astral.sh/uv/install.ps1' -UseBasicParsing
+              Invoke-Expression $installer
+            } finally {
+              if($null -eq $old){ Remove-Item Env:UV_NO_MODIFY_PATH -ErrorAction SilentlyContinue } else { $env:UV_NO_MODIFY_PATH=$old }
+            }
+            $uvDir=Join-Path $HOME '.local\bin'
+            if(-not (Test-Path (Join-Path $uvDir 'uv.exe'))){ throw 'uv bootstrap failed' }
+            $env:Path="$uvDir;$env:Path"
+            $uvDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          }
+
           node --version
           npx --version
           uv --version
