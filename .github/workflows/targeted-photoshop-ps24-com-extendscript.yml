@@ -19,9 +19,6 @@ jobs:
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
 
       - name: Control Photoshop 24 through COM ExtendScript
         shell: powershell
@@ -159,6 +156,10 @@ jobs:
           Write-Host 'PHOTOSHOP_COM_PSD_VERIFY=PASS'
           Write-Host 'PHOTOSHOP_COM_PNG_VERIFY=PASS'
           Write-Host 'PHOTOSHOP_24_COM_LIVE_OPERATION_VERIFY=PASS'
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
 
       - name: Install MCP Adobe gateway
         shell: powershell
