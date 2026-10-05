@@ -36,15 +36,10 @@ jobs:
           $infoDir=Join-Path $env:APPDATA 'Adobe\UXP\PluginsInfo\v1'
           $psJson=Join-Path $infoDir 'PS.json'
           New-Item -ItemType Directory -Force $dest,$infoDir | Out-Null
-
           $utf8=New-Object System.Text.UTF8Encoding($false)
           $manifest=[ordered]@{
-            id=$id
-            name='MCP Adobe PS24 Sideload Probe'
-            version='1.0.0'
-            main='index.html'
-            host=@([ordered]@{app='PS';minVersion='22.0.0'})
-            manifestVersion=4
+            id=$id;name='MCP Adobe PS24 Sideload Probe';version='1.0.0';main='index.html'
+            host=@([ordered]@{app='PS';minVersion='22.0.0'});manifestVersion=4
             entrypoints=@([ordered]@{type='panel';id='sideloadprobe';minimumSize=[ordered]@{width=230;height=200};maximumSize=[ordered]@{width=2000;height=2000};preferredDockedSize=[ordered]@{width=230;height=200};preferredFloatingSize=[ordered]@{width=320;height=260};label=[ordered]@{default='MCP Sideload Probe'}})
           }
           [IO.File]::WriteAllText((Join-Path $dest 'manifest.json'),($manifest|ConvertTo-Json -Depth 12),$utf8)
@@ -52,95 +47,97 @@ jobs:
           [IO.File]::WriteAllText((Join-Path $dest 'main.js'),'console.log("MCP_ADOBE_SIDELOAD_PROBE_BOOT=PASS");',$utf8)
 
           if(Test-Path $psJson){
-            Copy-Item $psJson ($psJson+'.mcpadobe.bak') -Force
-            try {$db=Get-Content $psJson -Raw | ConvertFrom-Json} catch {throw "Existing PS.json is invalid JSON: $psJson"}
-          } else {
-            $db=[pscustomobject]@{plugins=@()}
-          }
+            if(-not (Test-Path ($psJson+'.mcpadobe.bak'))){Copy-Item $psJson ($psJson+'.mcpadobe.bak') -Force}
+            $db=Get-Content $psJson -Raw | ConvertFrom-Json
+          } else {$db=[pscustomobject]@{plugins=@()}}
           if(-not ($db.PSObject.Properties.Name -contains 'plugins')){$db | Add-Member -NotePropertyName plugins -NotePropertyValue @()}
           $plugins=@($db.plugins | Where-Object {$_.pluginId -ne $id})
-          $entry=[pscustomobject]@{
-            hostMinVersion='22.0.0'
-            name='MCP Adobe PS24 Sideload Probe'
-            path='$localPlugins\External\com.mcpadobe.ps24.sideloadprobe'
-            pluginId=$id
-            status='enabled'
-            type='uxp'
-            versionString='1.0.0'
-          }
-          $db.plugins=@($plugins + $entry)
+          $entry=[pscustomobject]@{hostMinVersion='22.0.0';name='MCP Adobe PS24 Sideload Probe';path='$localPlugins\External\com.mcpadobe.ps24.sideloadprobe';pluginId=$id;status='enabled';type='uxp';versionString='1.0.0'}
+          $db.plugins=@($plugins+$entry)
           [IO.File]::WriteAllText($psJson,($db|ConvertTo-Json -Depth 12),$utf8)
-          Write-Host "PLUGIN_DIR=$dest"
-          Write-Host "PS_JSON=$psJson"
           Get-Content $psJson -Raw | Write-Host
           Write-Host 'PER_USER_UXP_SIDELOAD_INSTALL=PASS'
 
-      - name: Gracefully restart Photoshop to discover sideloaded plugin
+      - name: Gracefully restart Photoshop without runner ownership
         timeout-minutes: 2
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
-          if(-not $ps){throw 'Photoshop process disappeared before restart'}
-          $pidOld=$ps.Id
-          $exe=$ps.Path
+          if(-not $ps){throw 'Photoshop process missing before restart'}
+          $oldPid=$ps.Id;$exe=$ps.Path
           $requested=$ps.CloseMainWindow()
-          Write-Host "CLOSE_MAIN_WINDOW_REQUESTED=$requested PID=$pidOld"
+          Write-Host "CLOSE_MAIN_WINDOW_REQUESTED=$requested PID=$oldPid"
           $until=[DateTime]::UtcNow.AddSeconds(20)
-          do {
-            if(-not (Get-Process -Id $pidOld -ErrorAction SilentlyContinue)){break}
-            Start-Sleep 1
-          } while([DateTime]::UtcNow -lt $until)
-          if(Get-Process -Id $pidOld -ErrorAction SilentlyContinue){
-            throw 'PHOTOSHOP_GRACEFUL_RESTART_BLOCKED: Photoshop remained open, likely because a dialog or unsaved document needs user action. Process was NOT force-killed.'
-          }
+          do {if(-not (Get-Process -Id $oldPid -ErrorAction SilentlyContinue)){break};Start-Sleep 1} while([DateTime]::UtcNow -lt $until)
+          if(Get-Process -Id $oldPid -ErrorAction SilentlyContinue){throw 'PHOTOSHOP_GRACEFUL_RESTART_BLOCKED_NO_FORCE_KILL'}
+          $tracking=$env:RUNNER_TRACKING_ID
+          Remove-Item Env:RUNNER_TRACKING_ID -ErrorAction SilentlyContinue
           Start-Process -FilePath $exe | Out-Null
-          $until=[DateTime]::UtcNow.AddSeconds(45);$new=$null
+          if($tracking){$env:RUNNER_TRACKING_ID=$tracking}
+          $until=[DateTime]::UtcNow.AddSeconds(50);$new=$null
           do {
             Start-Sleep 2
             $new=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq $exe -and $_.MainWindowHandle -ne 0} | Select-Object -First 1
             if($new){break}
           } while([DateTime]::UtcNow -lt $until)
-          if(-not $new){throw 'Photoshop did not reopen with a main window'}
-          Write-Host "PHOTOSHOP_RESTARTED PID=$($new.Id) SESSION=$($new.SessionId)"
+          if(-not $new){throw 'Photoshop did not reopen'}
+          Start-Sleep 10
+          Write-Host "PHOTOSHOP_RESTARTED PID=$($new.Id) SESSION=$($new.SessionId) HWND=$($new.MainWindowHandle)"
           Write-Host 'PHOTOSHOP_GRACEFUL_RESTART=PASS'
 
-      - name: Open sideloaded plugin from Photoshop Plugins menu
+      - name: Find and invoke plugin through native Photoshop menu
         timeout-minutes: 2
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          Add-Type -AssemblyName UIAutomationClient
-          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Text;
+          using System.Runtime.InteropServices;
+          public static class PsMenuNative {
+            [DllImport("user32.dll")] public static extern IntPtr GetMenu(IntPtr hWnd);
+            [DllImport("user32.dll")] public static extern int GetMenuItemCount(IntPtr hMenu);
+            [DllImport("user32.dll")] public static extern IntPtr GetSubMenu(IntPtr hMenu, int nPos);
+            [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetMenuString(IntPtr hMenu, uint uIDItem, StringBuilder lpString, int cchMax, uint flags);
+            [DllImport("user32.dll")] public static extern uint GetMenuItemID(IntPtr hMenu, int nPos);
+            [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+            public const uint MF_BYPOSITION=0x400;
+            public const uint WM_COMMAND=0x111;
+          }
+          '@
           $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1
           if(-not $ps){throw 'Photoshop main window not found'}
-          Start-Sleep 8
-          $root=[System.Windows.Automation.AutomationElement]::FromHandle($ps.MainWindowHandle)
-          if(-not $root){throw 'UIAutomation could not attach to Photoshop'}
-          $menuCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::MenuItem)
-          $items=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$menuCond)
-          Write-Host '--- PHOTOSHOP MENU ITEMS BEFORE EXPAND ---'
-          foreach($i in $items){if($i.Current.Name){Write-Host "MENU=$($i.Current.Name)"}}
-          $plugins=$null
-          foreach($i in $items){if($i.Current.Name -match '^(Plugins|Plug-ins|プラグイン)$'){$plugins=$i;break}}
-          if(-not $plugins){
-            $plugins=($items | Where-Object {$_.Current.Name -match 'Plugin|プラグイン'} | Select-Object -First 1)
+          $root=[PsMenuNative]::GetMenu([IntPtr]$ps.MainWindowHandle)
+          if($root -eq [IntPtr]::Zero){throw 'GetMenu returned NULL for Photoshop'}
+          $script:targetId=$null
+          function Walk-Menu([IntPtr]$menu,[string]$prefix){
+            $count=[PsMenuNative]::GetMenuItemCount($menu)
+            for($i=0;$i -lt $count;$i++){
+              $sb=New-Object Text.StringBuilder 512
+              [void][PsMenuNative]::GetMenuString($menu,[uint32]$i,$sb,$sb.Capacity,[PsMenuNative]::MF_BYPOSITION)
+              $name=$sb.ToString().Replace('&','')
+              $id=[PsMenuNative]::GetMenuItemID($menu,$i)
+              $sub=[PsMenuNative]::GetSubMenu($menu,$i)
+              $path=if($prefix){$prefix+' > '+$name}else{$name}
+              if($name){Write-Host "MENU_PATH=$path ID=$id"}
+              if($name -match 'MCP Sideload Probe|MCP Adobe PS24 Sideload Probe'){
+                if($id -ne 4294967295){$script:targetId=$id}
+              }
+              if($sub -ne [IntPtr]::Zero){Walk-Menu $sub $path}
+            }
           }
-          if(-not $plugins){throw 'Photoshop Plugins menu was not discoverable through UIAutomation'}
-          try {$plugins.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()} catch {
-            try {$plugins.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()} catch {throw 'Could not open Photoshop Plugins menu'}
+          Walk-Menu $root ''
+          if($null -eq $script:targetId){
+            $logDir=Join-Path $env:APPDATA 'Adobe\Adobe Photoshop 2023\Logs'
+            $latest=Get-ChildItem $logDir -Filter 'UXPLogs_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if($latest){Write-Host "--- UXP LOG $($latest.FullName) ---";Get-Content $latest.FullName -Tail 240 | Write-Host}
+            throw 'SIDELOADED_PLUGIN_NOT_REGISTERED_IN_NATIVE_MENU'
           }
-          Start-Sleep 2
-          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
-          $all=$desktop.FindAll([System.Windows.Automation.TreeScope]::Descendants,$menuCond)
-          Write-Host '--- VISIBLE MENU ITEMS AFTER PLUGINS EXPAND ---'
-          foreach($i in $all){if($i.Current.Name -match 'MCP|Sideload|Plugin|プラグイン'){Write-Host "MENU=$($i.Current.Name)"}}
-          $target=$null
-          foreach($i in $all){if($i.Current.Name -match 'MCP Sideload Probe|MCP Adobe PS24 Sideload Probe'){$target=$i;break}}
-          if(-not $target){throw 'SIDELOADED_PLUGIN_NOT_PRESENT_IN_PHOTOSHOP_MENU'}
-          $target.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-          Start-Sleep 4
-          Write-Host 'SIDELOADED_PLUGIN_MENU_INVOKE=PASS'
+          Write-Host "SIDELOAD_MENU_COMMAND_ID=$script:targetId"
+          [void][PsMenuNative]::SendMessage([IntPtr]$ps.MainWindowHandle,[PsMenuNative]::WM_COMMAND,[IntPtr]([uint32]$script:targetId),[IntPtr]::Zero)
+          Start-Sleep 5
+          Write-Host 'SIDELOADED_PLUGIN_NATIVE_MENU_INVOKE=PASS'
 
       - name: Verify plugin boot evidence in Photoshop UXP log
         shell: powershell
@@ -149,8 +146,7 @@ jobs:
           $logDir=Join-Path $env:APPDATA 'Adobe\Adobe Photoshop 2023\Logs'
           $latest=Get-ChildItem $logDir -Filter 'UXPLogs_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if(-not $latest){throw 'Photoshop UXP log not found'}
-          Write-Host "UXP_LOG=$($latest.FullName)"
-          $tail=(Get-Content $latest.FullName -Tail 240 -ErrorAction Stop | Out-String)
+          $tail=(Get-Content $latest.FullName -Tail 300 | Out-String)
           Write-Host $tail
-          if($tail -notmatch 'MCP_ADOBE_SIDELOAD_PROBE_BOOT=PASS'){throw 'Sideloaded plugin panel was invoked but boot marker is missing from UXP log'}
+          if($tail -notmatch 'MCP_ADOBE_SIDELOAD_PROBE_BOOT=PASS'){throw 'Sideloaded UXP boot marker missing'}
           Write-Host 'PHOTOSHOP_SIDELOADED_UXP_RUNTIME=PASS'
