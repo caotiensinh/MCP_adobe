@@ -22,6 +22,17 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Win32ComReady {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+          }
+          '@
+
           $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue |
             Where-Object {$_.Path -and $_.MainWindowHandle -ne 0} |
             Select-Object -First 1
@@ -31,6 +42,58 @@ jobs:
           if(-not $version.StartsWith('24.')){throw "Expected Photoshop 24.x, got $version"}
           if($ps.SessionId -ne 1){throw "Expected Session 1, got $($ps.SessionId)"}
 
+          # The previous probe returned 0x8001010A (RPC_E_SERVERCALL_RETRYLATER),
+          # which means the Photoshop COM server is busy. The UIA workflow opens
+          # Preferences on every PR sync, so detect and dismiss only that known modal
+          # before touching COM. Verify it is actually gone; do not blindly retry.
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $pidCond=New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ProcessIdProperty,$ps.Id)
+
+          function Get-PhotoshopWindows {
+            $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$pidCond)
+            $items=@()
+            for($i=0;$i -lt $all.Count;$i++){
+              $e=$all.Item($i)
+              if($e.Current.ControlType -eq [System.Windows.Automation.ControlType]::Window){$items += $e}
+            }
+            return $items
+          }
+
+          $windows=Get-PhotoshopWindows
+          foreach($w in $windows){Write-Host "PS_WINDOW_BEFORE name='$($w.Current.Name)' hwnd=$($w.Current.NativeWindowHandle) class='$($w.Current.ClassName)'"}
+          $prefs=@($windows | Where-Object {$_.Current.Name -eq 'Preferences'})
+          if($prefs.Count -gt 0){
+            Write-Host "PHOTOSHOP_PREFERENCES_MODAL_FOUND=$($prefs.Count)"
+            foreach($pref in $prefs){
+              $closed=$false
+              $pattern=$null
+              if($pref.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern,[ref]$pattern)){
+                try {$pattern.Close();$closed=$true;Write-Host 'PREFERENCES_CLOSE_METHOD=WindowPattern.Close'} catch {Write-Host "PREFERENCES_WINDOWPATTERN_CLOSE_ERROR=$($_.Exception.Message)"}
+              }
+              if(-not $closed){
+                [Win32ComReady]::SetForegroundWindow([IntPtr]$pref.Current.NativeWindowHandle) | Out-Null
+                Start-Sleep -Milliseconds 300
+                [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+                Write-Host 'PREFERENCES_CLOSE_METHOD=Escape'
+              }
+            }
+            $deadline=[DateTime]::UtcNow.AddSeconds(8)
+            do {
+              Start-Sleep -Milliseconds 400
+              $still=@(Get-PhotoshopWindows | Where-Object {$_.Current.Name -eq 'Preferences'})
+              if($still.Count -eq 0){break}
+            } while([DateTime]::UtcNow -lt $deadline)
+            if($still.Count -gt 0){throw 'Photoshop Preferences modal is still open after targeted close'}
+            Write-Host 'PHOTOSHOP_PREFERENCES_MODAL_CLOSED=PASS'
+          } else {
+            Write-Host 'PHOTOSHOP_PREFERENCES_MODAL_FOUND=0'
+          }
+
+          $windowsAfter=Get-PhotoshopWindows
+          foreach($w in $windowsAfter){Write-Host "PS_WINDOW_AFTER name='$($w.Current.Name)' hwnd=$($w.Current.NativeWindowHandle) class='$($w.Current.ClassName)'"}
+          Start-Sleep -Seconds 1
+
           $out=Join-Path $env:RUNNER_TEMP 'mcp-adobe-com-eval-diagnostic'
           New-Item -ItemType Directory -Force $out | Out-Null
           $jsx=Join-Path $out 'probe.jsx'
@@ -38,8 +101,6 @@ jobs:
           $resultFile=Join-Path $out 'result.txt'
           Remove-Item $jsx,$vbs,$resultFile -Force -ErrorAction SilentlyContinue
 
-          # Keep this ES3-simple on purpose. If this does not eval, the problem is
-          # the evalFile boundary/encoding rather than Photoshop DOM save logic.
           $jsxBody=@'
           (function () {
             try {
