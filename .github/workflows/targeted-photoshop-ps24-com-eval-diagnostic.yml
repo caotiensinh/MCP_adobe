@@ -1,0 +1,113 @@
+name: Targeted Photoshop 24 COM evalFile diagnostic
+
+on:
+  pull_request:
+    branches: [fix/photoshop-path-override]
+    paths:
+      - ".github/workflows/targeted-photoshop-ps24-com-eval-diagnostic.yml"
+
+concurrency:
+  group: targeted-photoshop-ps24-com-eval-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Diagnose COM DoJavaScript and evalFile
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue |
+            Where-Object {$_.Path -and $_.MainWindowHandle -ne 0} |
+            Select-Object -First 1
+          if(-not $ps){throw 'Photoshop is not running interactively'}
+          $version=([regex]::Match((Get-Item $ps.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
+          Write-Host "PHOTOSHOP_VERSION=$version PID=$($ps.Id) SESSION=$($ps.SessionId)"
+          if(-not $version.StartsWith('24.')){throw "Expected Photoshop 24.x, got $version"}
+          if($ps.SessionId -ne 1){throw "Expected Session 1, got $($ps.SessionId)"}
+
+          $out=Join-Path $env:RUNNER_TEMP 'mcp-adobe-com-eval-diagnostic'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $jsx=Join-Path $out 'probe.jsx'
+          $vbs=Join-Path $out 'probe.vbs'
+          $resultFile=Join-Path $out 'result.txt'
+          Remove-Item $jsx,$vbs,$resultFile -Force -ErrorAction SilentlyContinue
+
+          # Keep this ES3-simple on purpose. If this does not eval, the problem is
+          # the evalFile boundary/encoding rather than Photoshop DOM save logic.
+          $jsxBody=@'
+          (function () {
+            try {
+              var v = app.version;
+              var n = app.name;
+              var d = app.documents.add(320, 240, 72, 'MCP Adobe Eval Diagnostic');
+              return 'JSXOK|' + v + '|' + n + '|' + d.name;
+            } catch (e) {
+              return 'JSXFAIL|' + e.toString();
+            }
+          })();
+          '@
+          [IO.File]::WriteAllText($jsx,[char]0xFEFF + $jsxBody,(New-Object Text.UTF8Encoding($false)))
+
+          $vbsBody=@'
+          On Error Resume Next
+          Dim shell, jsxPath, outFile, app, inlineResult, evalResult, jsxForJs, wrapper, errNum, errDesc
+          Set shell = CreateObject("WScript.Shell")
+          jsxPath = shell.Environment("PROCESS")("PSMCP_JSX")
+          outFile = shell.Environment("PROCESS")("PSMCP_RESULT")
+
+          Sub WriteResult(text)
+              Dim fso, stream
+              Err.Clear
+              Set fso = CreateObject("Scripting.FileSystemObject")
+              Set stream = fso.CreateTextFile(outFile, True, True)
+              stream.Write text
+              stream.Close
+          End Sub
+
+          Err.Clear
+          Set app = CreateObject("Photoshop.Application")
+          If Err.Number <> 0 Then
+              WriteResult "COM_CONNECT_FAIL|NUMBER=" & Err.Number & "|DESCRIPTION=" & Err.Description
+              WScript.Quit 1
+          End If
+
+          Err.Clear
+          inlineResult = app.DoJavaScript("app.version + '|' + app.name")
+          If Err.Number <> 0 Then
+              WriteResult "INLINE_FAIL|NUMBER=" & Err.Number & "|DESCRIPTION=" & Err.Description
+              WScript.Quit 1
+          End If
+
+          jsxForJs = Replace(jsxPath, "\", "\\")
+          jsxForJs = Replace(jsxForJs, "'", "\'")
+          wrapper = "try { var r = $.evalFile('" & jsxForJs & "'); 'EVALOK|' + r; } catch(e) { 'EVALFAIL|' + e.toString() + '|LINE=' + e.line + '|NUMBER=' + e.number; }"
+          Err.Clear
+          evalResult = app.DoJavaScript(wrapper)
+          errNum = Err.Number
+          errDesc = Err.Description
+          If errNum <> 0 Then
+              WriteResult "DOJAVASCRIPT_FAIL|INLINE=" & inlineResult & "|NUMBER=" & errNum & "|DESCRIPTION=" & errDesc
+              WScript.Quit 1
+          End If
+
+          WriteResult "INLINEOK|" & inlineResult & "|" & evalResult
+          '@
+          [IO.File]::WriteAllText($vbs,$vbsBody,(New-Object Text.UTF8Encoding($false)))
+          $env:PSMCP_JSX=$jsx
+          $env:PSMCP_RESULT=$resultFile
+          & cscript.exe //nologo $vbs
+          $rc=$LASTEXITCODE
+          $result=if(Test-Path $resultFile){Get-Content $resultFile -Raw}else{'RESULT_FILE_MISSING'}
+          Write-Host "CSCRIPT_RC=$rc"
+          Write-Host "DIAGNOSTIC_RESULT=$result"
+          if($result -notmatch '^INLINEOK\|24\.0\.0\|Adobe Photoshop\|EVALOK\|JSXOK\|24\.0\.0\|Adobe Photoshop\|'){
+            throw "Photoshop COM eval diagnostic failed: $result"
+          }
+          Write-Host 'PHOTOSHOP_COM_INLINE=PASS'
+          Write-Host 'PHOTOSHOP_COM_EVALFILE=PASS'
