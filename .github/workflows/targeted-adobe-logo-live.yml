@@ -95,7 +95,7 @@ jobs:
           npx --version
           uv --version
 
-      - name: Ensure Photoshop and Illustrator are interactive
+      - name: Ensure Adobe host processes exist
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -113,16 +113,19 @@ jobs:
 
           $deadline=(Get-Date).AddSeconds(45)
           do {
+            $psAny=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Select-Object -First 1
             $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1
-            $ai=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1
+            $ai=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Select-Object -First 1
             if($ps -and $ai){ break }
             Start-Sleep -Seconds 2
           } while((Get-Date) -lt $deadline)
 
-          if(-not $ps){ throw 'Photoshop did not become interactive' }
-          if(-not $ai){ throw 'Illustrator did not become interactive' }
-          Write-Host "PHOTOSHOP_INTERACTIVE=PASS PID=$($ps.Id) SESSION=$($ps.SessionId)"
-          Write-Host "ILLUSTRATOR_INTERACTIVE=PASS PID=$($ai.Id) SESSION=$($ai.SessionId)"
+          if(-not $psAny){ throw 'Photoshop process did not start' }
+          if(-not $ps){ throw 'Photoshop did not become interactive; the Photoshop MCP bridge requires the live desktop host' }
+          if(-not $ai){ throw 'Illustrator process did not start' }
+          Write-Host "PHOTOSHOP_HOST=PASS PID=$($ps.Id) SESSION=$($ps.SessionId) HWND=$($ps.MainWindowHandle)"
+          Write-Host "ILLUSTRATOR_PROCESS=PASS PID=$($ai.Id) SESSION=$($ai.SessionId) HWND=$($ai.MainWindowHandle)"
+          Write-Host 'ILLUSTRATOR_READINESS=deferred-to-real-MCP-call'
 
       - name: Install MCP Adobe runtime
         shell: powershell
