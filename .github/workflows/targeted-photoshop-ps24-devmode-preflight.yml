@@ -1,0 +1,65 @@
+name: Targeted Photoshop 24 developer-mode preflight
+
+on:
+  pull_request:
+    branches: [fix/photoshop-path-override]
+    paths:
+      - ".github/workflows/targeted-photoshop-ps24-devmode-preflight.yml"
+
+concurrency:
+  group: targeted-photoshop-devmode-preflight-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Verify Photoshop 24 interactive session and Adobe UXP developer settings
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+
+          $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue |
+            Where-Object {$_.Path} |
+            Select-Object -First 1
+          if(-not $ps){throw 'PHOTOSHOP_HOST=FAIL: Photoshop is not running'}
+
+          $version=([regex]::Match((Get-Item $ps.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
+          Write-Host "PHOTOSHOP_VERSION=$version PID=$($ps.Id) SESSION=$($ps.SessionId) HWND=$($ps.MainWindowHandle)"
+          if(-not $version.StartsWith('24.')){throw "PHOTOSHOP_HOST=FAIL: expected 24.x, got $version"}
+          if($ps.SessionId -ne 1 -or $ps.MainWindowHandle -eq 0){throw 'PHOTOSHOP_HOST=FAIL: Photoshop is not interactive in Session 1'}
+          Write-Host 'PHOTOSHOP_24_INTERACTIVE_HOST=PASS'
+
+          $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal=New-Object Security.Principal.WindowsPrincipal($identity)
+          $isAdmin=$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          Write-Host "RUNNER_IDENTITY=$($identity.Name) RUNNER_IS_ADMIN=$isAdmin"
+
+          $settings=Join-Path $env:CommonProgramFiles 'Adobe\UXP\Developer\settings.json'
+          Write-Host "UXP_DEVELOPER_SETTINGS=$settings"
+          if(-not (Test-Path $settings)){
+            throw 'UXP_DEVELOPER_MODE=FAIL: settings.json is missing; Adobe requires admin privileges to enable UXP Developer Mode'
+          }
+
+          $raw=Get-Content $settings -Raw
+          Write-Host "UXP_DEVELOPER_SETTINGS_CONTENT=$raw"
+          try {$json=$raw | ConvertFrom-Json} catch {throw "UXP_DEVELOPER_MODE=FAIL: invalid settings.json: $($_.Exception.Message)"}
+          if($json.developer -ne $true){throw 'UXP_DEVELOPER_MODE=FAIL: developer is not true in settings.json'}
+          Write-Host 'UXP_DEVELOPER_MODE=PASS'
+
+          $logDir=Join-Path $env:APPDATA 'Adobe\Adobe Photoshop 2023\Logs'
+          $latest=Get-ChildItem $logDir -Filter 'UXPLogs_*.log' -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if($latest){
+            Write-Host "LATEST_PHOTOSHOP_UXP_LOG=$($latest.FullName)"
+            $recent=Get-Content $latest.FullName -Tail 120 -ErrorAction SilentlyContinue
+            $recent | Where-Object {$_ -match 'Plugin rejected|devtools|Developer|IMS Access token|X_ERR_USER_SIGNEDOUT'} | Write-Host
+          }
+
+          Write-Host 'HOST_DEVELOPER_MODE_NOTE=Photoshop Preferences > Plugins > Enable Developer Mode must also be enabled and Photoshop restarted; Adobe documents this as a separate host setting.'
+          Write-Host 'PHOTOSHOP_24_DEVMODE_PREFLIGHT=PASS'
