@@ -71,6 +71,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
+          $utf8NoBom=New-Object System.Text.UTF8Encoding($false)
           $svcOut=Join-Path $env:RUNNER_TEMP 'loader-matrix-service.out.log'
           $svcErr=Join-Path $env:RUNNER_TEMP 'loader-matrix-service.err.log'
           Remove-Item -Force $svcOut,$svcErr -ErrorAction SilentlyContinue
@@ -90,9 +91,10 @@ jobs:
               entrypoints=@([ordered]@{type='panel';id='panel';main='index.html';label=[ordered]@{default=("MCP "+$name)};minimumSize=[ordered]@{width=230;height=200};preferredDockedSize=[ordered]@{width=230;height=200};preferredFloatingSize=[ordered]@{width=300;height=250}})
             }
             if($permissions.Count -gt 0){$manifest.requiredPermissions=$permissions}
-            $manifest | ConvertTo-Json -Depth 12 | Set-Content (Join-Path $dir 'manifest.json') -Encoding utf8
-            '<!doctype html><html><body><div id="status">PS24 loader probe</div><script src="main.js"></script></body></html>' | Set-Content (Join-Path $dir 'index.html') -Encoding utf8
-            'console.log("MCP_ADOBE_PS24_MINIMAL_PLUGIN_BOOT=PASS");' | Set-Content (Join-Path $dir 'main.js') -Encoding utf8
+            $manifestJson=$manifest | ConvertTo-Json -Depth 12
+            [IO.File]::WriteAllText((Join-Path $dir 'manifest.json'),$manifestJson,$utf8NoBom)
+            [IO.File]::WriteAllText((Join-Path $dir 'index.html'),'<!doctype html><html><body><div id="status">PS24 loader probe</div><script src="main.js"></script></body></html>',$utf8NoBom)
+            [IO.File]::WriteAllText((Join-Path $dir 'main.js'),'console.log("MCP_ADOBE_PS24_MINIMAL_PLUGIN_BOOT=PASS");',$utf8NoBom)
             return $dir
           }
 
@@ -103,13 +105,15 @@ jobs:
             $p=Start-Process -FilePath node -ArgumentList @($env:UXP_JS,'plugin','load','--manifest',$manifest,'--apps','PS') -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
             $timedOut=-not $p.WaitForExit(12000)
             if($timedOut){Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; Start-Sleep 1}
+            $p.Refresh()
             $stdout=if(Test-Path $out){Get-Content $out -Raw}else{''}
             $stderr=if(Test-Path $err){Get-Content $err -Raw}else{''}
             Write-Host "=== LOAD $label ==="
             Write-Host $stdout
             Write-Host $stderr
             if($timedOut){Write-Host "PS24_LOAD_${label}=TIMEOUT"; return $false}
-            if($stderr -match 'Load command failed' -or $stderr -match 'Failed to load'){
+            $combined=$stdout+"`n"+$stderr
+            if($p.ExitCode -ne 0 -or $combined -match "plugin load' failed" -or $combined -match 'Load command failed' -or $combined -match 'Failed to load' -or $combined -match 'not valid JSON'){
               Write-Host "PS24_LOAD_${label}=FAIL"
               return $false
             }
