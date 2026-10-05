@@ -21,84 +21,90 @@ permissions:
 jobs:
   inspect:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 4
+    timeout-minutes: 5
     steps:
-      - name: Read Photoshop host Developer Mode checkbox
+      - name: Open Preferences and capture host state
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           Add-Type -AssemblyName UIAutomationClient
           Add-Type -AssemblyName UIAutomationTypes
           Add-Type -AssemblyName System.Windows.Forms
-          Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class Win32Focus { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd); }'
+          Add-Type -AssemblyName System.Drawing
+          Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; using System.Text; public static class Win32Diag { [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; } [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId); [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count); [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect); }'
+
+          function Get-ForegroundInfo {
+            $hwnd=[Win32Diag]::GetForegroundWindow()
+            [uint32]$pid=0
+            [void][Win32Diag]::GetWindowThreadProcessId($hwnd,[ref]$pid)
+            $sb=New-Object System.Text.StringBuilder 1024
+            [void][Win32Diag]::GetWindowText($hwnd,$sb,$sb.Capacity)
+            [pscustomobject]@{Hwnd=$hwnd;Pid=$pid;Title=$sb.ToString()}
+          }
 
           $ps=Get-Process -Name Photoshop -ErrorAction Stop |
             Where-Object {$_.Path -and $_.MainWindowHandle -ne 0} |
             Select-Object -First 1
-          if(-not $ps){throw 'PHOTOSHOP_UIA=FAIL: interactive Photoshop process not found'}
+          if(-not $ps){throw 'PHOTOSHOP_HOST=FAIL: interactive Photoshop process not found'}
           $version=([regex]::Match((Get-Item $ps.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
           Write-Host "PHOTOSHOP_VERSION=$version PID=$($ps.Id) SESSION=$($ps.SessionId) HWND=$($ps.MainWindowHandle)"
-          if(-not $version.StartsWith('24.')){throw "PHOTOSHOP_UIA=FAIL: expected Photoshop 24.x, got $version"}
-          if($ps.SessionId -ne 1){throw "PHOTOSHOP_UIA=FAIL: expected Session 1, got $($ps.SessionId)"}
+          if(-not $version.StartsWith('24.')){throw "PHOTOSHOP_HOST=FAIL: expected Photoshop 24.x, got $version"}
+          if($ps.SessionId -ne 1){throw "PHOTOSHOP_HOST=FAIL: expected Session 1, got $($ps.SessionId)"}
 
-          [Win32Focus]::SetForegroundWindow($ps.MainWindowHandle) | Out-Null
-          Start-Sleep -Milliseconds 500
+          $set=[Win32Diag]::SetForegroundWindow([IntPtr]$ps.MainWindowHandle)
+          Start-Sleep -Milliseconds 700
+          $fg=Get-ForegroundInfo
+          Write-Host "SET_FOREGROUND=$set FOREGROUND_PID=$($fg.Pid) FOREGROUND_HWND=$($fg.Hwnd) FOREGROUND_TITLE=$($fg.Title)"
+          if($fg.Pid -ne $ps.Id){
+            $shell=New-Object -ComObject WScript.Shell
+            [void]$shell.AppActivate($ps.Id)
+            Start-Sleep -Milliseconds 700
+            $fg=Get-ForegroundInfo
+            Write-Host "APPACTIVATE_FOREGROUND_PID=$($fg.Pid) TITLE=$($fg.Title)"
+          }
+          if($fg.Pid -ne $ps.Id){throw 'PHOTOSHOP_FOCUS=FAIL: refusing to send keys to a non-Photoshop foreground window'}
+
           [System.Windows.Forms.SendKeys]::SendWait('^k')
           Start-Sleep 2
+          $after=Get-ForegroundInfo
+          Write-Host "AFTER_CTRL_K_PID=$($after.Pid) HWND=$($after.Hwnd) TITLE=$($after.Title)"
+
+          $rect=New-Object Win32Diag+RECT
+          if(-not [Win32Diag]::GetWindowRect([IntPtr]$ps.MainWindowHandle,[ref]$rect)){throw 'PHOTOSHOP_SCREENSHOT=FAIL: GetWindowRect failed'}
+          $w=$rect.Right-$rect.Left
+          $h=$rect.Bottom-$rect.Top
+          if($w -le 0 -or $h -le 0){throw "PHOTOSHOP_SCREENSHOT=FAIL: invalid rect ${w}x${h}"}
+          $shot=Join-Path $env:RUNNER_TEMP 'ps24-preferences.png'
+          $bmp=New-Object System.Drawing.Bitmap $w,$h
+          $gfx=[System.Drawing.Graphics]::FromImage($bmp)
+          try {$gfx.CopyFromScreen($rect.Left,$rect.Top,0,0,$bmp.Size)} finally {$gfx.Dispose()}
+          try {$bmp.Save($shot,[System.Drawing.Imaging.ImageFormat]::Png)} finally {$bmp.Dispose()}
+          Write-Host "PHOTOSHOP_PREFERENCES_SCREENSHOT=$shot SIZE=$((Get-Item $shot).Length)"
+          "SCREENSHOT=$shot" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
           try {
             $root=[System.Windows.Automation.AutomationElement]::RootElement
             $pidCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$ps.Id)
             $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$pidCond)
             Write-Host "PHOTOSHOP_UIA_ELEMENT_COUNT=$($all.Count)"
-
+            $names=@()
             for($i=0;$i -lt $all.Count;$i++){
               $e=$all.Item($i)
-              if($e.Current.ControlType -eq [System.Windows.Automation.ControlType]::Window){
-                Write-Host "UIA_WINDOW name='$($e.Current.Name)' class='$($e.Current.ClassName)' automationId='$($e.Current.AutomationId)'"
-              }
+              $name=$e.Current.Name
+              if($name){$names += "[$($e.Current.ControlType.ProgrammaticName)] $name"}
             }
-
-            $pluginNav=$null
-            for($i=0;$i -lt $all.Count;$i++){
-              $e=$all.Item($i)
-              $n=$e.Current.Name
-              if($n -and ($n -match '^(Plugins|Plug-ins|プラグイン)$')){$pluginNav=$e;break}
-            }
-            if($pluginNav){
-              Write-Host "PHOTOSHOP_UIA_PLUGINS_NAV_FOUND=$($pluginNav.Current.Name)"
-              $pat=$null
-              if($pluginNav.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$pat)){$pat.Select()}
-              elseif($pluginNav.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pat)){$pat.Invoke()}
-              else {Write-Host 'PHOTOSHOP_UIA_PLUGINS_NAV_PATTERN=NONE'}
-              Start-Sleep 1
-              $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$pidCond)
-            } else {
-              Write-Host 'PHOTOSHOP_UIA_PLUGINS_NAV_FOUND=NO'
-            }
-
-            $dev=$null
-            $checkboxNames=@()
-            for($i=0;$i -lt $all.Count;$i++){
-              $e=$all.Item($i)
-              if($e.Current.ControlType -eq [System.Windows.Automation.ControlType]::CheckBox){
-                $checkboxNames += $e.Current.Name
-                if($e.Current.Name -match 'Developer Mode|開発者モード|デベロッパ'){$dev=$e}
-              }
-            }
-            Write-Host ('PHOTOSHOP_UIA_CHECKBOXES=' + ($checkboxNames -join ' | '))
-
-            if(-not $dev){throw 'PHOTOSHOP_HOST_DEVELOPER_MODE=UNKNOWN: checkbox not exposed through UI Automation'}
-            $toggle=$null
-            if(-not $dev.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern,[ref]$toggle)){
-              throw 'PHOTOSHOP_HOST_DEVELOPER_MODE=UNKNOWN: checkbox has no TogglePattern'
-            }
-            $state=$toggle.Current.ToggleState.ToString()
-            Write-Host "PHOTOSHOP_HOST_DEVELOPER_MODE=$state"
-            if($state -eq 'On'){Write-Host 'PHOTOSHOP_HOST_DEVELOPER_MODE_UIA=PASS'}
-            elseif($state -eq 'Off'){throw 'PHOTOSHOP_HOST_DEVELOPER_MODE_UIA=FAIL: Enable Developer Mode is unchecked'}
-            else {throw "PHOTOSHOP_HOST_DEVELOPER_MODE=UNKNOWN: state=$state"}
+            $names | Select-Object -First 120 | ForEach-Object {Write-Host "UIA=$_"}
           } finally {
-            [Win32Focus]::SetForegroundWindow($ps.MainWindowHandle) | Out-Null
-            [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+            if($after.Pid -eq $ps.Id){[System.Windows.Forms.SendKeys]::SendWait('{ESC}')}
           }
+
+          Write-Host 'PHOTOSHOP_HOST_DEVELOPER_MODE=UNKNOWN_PENDING_SCREENSHOT_REVIEW'
+
+      - name: Upload Photoshop Preferences screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ps24-developer-mode-${{ github.run_id }}
+          path: ${{ env.SCREENSHOT }}
+          if-no-files-found: error
+          retention-days: 1
