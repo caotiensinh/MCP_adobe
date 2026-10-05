@@ -49,22 +49,46 @@ jobs:
           Write-Host "PNG_JS_PATH=$pngJs"
           $jsxBody=@"
           (function () {
-            var hostVersion = app.version;
-            var hostName = app.name;
-            var doc = app.documents.add(UnitValue(320, 'px'), UnitValue(240, 'px'), 72, 'MCP Adobe COM Live');
-            var psdFile = new File('$psdJs');
-            var psdOptions = new PhotoshopSaveOptions();
-            psdOptions.layers = true;
-            psdOptions.embedColorProfile = true;
-            doc.saveAs(psdFile, psdOptions, true, Extension.LOWERCASE);
-            var pngFile = new File('$pngJs');
-            var pngOptions = new PNGSaveOptions();
-            pngOptions.compression = 9;
-            pngOptions.interlaced = false;
-            doc.saveAs(pngFile, pngOptions, true, Extension.LOWERCASE);
-            return 'PHOTOSHOP_COM_LIVE=PASS|' + hostVersion + '|' + hostName + '|' + doc.name +
-              '|PSD=' + psdFile.fsName + '|PSD_EXISTS=' + psdFile.exists +
-              '|PNG=' + pngFile.fsName + '|PNG_EXISTS=' + pngFile.exists;
+            var stage = 'app.info';
+            var hostVersion = '';
+            var hostName = '';
+            var doc = null;
+            var psdFile = null;
+            var pngFile = null;
+            try {
+              hostVersion = app.version;
+              hostName = app.name;
+              stage = 'doc.new';
+              doc = app.documents.add(UnitValue(320, 'px'), UnitValue(240, 'px'), 72, 'MCP Adobe COM Live');
+              stage = 'psd.file';
+              psdFile = new File('$psdJs');
+              stage = 'psd.options';
+              var psdOptions = new PhotoshopSaveOptions();
+              psdOptions.layers = true;
+              psdOptions.embedColorProfile = true;
+              stage = 'psd.saveAs';
+              doc.saveAs(psdFile, psdOptions, true, Extension.LOWERCASE);
+              stage = 'png.file';
+              pngFile = new File('$pngJs');
+              stage = 'png.options';
+              var pngOptions = new PNGSaveOptions();
+              pngOptions.compression = 9;
+              pngOptions.interlaced = false;
+              stage = 'png.saveAs';
+              doc.saveAs(pngFile, pngOptions, true, Extension.LOWERCASE);
+              stage = 'verify';
+              return 'PHOTOSHOP_COM_LIVE=PASS|' + hostVersion + '|' + hostName + '|' + doc.name +
+                '|PSD=' + psdFile.fsName + '|PSD_EXISTS=' + psdFile.exists +
+                '|PNG=' + pngFile.fsName + '|PNG_EXISTS=' + pngFile.exists;
+            } catch (e) {
+              var psdExists = psdFile ? psdFile.exists : false;
+              var pngExists = pngFile ? pngFile.exists : false;
+              return 'PHOTOSHOP_COM_LIVE=FAIL|STAGE=' + stage +
+                '|MESSAGE=' + (e && e.message ? e.message : String(e)) +
+                '|NUMBER=' + (e && e.number !== undefined ? e.number : '') +
+                '|LINE=' + (e && e.line !== undefined ? e.line : '') +
+                '|PSD_EXISTS=' + psdExists + '|PNG_EXISTS=' + pngExists;
+            }
           })();
           "@
           [IO.File]::WriteAllText($jsx,[char]0xFEFF + $jsxBody,(New-Object Text.UTF8Encoding($false)))
@@ -137,6 +161,7 @@ jobs:
           } else {
             Write-Host 'COM_RESULT_FILE=MISSING'
           }
+          if($result -match '^PHOTOSHOP_COM_LIVE=FAIL'){throw $result}
           if($result -match '^ERROR:'){throw "$result | CSCRIPT_RC=$rc"}
           if($rc -ne 0){throw "COM bridge cscript failed rc=$rc result=$result"}
           if(-not (Test-Path $resultFile)){throw 'COM bridge produced no result file'}
