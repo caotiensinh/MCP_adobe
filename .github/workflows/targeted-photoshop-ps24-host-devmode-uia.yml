@@ -1,13 +1,18 @@
 name: Targeted Photoshop 24 host Developer Mode UIA
 
 on:
+  push:
+    branches: [test/photoshop-ps24-live]
+    paths:
+      - ".github/workflows/targeted-photoshop-ps24-host-devmode-uia.yml"
   pull_request:
     branches: [fix/photoshop-path-override]
     paths:
       - ".github/workflows/targeted-photoshop-ps24-host-devmode-uia.yml"
+  workflow_dispatch:
 
 concurrency:
-  group: targeted-photoshop-host-devmode-uia-${{ github.event.pull_request.number }}
+  group: targeted-photoshop-host-devmode-uia-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -25,13 +30,7 @@ jobs:
           Add-Type -AssemblyName UIAutomationClient
           Add-Type -AssemblyName UIAutomationTypes
           Add-Type -AssemblyName System.Windows.Forms
-          Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public static class Win32Focus {
-  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-}
-'@
+          Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class Win32Focus { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd); }'
 
           $ps=Get-Process -Name Photoshop -ErrorAction Stop |
             Where-Object {$_.Path -and $_.MainWindowHandle -ne 0} |
