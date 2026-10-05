@@ -16,9 +16,12 @@ permissions:
 jobs:
   live:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 4
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
 
       - name: Control Photoshop 24 through COM ExtendScript
         shell: powershell
@@ -158,3 +161,111 @@ jobs:
           Write-Host 'PHOTOSHOP_COM_PSD_VERIFY=PASS'
           Write-Host 'PHOTOSHOP_COM_PNG_VERIFY=PASS'
           Write-Host 'PHOTOSHOP_24_COM_LIVE_OPERATION_VERIFY=PASS'
+
+      - name: Install MCP Adobe gateway
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --disable-pip-version-check -e .
+          if($LASTEXITCODE -ne 0){throw 'MCP Adobe editable install failed'}
+          Write-Host 'MCP_ADOBE_INSTALL=PASS'
+
+      - name: Live MCP Adobe gateway through alisaitteke transport
+        timeout-minutes: 4
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue |
+            Where-Object {$_.Path -and $_.MainWindowHandle -ne 0} |
+            Select-Object -First 1
+          if(-not $ps){throw 'Photoshop disappeared before MCP Adobe gateway test'}
+          $env:PHOTOSHOP_PATH=$ps.Path
+          $env:PSMCP_FEEDBACK='0'
+          $env:PSMCP_UPDATE_CHECK='0'
+          $out=Join-Path $env:RUNNER_TEMP 'mcp-adobe-gateway-live'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $env:MCP_ADOBE_GATEWAY_OUT=$out
+          $probe=Join-Path $env:RUNNER_TEMP 'mcp_adobe_gateway_live_probe.py'
+          @'
+          import json
+          import os
+          from pathlib import Path
+
+          from mcp_adobe.server import GatewayRuntime
+
+          out = Path(os.environ["MCP_ADOBE_GATEWAY_OUT"])
+          out.mkdir(parents=True, exist_ok=True)
+          psd = out / "mcp-adobe-gateway-live.psd"
+          png = out / "mcp-adobe-gateway-live.png"
+          for path in (psd, png):
+              try:
+                  path.unlink()
+              except FileNotFoundError:
+                  pass
+
+          runtime = GatewayRuntime()
+          try:
+              info = next(item for item in runtime.describe() if item.application == "photoshop")
+              print("MCP_ADOBE_PHOTOSHOP_TRANSPORT=" + info.transport)
+              print("MCP_ADOBE_PHOTOSHOP_UPSTREAM=" + str(info.upstream_repository))
+              print("MCP_ADOBE_PHOTOSHOP_SNAPSHOT=" + str(info.upstream_snapshot))
+              if not info.connected:
+                  raise RuntimeError("MCP Adobe Photoshop subprocess transport did not connect")
+              print("MCP_ADOBE_PHOTOSHOP_CONNECTED=PASS")
+
+              health = runtime.read("photoshop", "creative.health", {})
+              print("MCP_ADOBE_HEALTH=" + json.dumps(health, ensure_ascii=True, default=str))
+              if not health.get("ok"):
+                  raise RuntimeError("creative.health failed")
+              print("MCP_ADOBE_APP_INFO_EQUIVALENT=PASS")
+
+              created = runtime.write(
+                  "photoshop",
+                  "creative.document.create",
+                  {"width": 320, "height": 240, "resolution": 72, "colorMode": "RGB"},
+              )
+              print("MCP_ADOBE_CREATE=" + json.dumps(created, ensure_ascii=True, default=str))
+              if not created.get("ok"):
+                  raise RuntimeError("creative.document.create failed")
+              print("MCP_ADOBE_DOC_NEW=PASS")
+
+              saved = runtime.write(
+                  "photoshop",
+                  "creative.document.save",
+                  {"path": str(psd), "format": "PSD"},
+              )
+              print("MCP_ADOBE_SAVE=" + json.dumps(saved, ensure_ascii=True, default=str))
+              if not saved.get("ok"):
+                  raise RuntimeError("creative.document.save failed")
+              print("MCP_ADOBE_SAVE_PSD=PASS")
+
+              exported = runtime.write(
+                  "photoshop",
+                  "creative.document.export",
+                  {"path": str(png), "format": "PNG"},
+              )
+              print("MCP_ADOBE_EXPORT=" + json.dumps(exported, ensure_ascii=True, default=str))
+              if not exported.get("ok"):
+                  raise RuntimeError("creative.document.export failed")
+              print("MCP_ADOBE_EXPORT_PNG=PASS")
+          finally:
+              runtime.close()
+
+          if not psd.is_file():
+              raise RuntimeError(f"MCP Adobe PSD missing: {psd}")
+          if not png.is_file():
+              raise RuntimeError(f"MCP Adobe PNG missing: {png}")
+          psd_bytes = psd.read_bytes()
+          png_bytes = png.read_bytes()
+          if psd_bytes[:4] != b"8BPS":
+              raise RuntimeError(f"MCP Adobe PSD signature invalid: {psd_bytes[:4]!r}")
+          if png_bytes[:8] != b"\x89PNG\r\n\x1a\n":
+              raise RuntimeError(f"MCP Adobe PNG signature invalid: {png_bytes[:8]!r}")
+          print(f"MCP_ADOBE_PSD_PATH={psd} BYTES={len(psd_bytes)} HEADER=8BPS")
+          print(f"MCP_ADOBE_PNG_PATH={png} BYTES={len(png_bytes)}")
+          print("MCP_ADOBE_PSD_SIGNATURE=PASS")
+          print("MCP_ADOBE_PNG_SIGNATURE=PASS")
+          print("MCP_ADOBE_PHOTOSHOP_24_LIVE_E2E=PASS")
+          '@ | Set-Content -Path $probe -Encoding utf8
+          python $probe
+          if($LASTEXITCODE -ne 0){throw 'MCP Adobe Photoshop live gateway probe failed'}
