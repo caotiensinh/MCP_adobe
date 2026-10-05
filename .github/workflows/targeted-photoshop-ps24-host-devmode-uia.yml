@@ -27,7 +27,7 @@ jobs:
           Add-Type -AssemblyName UIAutomationTypes
           Add-Type -AssemblyName System.Windows.Forms
           Add-Type -AssemblyName System.Drawing
-          Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; using System.Text; public static class Win32Diag { [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; } [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId); [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count); [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect); [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach); [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int cmdShow); [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId(); public static bool ForceForeground(IntPtr hWnd) { uint ignore; IntPtr fg=GetForegroundWindow(); uint fgThread=GetWindowThreadProcessId(fg,out ignore); uint targetThread=GetWindowThreadProcessId(hWnd,out ignore); uint currentThread=GetCurrentThreadId(); bool a=false,b=false; try { if(currentThread!=fgThread) a=AttachThreadInput(currentThread,fgThread,true); if(currentThread!=targetThread) b=AttachThreadInput(currentThread,targetThread,true); ShowWindow(hWnd,9); BringWindowToTop(hWnd); return SetForegroundWindow(hWnd); } finally { if(b) AttachThreadInput(currentThread,targetThread,false); if(a) AttachThreadInput(currentThread,fgThread,false); } } }'
+          Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; using System.Text; public static class Win32Diag { [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; } [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId); [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count); [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach); [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int cmdShow); [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId(); public static bool ForceForeground(IntPtr hWnd) { uint ignore; IntPtr fg=GetForegroundWindow(); uint fgThread=GetWindowThreadProcessId(fg,out ignore); uint targetThread=GetWindowThreadProcessId(hWnd,out ignore); uint currentThread=GetCurrentThreadId(); bool a=false,b=false; try { if(currentThread!=fgThread) a=AttachThreadInput(currentThread,fgThread,true); if(currentThread!=targetThread) b=AttachThreadInput(currentThread,targetThread,true); ShowWindow(hWnd,9); BringWindowToTop(hWnd); return SetForegroundWindow(hWnd); } finally { if(b) AttachThreadInput(currentThread,targetThread,false); if(a) AttachThreadInput(currentThread,fgThread,false); } } }'
 
           function Get-ForegroundInfo {
             $hwnd=[Win32Diag]::GetForegroundWindow()
@@ -60,26 +60,41 @@ jobs:
           if($fg.ProcessId -ne $ps.Id){throw 'PHOTOSHOP_FOCUS=FAIL: Windows foreground lock still blocks Photoshop; refusing to send keys'}
 
           [System.Windows.Forms.SendKeys]::SendWait('^k')
-          Start-Sleep 2
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $pidCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$ps.Id)
+          $pref=$null
+          for($attempt=1;$attempt -le 20;$attempt++){
+            Start-Sleep -Milliseconds 500
+            $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$pidCond)
+            for($i=0;$i -lt $all.Count;$i++){
+              $candidate=$all.Item($i)
+              if($candidate.Current.ControlType -eq [System.Windows.Automation.ControlType]::Window -and $candidate.Current.Name -eq 'Preferences'){
+                $pref=$candidate
+                break
+              }
+            }
+            if($pref){break}
+          }
+          if(-not $pref){throw 'PHOTOSHOP_PREFERENCES=FAIL: Preferences window did not appear within 10 seconds'}
+
           $after=Get-ForegroundInfo
           Write-Host "AFTER_CTRL_K_PID=$($after.ProcessId) HWND=$($after.Hwnd) TITLE=$($after.Title)"
-          if($after.ProcessId -ne $ps.Id){throw 'PHOTOSHOP_PREFERENCES=FAIL: Ctrl+K did not leave a Photoshop-owned foreground window'}
+          $bounds=$pref.Current.BoundingRectangle
+          Write-Host "PREFERENCES_BOUNDS_LEFT=$($bounds.Left) TOP=$($bounds.Top) WIDTH=$($bounds.Width) HEIGHT=$($bounds.Height)"
+          if($bounds.Width -lt 100 -or $bounds.Height -lt 100){throw 'PHOTOSHOP_PREFERENCES=FAIL: Preferences bounding rectangle is invalid'}
 
-          $rect=New-Object Win32Diag+RECT
-          if(-not [Win32Diag]::GetWindowRect([IntPtr]$ps.MainWindowHandle,[ref]$rect)){throw 'PHOTOSHOP_SCREENSHOT=FAIL: GetWindowRect failed'}
-          $w=$rect.Right-$rect.Left
-          $h=$rect.Bottom-$rect.Top
-          if($w -le 0 -or $h -le 0){throw "PHOTOSHOP_SCREENSHOT=FAIL: invalid rect ${w}x${h}"}
           $shot=Join-Path $env:RUNNER_TEMP 'ps24-preferences.png'
-          $bmp=New-Object System.Drawing.Bitmap $w,$h
+          $bmp=New-Object System.Drawing.Bitmap ([int][Math]::Ceiling($bounds.Width)),([int][Math]::Ceiling($bounds.Height))
           $gfx=[System.Drawing.Graphics]::FromImage($bmp)
-          try {$gfx.CopyFromScreen($rect.Left,$rect.Top,0,0,$bmp.Size)} finally {$gfx.Dispose()}
+          try {
+            $gfx.CopyFromScreen([int]$bounds.Left,[int]$bounds.Top,0,0,$bmp.Size)
+          } finally {
+            $gfx.Dispose()
+          }
           try {$bmp.Save($shot,[System.Drawing.Imaging.ImageFormat]::Png)} finally {$bmp.Dispose()}
           Write-Host "PHOTOSHOP_PREFERENCES_SCREENSHOT=$shot SIZE=$((Get-Item $shot).Length)"
 
           try {
-            $root=[System.Windows.Automation.AutomationElement]::RootElement
-            $pidCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$ps.Id)
             $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$pidCond)
             Write-Host "PHOTOSHOP_UIA_ELEMENT_COUNT=$($all.Count)"
             for($i=0;$i -lt $all.Count;$i++){
@@ -88,6 +103,8 @@ jobs:
               if($name){Write-Host "UIA=[$($e.Current.ControlType.ProgrammaticName)] $name"}
             }
           } finally {
+            $forceAgain=[Win32Diag]::ForceForeground([IntPtr]$ps.MainWindowHandle)
+            Start-Sleep -Milliseconds 200
             [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
           }
 
