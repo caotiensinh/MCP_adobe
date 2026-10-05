@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from threading import Event, Lock, Thread
@@ -89,10 +90,15 @@ class McpSubprocessToolClient:
         from mcp import Client, StdioServerParameters
 
         self._loop = asyncio.get_running_loop()
+        # StdioServerParameters forwards this mapping to the child process.
+        # Preserve the runner/user environment so npx and its Node/npm children
+        # retain PATH, USERPROFILE, TEMP, SystemRoot and Adobe path overrides.
+        child_env = dict(os.environ)
+        child_env.update(self.config.env)
         server = StdioServerParameters(
             command=self.config.command,
             args=list(self.config.args),
-            env=dict(self.config.env),
+            env=child_env,
         )
         self._stop_async = asyncio.Event()
 
@@ -187,6 +193,7 @@ def photoshop_stdio_config() -> SubprocessMcpConfig:
             "PSMCP_FEEDBACK": "0",
             "PSMCP_UPDATE_CHECK": "0",
         },
+        startup_timeout_seconds=120.0,
         call_timeout_seconds=180.0,
     )
 
@@ -196,5 +203,6 @@ def illustrator_stdio_config() -> SubprocessMcpConfig:
     return SubprocessMcpConfig(
         command="npx",
         args=("-y", "illustrator-mcp-server@1.10.3"),
+        startup_timeout_seconds=120.0,
         call_timeout_seconds=180.0,
     )
