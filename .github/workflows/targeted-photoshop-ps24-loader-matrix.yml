@@ -1,254 +1,156 @@
-name: Targeted Photoshop 24 UXP 1.2.0 live
+name: Targeted Photoshop 24 Generator live
 
 on:
   pull_request:
     branches: [fix/photoshop-path-override]
     paths:
       - ".github/workflows/targeted-photoshop-ps24-loader-matrix.yml"
-      - "scripts/probe_photoshop_core_live.cjs"
 
 concurrency:
-  group: targeted-photoshop-ps24-uxp120-${{ github.event.pull_request.number }}
+  group: targeted-photoshop-generator-live-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  ps24-uxp120-live:
+  live:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 10
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7.0.0
         with:
           node-version: '20'
 
-      - name: Verify Photoshop 24 host
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          $p=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
-          if(-not $p){throw 'Photoshop is not running'}
-          $v=([regex]::Match((Get-Item $p.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
-          if(-not $v.StartsWith('24.')){throw "Expected Photoshop 24.x, got $v"}
-          Write-Host "PHOTOSHOP_VERSION=$v SESSION=$($p.SessionId)"
-          Write-Host 'PHOTOSHOP_24_PROCESS_VERIFY=PASS'
-
-      - name: Prepare exact CORE and minimal Adobe UXP CLI 1.2.0 runtime
-        timeout-minutes: 4
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          $core=Join-Path $env:RUNNER_TEMP 'core-photoshop-mcp-ps24-120'
-          if(Test-Path $core){Remove-Item -Recurse -Force $core}
-          git clone --filter=blob:none https://github.com/CORE-Automate-WSS/photoshop-mcp.git $core
-          git -C $core checkout --detach 586b66499852c801bcdb3b718c036f16f043c1d7
-          if((git -C $core rev-parse HEAD).Trim() -ne '586b66499852c801bcdb3b718c036f16f043c1d7'){throw 'CORE upstream pin mismatch'}
-          $panel=Join-Path $core 'packages\ps-uxp-bridge'
-          $manifest=Get-Content (Join-Path $panel 'manifest.json') -Raw | ConvertFrom-Json
-          if([version]$manifest.host[0].minVersion -gt [version]'24.0.0'){throw "CORE incompatible minVersion=$($manifest.host[0].minVersion)"}
-          $main=Join-Path $panel 'main.js'
-          $src=Get-Content $main -Raw
-          $needle='  log("MCP Bridge initialized");'
-          if(-not $src.Contains($needle)){throw 'CORE auto-connect hook missing'}
-          $src=$src.Replace($needle,$needle+"`r`n  setTimeout(connect, 500);")
-          [IO.File]::WriteAllText($main,$src,(New-Object Text.UTF8Encoding($false)))
-
-          $adobe=Join-Path $env:RUNNER_TEMP 'adobe-uxp-cli-120-ps24'
-          if(Test-Path $adobe){Remove-Item -Recurse -Force $adobe}
-          git clone --filter=blob:none https://github.com/adobe-uxp/devtools-cli.git $adobe
-          git -C $adobe checkout --detach 873870213ed6069e8b3bff9af1b0c6f5d1ca683b
-          if((git -C $adobe rev-parse HEAD).Trim() -ne '873870213ed6069e8b3bff9af1b0c6f5d1ca683b'){throw 'Adobe UXP 1.2.0 source pin mismatch'}
-
-          Push-Location $adobe
-          try {
-            npm install --no-save --ignore-scripts --no-audit --no-fund --prefer-online `
-              chalk@3.0.0 cli-table3@0.4.0 prompts@2.3.2 semver@7.3.2 yargs@15.3.1 `
-              chokidar@3.4.2 express@4.17.1 fancy-log@1.3.3 fs-extra@9.0.0 lodash@4.17.15 `
-              isomorphic-ws@4.0.1 ws@7.2.3 archiver@5.0.0 ignore-walk@3.0.3 node-gyp-build@4.2.3 tar@6.0.1
-            if($LASTEXITCODE -ne 0){throw 'minimal Adobe UXP runtime dependency install failed'}
-
-            $scope=Join-Path $adobe 'node_modules\@adobe'
-            New-Item -ItemType Directory -Force $scope | Out-Null
-            $pkgRoots=@((Join-Path $adobe 'packages'))
-            $templateRoot=Join-Path $adobe 'packages\uxp-templates-pack'
-            if(Test-Path $templateRoot){$pkgRoots += $templateRoot}
-            foreach($root in $pkgRoots){
-              Get-ChildItem $root -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-                $pj=Join-Path $_.FullName 'package.json'
-                if(Test-Path $pj){
-                  $meta=Get-Content $pj -Raw | ConvertFrom-Json
-                  if($meta.name -like '@adobe/*'){
-                    $leaf=$meta.name.Substring(7)
-                    $link=Join-Path $scope $leaf
-                    if(Test-Path $link){Remove-Item -Recurse -Force $link}
-                    cmd /c "mklink /J `"$link`" `"$($_.FullName)`"" | Out-Host
-                    if($LASTEXITCODE -ne 0){throw "failed to junction $($meta.name)"}
-                  }
-                }
-              }
-            }
-            node (Join-Path $adobe 'packages\uxp-devtools-helper\scripts\devtools_setup.js')
-            if($LASTEXITCODE -ne 0){throw 'Adobe UXP 1.2.0 native helper setup failed'}
-          } finally { Pop-Location }
-
-          $uxpJs=Join-Path $adobe 'packages\uxp-devtools-cli\src\uxp.js'
-          if(-not (Test-Path $uxpJs)){throw 'UXP CLI entry missing'}
-          "UXP_JS=$uxpJs" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "ADOBE_CLI_ROOT=$adobe" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "CORE_SERVER_DIR=$adobe" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "CORE_PANEL=$panel" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "CORE_MIN_VERSION=$($manifest.host[0].minVersion)"
-          Write-Host 'UXP_CLI_120_MINIMAL_RUNTIME_READY=PASS'
-
-      - name: Enable UXP Developer Tools
+      - name: Prove external JSX control
         timeout-minutes: 2
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          '' | node $env:UXP_JS devtools enable
-          if($LASTEXITCODE -ne 0){throw "UXP devtools enable failed rc=$LASTEXITCODE"}
-          Write-Host 'UXP_DEVTOOLS_120_ENABLE=PASS'
+          $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
+          if(-not $ps){throw 'Photoshop is not running'}
+          $v=([regex]::Match((Get-Item $ps.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
+          if(-not $v.StartsWith('24.')){throw "Expected Photoshop 24.x, got $v"}
+          "PHOTOSHOP_EXE=$($ps.Path)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "PHOTOSHOP_VERSION=$v PID=$($ps.Id) SESSION=$($ps.SessionId)"
 
-      - name: Verify Photoshop 24 loader with UXP CLI 1.2.0
+          $marker=Join-Path $env:RUNNER_TEMP 'ps24-jsx-marker.txt'
+          $jsx=Join-Path $env:RUNNER_TEMP 'ps24-marker.jsx'
+          $m=$marker.Replace('\\','/')
+          $script="var f=new File('$m');f.open('w');f.write('PASS|'+app.version);f.close();"
+          [IO.File]::WriteAllText($jsx,$script,(New-Object Text.UTF8Encoding($false)))
+
+          function Try-Jsx([string]$mode,[string[]]$argv) {
+            Remove-Item $marker -Force -ErrorAction SilentlyContinue
+            Write-Host "TRY_JSX_MODE=$mode"
+            try { Start-Process -FilePath $ps.Path -ArgumentList $argv -ErrorAction Stop | Out-Null } catch { Write-Host "START_ERROR=$($_.Exception.Message)" }
+            $until=[DateTime]::UtcNow.AddSeconds(12)
+            do { if(Test-Path $marker){return $true};Start-Sleep 1 } while([DateTime]::UtcNow -lt $until)
+            return $false
+          }
+
+          $mode=$null
+          if(Try-Jsx 'dash-r' @('-r',$jsx)){$mode='dash-r'}
+          elseif(Try-Jsx 'direct-file' @($jsx)){$mode='direct-file'}
+          else {
+            Remove-Item $marker -Force -ErrorAction SilentlyContinue
+            try { Start-Process -FilePath $jsx -ErrorAction Stop | Out-Null } catch { Write-Host "ASSOCIATION_ERROR=$($_.Exception.Message)" }
+            $until=[DateTime]::UtcNow.AddSeconds(12)
+            do { if(Test-Path $marker){$mode='association';break};Start-Sleep 1 } while([DateTime]::UtcNow -lt $until)
+          }
+          if(-not $mode){throw 'NO_EXTERNAL_JSX_CONTROL_PATH'}
+          $result=Get-Content $marker -Raw
+          Write-Host "JSX_MODE=$mode RESULT=$result"
+          if($result -notmatch '^PASS\|24\.'){throw "Unexpected JSX result: $result"}
+          "JSX_CONTROL_MODE=$mode" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host 'PHOTOSHOP_JSX_CONTROL=PASS'
+
+      - name: Build and install pinned Generator bridge
         timeout-minutes: 3
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $utf8NoBom=New-Object System.Text.UTF8Encoding($false)
-          $svcOut=Join-Path $env:RUNNER_TEMP 'uxp120-matrix-service.out.log'
-          $svcErr=Join-Path $env:RUNNER_TEMP 'uxp120-matrix-service.err.log'
-          Remove-Item -Force $svcOut,$svcErr -ErrorAction SilentlyContinue
-          $svc=$null
+          $src=Join-Path $env:RUNNER_TEMP 'ps-generator-bridge'
+          if(Test-Path $src){Remove-Item -Recurse -Force $src}
+          git clone https://github.com/emptykid/photoshop-manipulate-bridge.git $src
+          if($LASTEXITCODE -ne 0){throw 'Generator clone failed'}
+          git -C $src checkout --detach c44e4b38a733a05a167b93b2522d2d9d4fb40706
+          if((git -C $src rev-parse HEAD).Trim() -ne 'c44e4b38a733a05a167b93b2522d2d9d4fb40706'){throw 'Generator pin mismatch'}
 
-          function New-DiagPlugin([string]$name,[hashtable]$permissions) {
-            $dir=Join-Path $env:RUNNER_TEMP ("ps24-120-"+$name)
-            if(Test-Path $dir){Remove-Item -Recurse -Force $dir}
-            New-Item -ItemType Directory -Force $dir | Out-Null
-            $manifest=[ordered]@{
-              manifestVersion=5
-              id=("com.mcpadobe.ps24.v120."+$name)
-              name=("MCP Adobe PS24 120 "+$name)
-              version='0.0.1'
-              main='index.html'
-              host=[ordered]@{app='PS';minVersion='23.3.0'}
-              entrypoints=@([ordered]@{type='panel';id='panel';main='index.html';label=[ordered]@{default=("MCP120 "+$name)};minimumSize=[ordered]@{width=230;height=200};preferredDockedSize=[ordered]@{width=230;height=200};preferredFloatingSize=[ordered]@{width=300;height=250}})
-            }
-            if($permissions.Count -gt 0){$manifest.requiredPermissions=$permissions}
-            [IO.File]::WriteAllText((Join-Path $dir 'manifest.json'),($manifest | ConvertTo-Json -Depth 12),$utf8NoBom)
-            [IO.File]::WriteAllText((Join-Path $dir 'index.html'),'<!doctype html><html><body><div>PS24 UXP 1.2.0 probe</div><script src="main.js"></script></body></html>',$utf8NoBom)
-            [IO.File]::WriteAllText((Join-Path $dir 'main.js'),'console.log("MCP_ADOBE_PS24_UXP120_BOOT=PASS");',$utf8NoBom)
-            return $dir
-          }
+          $server=Join-Path $src 'src\server.ts'
+          $code=Get-Content $server -Raw
+          $needle='server.listen(this.port, () => {'
+          if(-not $code.Contains($needle)){throw 'Generator listen call changed'}
+          $code=$code.Replace($needle,"server.listen(this.port, '127.0.0.1', () => {")
+          [IO.File]::WriteAllText($server,$code,(New-Object Text.UTF8Encoding($false)))
 
-          function Invoke-BoundedLoad([string]$label,[string]$manifest) {
-            $out=Join-Path $env:RUNNER_TEMP ("uxp120-load-"+$label+".out.log")
-            $err=Join-Path $env:RUNNER_TEMP ("uxp120-load-"+$label+".err.log")
-            Remove-Item -Force $out,$err -ErrorAction SilentlyContinue
-            $p=Start-Process -FilePath node -ArgumentList @($env:UXP_JS,'plugin','load','--manifest',$manifest,'--apps','PS') -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
-            $timedOut=-not $p.WaitForExit(12000)
-            if($timedOut){Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue;Start-Sleep 1}
-            $p.Refresh()
-            $stdout=if(Test-Path $out){Get-Content $out -Raw}else{''}
-            $stderr=if(Test-Path $err){Get-Content $err -Raw}else{''}
-            Write-Host "=== UXP120 LOAD $label ==="
-            Write-Host $stdout
-            Write-Host $stderr
-            if($timedOut){Write-Host "PS24_UXP120_${label}=TIMEOUT";return $false}
-            $combined=$stdout+"`n"+$stderr
-            if($combined -match "plugin load' failed" -or $combined -match 'Load command failed' -or $combined -match 'Failed to load' -or $combined -match 'not valid JSON'){
-              Write-Host "PS24_UXP120_${label}=FAIL"
-              return $false
-            }
-            Write-Host "PS24_UXP120_${label}=PASS"
-            return $true
-          }
-
+          Push-Location $src
           try {
-            $svc=Start-Process -FilePath node -ArgumentList @($env:UXP_JS,'service','start','--port','14001') -PassThru -RedirectStandardOutput $svcOut -RedirectStandardError $svcErr
-            $deadline=[DateTime]::UtcNow.AddSeconds(40);$ready=$false
-            do {
-              Start-Sleep 2
-              node $env:UXP_JS apps list
-              if($LASTEXITCODE -eq 0){$ready=$true;break}
-              if($svc.HasExited){break}
-            } while([DateTime]::UtcNow -lt $deadline)
-            if(-not $ready){throw 'UXP 1.2.0 service/Photoshop discovery failed'}
-            Write-Host 'PS24_UXP120_DISCOVERY=PASS'
+            npm install --no-audit --no-fund
+            if($LASTEXITCODE -ne 0){throw 'Generator npm install failed'}
+            npm run build
+            if($LASTEXITCODE -ne 0){throw 'Generator build failed'}
+          } finally { Pop-Location }
+          if(-not (Test-Path (Join-Path $src 'dist\index.js'))){throw 'Generator dist/index.js missing'}
 
-            $variants=@()
-            $variants += [pscustomobject]@{Label='MINIMAL';Dir=(New-DiagPlugin 'minimal' @{})}
-            $variants += [pscustomobject]@{Label='NETWORK';Dir=(New-DiagPlugin 'network' @{network=@{domains='all'}})}
-            $variants += [pscustomobject]@{Label='FULLACCESS';Dir=(New-DiagPlugin 'fullaccess' @{network=@{domains='all'};localFileSystem='fullAccess'})}
-            $variants += [pscustomobject]@{Label='CLIPBOARD';Dir=(New-DiagPlugin 'clipboard' @{network=@{domains='all'};localFileSystem='fullAccess';clipboard='readAndWrite'})}
-            $results=[ordered]@{}
-            foreach($v in $variants){$results[$v.Label]=Invoke-BoundedLoad $v.Label (Join-Path $v.Dir 'manifest.json')}
-            Write-Host ('PS24_UXP120_MATRIX='+($results | ConvertTo-Json -Compress))
-            foreach($k in @('MINIMAL','NETWORK','FULLACCESS','CLIPBOARD')){if(-not $results[$k]){throw "UXP 1.2.0 loader failed at $k"}}
-            Write-Host 'PS24_UXP120_LOADER_MATRIX=PASS'
-          } finally {
-            if($svc -and -not $svc.HasExited){Stop-Process -Id $svc.Id -Force -ErrorAction SilentlyContinue}
-          }
+          $dest=Join-Path $env:CommonProgramFiles 'Adobe\Plug-Ins\CC\Generator\photoshop-manipulate-bridge'
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          Copy-Item (Join-Path $src 'dist\*') $dest -Recurse -Force
+          if(-not (Test-Path (Join-Path $dest 'index.js'))){throw 'Generator install verify failed'}
+          Write-Host "GENERATOR_DEST=$dest"
+          Write-Host 'GENERATOR_BUILD_INSTALL=PASS'
 
-      - name: Live CORE Photoshop 24 operation proof with UXP 1.2.0
-        timeout-minutes: 3
+      - name: Enable Generator and prove HTTP bridge
+        timeout-minutes: 2
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $svc=$null;$probe=$null;$loader=$null
-          $svcOut=Join-Path $env:RUNNER_TEMP 'uxp120-core-service.out.log'
-          $svcErr=Join-Path $env:RUNNER_TEMP 'uxp120-core-service.err.log'
-          $probeOut=Join-Path $env:RUNNER_TEMP 'uxp120-core-probe.out.log'
-          $probeErr=Join-Path $env:RUNNER_TEMP 'uxp120-core-probe.err.log'
-          $loadOut=Join-Path $env:RUNNER_TEMP 'uxp120-core-load.out.log'
-          $loadErr=Join-Path $env:RUNNER_TEMP 'uxp120-core-load.err.log'
-          Remove-Item -Force $svcOut,$svcErr,$probeOut,$probeErr,$loadOut,$loadErr -ErrorAction SilentlyContinue
-          try {
-            $svc=Start-Process -FilePath node -ArgumentList @($env:UXP_JS,'service','start','--port','14001') -PassThru -RedirectStandardOutput $svcOut -RedirectStandardError $svcErr
-            $deadline=[DateTime]::UtcNow.AddSeconds(40);$ready=$false
-            do {
-              Start-Sleep 2
-              node $env:UXP_JS apps list
-              if($LASTEXITCODE -eq 0){$ready=$true;break}
-              if($svc.HasExited){break}
-            } while([DateTime]::UtcNow -lt $deadline)
-            if(-not $ready){throw 'UXP 1.2.0 service/Photoshop discovery failed'}
-            Write-Host 'PHOTOSHOP_24_UXP120_DISCOVERY=PASS'
+          $marker=Join-Path $env:RUNNER_TEMP 'generator-enable-marker.txt'
+          $jsx=Join-Path $env:RUNNER_TEMP 'enable-generator.jsx'
+          $m=$marker.Replace('\\','/')
+          $script="try{$.evalFile(File(app.path+'/Presets/Scripts/generate.jsx'));var f=new File('$m');f.open('w');f.write('PASS');f.close();}catch(e){var f=new File('$m');f.open('w');f.write('FAIL|'+e.toString());f.close();}"
+          [IO.File]::WriteAllText($jsx,$script,(New-Object Text.UTF8Encoding($false)))
+          Remove-Item $marker -Force -ErrorAction SilentlyContinue
+          if($env:JSX_CONTROL_MODE -eq 'dash-r'){Start-Process -FilePath $env:PHOTOSHOP_EXE -ArgumentList @('-r',$jsx) | Out-Null}
+          elseif($env:JSX_CONTROL_MODE -eq 'direct-file'){Start-Process -FilePath $env:PHOTOSHOP_EXE -ArgumentList @($jsx) | Out-Null}
+          else {Start-Process -FilePath $jsx | Out-Null}
+          $until=[DateTime]::UtcNow.AddSeconds(20)
+          do { if(Test-Path $marker){break};Start-Sleep 1 } while([DateTime]::UtcNow -lt $until)
+          if(-not (Test-Path $marker)){throw 'Generator enable JSX did not execute'}
+          $result=Get-Content $marker -Raw
+          Write-Host "GENERATOR_ENABLE_RESULT=$result"
+          if($result -notmatch '^PASS'){throw $result}
 
-            $out=Join-Path $env:RUNNER_TEMP 'photoshop-core-probe-120'
-            New-Item -ItemType Directory -Force $out | Out-Null
-            $env:PHOTOSHOP_PROBE_OUT=$out
-            $probe=Start-Process -FilePath node -ArgumentList @((Join-Path $env:GITHUB_WORKSPACE 'scripts\probe_photoshop_core_live.cjs')) -PassThru -RedirectStandardOutput $probeOut -RedirectStandardError $probeErr
+          $ready=$false
+          $until=[DateTime]::UtcNow.AddSeconds(35)
+          do {
+            try {$r=Invoke-RestMethod 'http://127.0.0.1:8020/status' -TimeoutSec 2;if($r.status -eq 'running'){$ready=$true;break}} catch {}
             Start-Sleep 2
-            if($probe.HasExited){throw "probe exited early rc=$($probe.ExitCode)"}
-            Write-Host 'PHOTOSHOP_CORE_PROBE_120_STARTED=PASS'
+          } while([DateTime]::UtcNow -lt $until)
+          if(-not $ready){throw 'GENERATOR_BRIDGE_NOT_REACHABLE_AFTER_ENABLE'}
+          Write-Host 'GENERATOR_HTTP_BRIDGE=PASS'
 
-            $manifest=Join-Path $env:CORE_PANEL 'manifest.json'
-            $loader=Start-Process -FilePath node -ArgumentList @($env:UXP_JS,'plugin','load','--manifest',$manifest,'--apps','PS') -PassThru -RedirectStandardOutput $loadOut -RedirectStandardError $loadErr
-            if(-not $loader.WaitForExit(15000)){Stop-Process -Id $loader.Id -Force -ErrorAction SilentlyContinue;throw 'CORE plugin load timed out'}
-            $loader.Refresh()
-            $loadText=(if(Test-Path $loadOut){Get-Content $loadOut -Raw}else{''})+"`n"+(if(Test-Path $loadErr){Get-Content $loadErr -Raw}else{''})
-            Write-Host $loadText
-            if($loadText -match 'Load command failed' -or $loadText -match "plugin load' failed" -or $loadText -match 'Failed to load'){throw 'CORE plugin load failed on UXP 1.2.0'}
-            Write-Host 'PHOTOSHOP_24_CORE_PLUGIN_LOAD_120=PASS'
-
-            $verifyDeadline=[DateTime]::UtcNow.AddSeconds(80)
-            do {
-              Start-Sleep 2
-              $p=Get-Process -Id $probe.Id -ErrorAction SilentlyContinue
-              if(-not $p){break}
-            } while([DateTime]::UtcNow -lt $verifyDeadline)
-            $p=Get-Process -Id $probe.Id -ErrorAction SilentlyContinue
-            if($p){throw 'CORE live probe timed out'}
-            $stdout=if(Test-Path $probeOut){Get-Content $probeOut -Raw}else{''}
-            $stderr=if(Test-Path $probeErr){Get-Content $probeErr -Raw}else{''}
-            Write-Host $stdout
-            Write-Host $stderr
-            if($stdout -notmatch 'PHOTOSHOP_24_LIVE_OPERATION_VERIFY=PASS'){throw 'live operation PASS marker missing'}
-            Write-Host 'PHOTOSHOP_24_PRODUCTION_CANDIDATE=PASS'
-          } finally {
-            if($loader -and -not $loader.HasExited){Stop-Process -Id $loader.Id -Force -ErrorAction SilentlyContinue}
-            if($probe -and -not $probe.HasExited){Stop-Process -Id $probe.Id -Force -ErrorAction SilentlyContinue}
-            if($svc -and -not $svc.HasExited){Stop-Process -Id $svc.Id -Force -ErrorAction SilentlyContinue}
-          }
+      - name: Create PSD and PNG through Photoshop
+        timeout-minutes: 2
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $out=Join-Path $env:RUNNER_TEMP 'ps-generator-e2e'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $psd=Join-Path $out 'live.psd';$png=Join-Path $out 'live.png'
+          Remove-Item $psd,$png -Force -ErrorAction SilentlyContinue
+          $p=$psd.Replace('\\','/');$n=$png.Replace('\\','/')
+          $jsx="var d=app.documents.add(320,240,72,'MCP Adobe Generator Live');var f1=new File('$p');var o1=new PhotoshopSaveOptions();o1.layers=true;d.saveAs(f1,o1,true,Extension.LOWERCASE);var f2=new File('$n');var o2=new PNGSaveOptions();d.saveAs(f2,o2,true,Extension.LOWERCASE);'PASS';"
+          $body=@{script=$jsx}|ConvertTo-Json -Compress
+          $resp=Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8020/execute' -ContentType 'application/json' -Body $body -TimeoutSec 30
+          $resp|ConvertTo-Json -Depth 8
+          if(-not $resp.success){throw 'Generator execute failed'}
+          if(-not (Test-Path $psd)){throw 'PSD missing'}
+          if(-not (Test-Path $png)){throw 'PNG missing'}
+          $pb=[IO.File]::ReadAllBytes($psd);$nb=[IO.File]::ReadAllBytes($png)
+          if([Text.Encoding]::ASCII.GetString($pb,0,4) -ne '8BPS'){throw 'PSD signature invalid'}
+          $sig=@(137,80,78,71,13,10,26,10)
+          for($i=0;$i -lt 8;$i++){if($nb[$i] -ne $sig[$i]){throw 'PNG signature invalid'}}
+          Write-Host "PSD_BYTES=$($pb.Length) PNG_BYTES=$($nb.Length)"
+          Write-Host 'PHOTOSHOP_GENERATOR_CREATE_SAVE_EXPORT=PASS'
