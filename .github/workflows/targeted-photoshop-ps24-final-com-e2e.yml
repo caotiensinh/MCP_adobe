@@ -1,0 +1,321 @@
+name: Targeted Photoshop 24 final COM MCP live E2E
+
+on:
+  pull_request:
+    branches: [fix/photoshop-path-override]
+    paths:
+      - ".github/workflows/targeted-photoshop-ps24-final-com-e2e.yml"
+      - "src/mcp_adobe/mcp_stdio.py"
+      - "src/mcp_adobe/photoshop.py"
+
+concurrency:
+  group: targeted-photoshop-ps24-final-com-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Make Photoshop 24 COM-ready
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Win32PsReady {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+          }
+          '@
+
+          $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue |
+            Where-Object {$_.Path -and $_.MainWindowHandle -ne 0} |
+            Select-Object -First 1
+          if(-not $ps){throw 'Photoshop is not running interactively'}
+          $version=([regex]::Match((Get-Item $ps.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
+          Write-Host "PHOTOSHOP_EXE=$($ps.Path)"
+          Write-Host "PHOTOSHOP_VERSION=$version PID=$($ps.Id) SESSION=$($ps.SessionId) HWND=$($ps.MainWindowHandle)"
+          if(-not $version.StartsWith('24.')){throw "Expected Photoshop 24.x, got $version"}
+          if($ps.SessionId -ne 1){throw "Expected Photoshop Session 1, got $($ps.SessionId)"}
+
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $pidCond=New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ProcessIdProperty,$ps.Id)
+          function Get-PsWindows {
+            $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$pidCond)
+            $items=@()
+            for($i=0;$i -lt $all.Count;$i++){
+              $e=$all.Item($i)
+              if($e.Current.ControlType -eq [System.Windows.Automation.ControlType]::Window){$items += $e}
+            }
+            return $items
+          }
+
+          $before=Get-PsWindows
+          foreach($w in $before){Write-Host "PS_WINDOW_BEFORE name='$($w.Current.Name)' class='$($w.Current.ClassName)' hwnd=$($w.Current.NativeWindowHandle)"}
+          $prefs=@($before | Where-Object {$_.Current.Name -eq 'Preferences'})
+          foreach($pref in $prefs){
+            $closed=$false
+            $pattern=$null
+            if($pref.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern,[ref]$pattern)){
+              try {$pattern.Close();$closed=$true;Write-Host 'PREFERENCES_CLOSE_METHOD=WindowPattern.Close'} catch {Write-Host "PREFERENCES_CLOSE_ERROR=$($_.Exception.Message)"}
+            }
+            if(-not $closed){
+              [Win32PsReady]::SetForegroundWindow([IntPtr]$pref.Current.NativeWindowHandle) | Out-Null
+              Start-Sleep -Milliseconds 300
+              [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+              Write-Host 'PREFERENCES_CLOSE_METHOD=Escape'
+            }
+          }
+          if($prefs.Count -gt 0){
+            $deadline=[DateTime]::UtcNow.AddSeconds(8)
+            do {
+              Start-Sleep -Milliseconds 400
+              $still=@(Get-PsWindows | Where-Object {$_.Current.Name -eq 'Preferences'})
+              if($still.Count -eq 0){break}
+            } while([DateTime]::UtcNow -lt $deadline)
+            if($still.Count -gt 0){throw 'Preferences modal remained open; COM cannot be tested safely'}
+            Write-Host 'PHOTOSHOP_PREFERENCES_MODAL_CLOSED=PASS'
+          } else {
+            Write-Host 'PHOTOSHOP_PREFERENCES_MODAL_FOUND=0'
+          }
+          $after=Get-PsWindows
+          foreach($w in $after){Write-Host "PS_WINDOW_AFTER name='$($w.Current.Name)' class='$($w.Current.ClassName)' hwnd=$($w.Current.NativeWindowHandle)"}
+          "PHOTOSHOP_PATH=$($ps.Path)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host 'PHOTOSHOP_24_COM_READY=PASS'
+
+      - name: Direct COM create save export and verify files
+        timeout-minutes: 3
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $out=Join-Path $env:RUNNER_TEMP 'mcp-adobe-ps24-final-direct'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $psd=Join-Path $out 'direct-live.psd'
+          $png=Join-Path $out 'direct-live.png'
+          $jsx=Join-Path $out 'direct-live.jsx'
+          $vbs=Join-Path $out 'bridge.vbs'
+          $resultFile=Join-Path $out 'result.txt'
+          Remove-Item $psd,$png,$jsx,$vbs,$resultFile -Force -ErrorAction SilentlyContinue
+          $psdJs=$psd.Replace([char]92,[char]47)
+          $pngJs=$png.Replace([char]92,[char]47)
+
+          $jsxBody=@"
+          (function () {
+            var stage = 'app.info';
+            try {
+              var hostVersion = app.version;
+              var hostName = app.name;
+              stage = 'doc.new';
+              var doc = app.documents.add(320, 240, 72, 'MCP Adobe Final Direct');
+              stage = 'psd.save';
+              var psdFile = new File('$psdJs');
+              var psdOptions = new PhotoshopSaveOptions();
+              psdOptions.layers = true;
+              psdOptions.embedColorProfile = true;
+              doc.saveAs(psdFile, psdOptions, true, Extension.LOWERCASE);
+              stage = 'png.save';
+              var pngFile = new File('$pngJs');
+              var pngOptions = new PNGSaveOptions();
+              pngOptions.compression = 9;
+              pngOptions.interlaced = false;
+              doc.saveAs(pngFile, pngOptions, true, Extension.LOWERCASE);
+              return 'PHOTOSHOP_DIRECT=PASS|' + hostVersion + '|' + hostName + '|' + doc.name +
+                '|PSD_EXISTS=' + psdFile.exists + '|PNG_EXISTS=' + pngFile.exists;
+            } catch (e) {
+              return 'PHOTOSHOP_DIRECT=FAIL|STAGE=' + stage + '|ERROR=' + e.toString();
+            }
+          })();
+          "@
+          [IO.File]::WriteAllText($jsx,[char]0xFEFF + $jsxBody,(New-Object Text.UTF8Encoding($false)))
+
+          $vbsBody=@'
+          On Error Resume Next
+          Dim shell, jsxPath, outFile, app, result, jsxForJs, errNum, errDesc
+          Set shell = CreateObject("WScript.Shell")
+          jsxPath = shell.Environment("PROCESS")("PSMCP_JSX")
+          outFile = shell.Environment("PROCESS")("PSMCP_RESULT")
+          Sub WriteResult(text)
+              Dim fso, stream
+              Err.Clear
+              Set fso = CreateObject("Scripting.FileSystemObject")
+              Set stream = fso.CreateTextFile(outFile, True, True)
+              stream.Write text
+              stream.Close
+          End Sub
+          Err.Clear
+          Set app = CreateObject("Photoshop.Application")
+          If Err.Number <> 0 Then
+              WriteResult "COM_CONNECT_FAIL|NUMBER=" & Err.Number & "|DESCRIPTION=" & Err.Description
+              WScript.Quit 1
+          End If
+          jsxForJs = Replace(jsxPath, "\", "\\")
+          jsxForJs = Replace(jsxForJs, "'", "\'")
+          Err.Clear
+          result = app.DoJavaScript("$.evalFile('" & jsxForJs & "')")
+          errNum = Err.Number
+          errDesc = Err.Description
+          If errNum <> 0 Then
+              WriteResult "DOJAVASCRIPT_FAIL|NUMBER=" & errNum & "|DESCRIPTION=" & errDesc
+              WScript.Quit 1
+          End If
+          WriteResult CStr(result)
+          '@
+          [IO.File]::WriteAllText($vbs,$vbsBody,(New-Object Text.UTF8Encoding($false)))
+          $env:PSMCP_JSX=$jsx
+          $env:PSMCP_RESULT=$resultFile
+          & cscript.exe //nologo $vbs
+          $rc=$LASTEXITCODE
+          $result=if(Test-Path $resultFile){Get-Content $resultFile -Raw}else{'RESULT_FILE_MISSING'}
+          Write-Host "CSCRIPT_RC=$rc"
+          Write-Host "COM_RESULT=$result"
+          if($rc -ne 0){throw "COM bridge failed rc=$rc result=$result"}
+          if($result -notmatch '^PHOTOSHOP_DIRECT=PASS\|24\.0\.0\|Adobe Photoshop\|'){throw "Direct Photoshop operation failed: $result"}
+          if($result -notmatch 'PSD_EXISTS=true'){throw "Photoshop did not report PSD existence: $result"}
+          if($result -notmatch 'PNG_EXISTS=true'){throw "Photoshop did not report PNG existence: $result"}
+
+          if(-not (Test-Path $psd)){throw "PSD missing: $psd"}
+          if(-not (Test-Path $png)){throw "PNG missing: $png"}
+          $pb=[IO.File]::ReadAllBytes($psd)
+          $nb=[IO.File]::ReadAllBytes($png)
+          $psdHeader=[Text.Encoding]::ASCII.GetString($pb,0,[Math]::Min(4,$pb.Length))
+          if($psdHeader -ne '8BPS'){throw "PSD signature invalid: $psdHeader"}
+          $expected=@(137,80,78,71,13,10,26,10)
+          if($nb.Length -lt 8){throw 'PNG file too small'}
+          for($i=0;$i -lt 8;$i++){if($nb[$i] -ne $expected[$i]){throw "PNG signature invalid at byte $i"}}
+          Write-Host "DIRECT_PSD_PATH=$psd BYTES=$($pb.Length) HEADER=8BPS"
+          Write-Host "DIRECT_PNG_PATH=$png BYTES=$($nb.Length)"
+          Write-Host 'PHOTOSHOP_COM_APP_INFO=PASS'
+          Write-Host 'PHOTOSHOP_COM_DOC_NEW=PASS'
+          Write-Host 'PHOTOSHOP_COM_SAVE_PSD=PASS'
+          Write-Host 'PHOTOSHOP_COM_EXPORT_PNG=PASS'
+          Write-Host 'PHOTOSHOP_COM_PSD_SIGNATURE=PASS'
+          Write-Host 'PHOTOSHOP_COM_PNG_SIGNATURE=PASS'
+          Write-Host 'PHOTOSHOP_24_DIRECT_LIVE_OPERATION_VERIFY=PASS'
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install MCP Adobe gateway
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          python -m pip install --disable-pip-version-check -e .
+          if($LASTEXITCODE -ne 0){throw 'MCP Adobe editable install failed'}
+          Write-Host 'MCP_ADOBE_INSTALL=PASS'
+
+      - name: MCP Adobe adapter create save export and verify files
+        timeout-minutes: 5
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:PSMCP_FEEDBACK='0'
+          $env:PSMCP_UPDATE_CHECK='0'
+          $out=Join-Path $env:RUNNER_TEMP 'mcp-adobe-ps24-final-adapter'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $env:MCP_ADOBE_ADAPTER_OUT=$out
+          $probe=Join-Path $env:RUNNER_TEMP 'mcp_adobe_ps24_final_adapter.py'
+          @'
+          import json
+          import os
+          from pathlib import Path
+
+          from mcp_adobe.core import CapabilityRegistry
+          from mcp_adobe.mcp_stdio import McpSubprocessToolClient, photoshop_stdio_config
+          from mcp_adobe.photoshop import PhotoshopAdapter
+
+          out = Path(os.environ["MCP_ADOBE_ADAPTER_OUT"])
+          psd = out / "adapter-live.psd"
+          png = out / "adapter-live.png"
+          for path in (psd, png):
+              try:
+                  path.unlink()
+              except FileNotFoundError:
+                  pass
+
+          client = McpSubprocessToolClient(photoshop_stdio_config())
+          adapter = PhotoshopAdapter(client, writes_enabled=True)
+          registry = CapabilityRegistry()
+          try:
+              registry.register(adapter)
+              info = adapter.info()
+              print("MCP_ADOBE_TRANSPORT=" + str(info.transport))
+              print("MCP_ADOBE_UPSTREAM=" + str(info.upstream_repository))
+              print("MCP_ADOBE_SNAPSHOT=" + str(info.upstream_snapshot))
+              if not info.connected:
+                  raise RuntimeError("Photoshop MCP subprocess is not connected")
+              print("MCP_ADOBE_PHOTOSHOP_CONNECTED=PASS")
+
+              version = client.call_tool("photoshop_get_version", {})
+              version_text = json.dumps(version, ensure_ascii=True, default=str)
+              print("MCP_ADOBE_APP_INFO=" + version_text)
+              if "24.0" not in version_text:
+                  raise RuntimeError("Photoshop 24.0 not proven through MCP tool")
+              print("MCP_ADOBE_APP_INFO=PASS")
+
+              health = registry.execute("photoshop", "creative.health", {})
+              print("MCP_ADOBE_HEALTH=" + json.dumps(health, ensure_ascii=True, default=str))
+              if not health.get("ok"):
+                  raise RuntimeError("creative.health failed")
+              print("MCP_ADOBE_HEALTH=PASS")
+
+              created = registry.execute(
+                  "photoshop",
+                  "creative.document.create",
+                  {"width": 320, "height": 240, "resolution": 72, "colorMode": "RGB"},
+              )
+              print("MCP_ADOBE_CREATE=" + json.dumps(created, ensure_ascii=True, default=str))
+              if not created.get("ok"):
+                  raise RuntimeError("creative.document.create failed")
+              print("MCP_ADOBE_DOC_NEW=PASS")
+
+              saved = registry.execute(
+                  "photoshop",
+                  "creative.document.save",
+                  {"path": str(psd), "format": "PSD"},
+              )
+              print("MCP_ADOBE_SAVE=" + json.dumps(saved, ensure_ascii=True, default=str))
+              if not saved.get("ok"):
+                  raise RuntimeError("creative.document.save failed")
+              print("MCP_ADOBE_SAVE_PSD=PASS")
+
+              exported = registry.execute(
+                  "photoshop",
+                  "creative.document.export",
+                  {"path": str(png), "format": "PNG"},
+              )
+              print("MCP_ADOBE_EXPORT=" + json.dumps(exported, ensure_ascii=True, default=str))
+              if not exported.get("ok"):
+                  raise RuntimeError("creative.document.export failed")
+              print("MCP_ADOBE_EXPORT_PNG=PASS")
+          finally:
+              client.close()
+
+          if not psd.is_file():
+              raise RuntimeError(f"adapter PSD missing: {psd}")
+          if not png.is_file():
+              raise RuntimeError(f"adapter PNG missing: {png}")
+          psd_bytes = psd.read_bytes()
+          png_bytes = png.read_bytes()
+          if psd_bytes[:4] != b"8BPS":
+              raise RuntimeError(f"adapter PSD signature invalid: {psd_bytes[:4]!r}")
+          if png_bytes[:8] != b"\x89PNG\r\n\x1a\n":
+              raise RuntimeError(f"adapter PNG signature invalid: {png_bytes[:8]!r}")
+          print(f"MCP_ADOBE_PSD_PATH={psd} BYTES={len(psd_bytes)} HEADER=8BPS")
+          print(f"MCP_ADOBE_PNG_PATH={png} BYTES={len(png_bytes)}")
+          print("MCP_ADOBE_PSD_SIGNATURE=PASS")
+          print("MCP_ADOBE_PNG_SIGNATURE=PASS")
+          print("MCP_ADOBE_PHOTOSHOP_24_LIVE_E2E=PASS")
+          '@ | Set-Content -Path $probe -Encoding utf8
+          python $probe
+          if($LASTEXITCODE -ne 0){throw 'MCP Adobe Photoshop 24 final adapter probe failed'}
