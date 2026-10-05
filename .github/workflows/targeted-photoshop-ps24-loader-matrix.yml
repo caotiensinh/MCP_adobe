@@ -1,4 +1,4 @@
-name: Targeted Photoshop 24 packaged UXP live
+name: Targeted Photoshop 24 per-user UXP sideload
 
 on:
   pull_request:
@@ -7,7 +7,7 @@ on:
       - ".github/workflows/targeted-photoshop-ps24-loader-matrix.yml"
 
 concurrency:
-  group: targeted-photoshop-packaged-uxp-${{ github.event.pull_request.number }}
+  group: targeted-photoshop-user-uxp-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
@@ -19,11 +19,8 @@ jobs:
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: actions/setup-node@v7.0.0
-        with:
-          node-version: '20'
 
-      - name: Verify Photoshop 24 host and installer
+      - name: Install minimal plugin into per-user UXP registry
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -31,92 +28,129 @@ jobs:
           if(-not $ps){throw 'Photoshop is not running'}
           $v=([regex]::Match((Get-Item $ps.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
           if(-not $v.StartsWith('24.')){throw "Expected Photoshop 24.x, got $v"}
-          $upi='C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe'
-          if(-not (Test-Path $upi)){
-            $upi=Get-ChildItem 'C:\Program Files\Common Files\Adobe' -Filter 'UnifiedPluginInstallerAgent.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-          }
-          if(-not $upi){throw 'UnifiedPluginInstallerAgent.exe not found'}
-          "UPI_EXE=$upi" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "PHOTOSHOP_VERSION=$v SESSION=$($ps.SessionId)"
-          Write-Host "UPI_EXE=$upi"
-          Write-Host 'PACKAGED_UXP_PREREQUISITES=PASS'
+          "PHOTOSHOP_EXE=$($ps.Path)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Install Adobe packaging CLI
-        timeout-minutes: 2
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          $tool=Join-Path $env:RUNNER_TEMP 'uxp120-package-cli'
-          if(Test-Path $tool){Remove-Item -Recurse -Force $tool}
-          New-Item -ItemType Directory -Force $tool | Out-Null
-          Push-Location $tool
-          try {
-            npm init -y | Out-Null
-            npm install --ignore-scripts --no-audit --no-fund --fetch-retries=2 --fetch-timeout=60000 @adobe/uxp-devtools-cli@1.2.0 tar@6 fs-extra@9
-            if($LASTEXITCODE -ne 0){throw 'Adobe UXP CLI install failed'}
-          } finally { Pop-Location }
-          $uxp=Join-Path $tool 'node_modules\@adobe\uxp-devtools-cli\src\uxp.js'
-          if(-not (Test-Path $uxp)){throw 'UXP CLI entry missing'}
-          "UXP_JS=$uxp" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host 'UXP_PACKAGING_CLI=PASS'
+          $id='com.mcpadobe.ps24.sideloadprobe'
+          $external=Join-Path $env:APPDATA 'Adobe\UXP\Plugins\External'
+          $dest=Join-Path $external $id
+          $infoDir=Join-Path $env:APPDATA 'Adobe\UXP\PluginsInfo\v1'
+          $psJson=Join-Path $infoDir 'PS.json'
+          New-Item -ItemType Directory -Force $dest,$infoDir | Out-Null
 
-      - name: Package minimal Photoshop plugin as CCX
-        timeout-minutes: 2
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          $dir=Join-Path $env:RUNNER_TEMP 'ps24-packaged-probe'
-          $out=Join-Path $env:RUNNER_TEMP 'ps24-packaged-output'
-          Remove-Item $dir,$out -Recurse -Force -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force $dir,$out | Out-Null
           $utf8=New-Object System.Text.UTF8Encoding($false)
           $manifest=[ordered]@{
-            id='com.mcpadobe.ps24.packagedprobe'
-            name='MCP Adobe PS24 Packaged Probe'
+            id=$id
+            name='MCP Adobe PS24 Sideload Probe'
             version='1.0.0'
             main='index.html'
             host=@([ordered]@{app='PS';minVersion='22.0.0'})
             manifestVersion=4
-            entrypoints=@([ordered]@{type='panel';id='packagedprobe';minimumSize=[ordered]@{width=230;height=200};maximumSize=[ordered]@{width=2000;height=2000};preferredDockedSize=[ordered]@{width=230;height=200};preferredFloatingSize=[ordered]@{width=300;height=250};label=[ordered]@{default='MCP Packaged Probe'}})
+            entrypoints=@([ordered]@{type='panel';id='sideloadprobe';minimumSize=[ordered]@{width=230;height=200};maximumSize=[ordered]@{width=2000;height=2000};preferredDockedSize=[ordered]@{width=230;height=200};preferredFloatingSize=[ordered]@{width=320;height=260};label=[ordered]@{default='MCP Sideload Probe'}})
           }
-          [IO.File]::WriteAllText((Join-Path $dir 'manifest.json'),($manifest|ConvertTo-Json -Depth 12),$utf8)
-          [IO.File]::WriteAllText((Join-Path $dir 'index.html'),'<!doctype html><html><body><h3>MCP Adobe Packaged Probe</h3><div id="state">loaded</div><script src="main.js"></script></body></html>',$utf8)
-          [IO.File]::WriteAllText((Join-Path $dir 'main.js'),'console.log("MCP_ADOBE_PACKAGED_PROBE_BOOT=PASS");',$utf8)
-          Push-Location $dir
-          try {
-            node $env:UXP_JS plugin package --manifest (Join-Path $dir 'manifest.json') --apps PS --outputPath $out
-            if($LASTEXITCODE -ne 0){throw 'UXP plugin package command failed'}
-          } finally { Pop-Location }
-          Get-ChildItem $out -Force | Format-List FullName,Length,LastWriteTime
-          $ccx=Get-ChildItem $out -Filter '*.ccx' -File -Recurse | Select-Object -First 1 -ExpandProperty FullName
-          if(-not $ccx){throw 'No CCX package produced'}
-          "CCX_FILE=$ccx" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "CCX_FILE=$ccx"
-          Write-Host 'PHOTOSHOP_CCX_PACKAGE=PASS'
+          [IO.File]::WriteAllText((Join-Path $dest 'manifest.json'),($manifest|ConvertTo-Json -Depth 12),$utf8)
+          [IO.File]::WriteAllText((Join-Path $dest 'index.html'),'<!doctype html><html><body><h3>MCP Adobe PS24 Sideload Probe</h3><div>PACKAGED RUNTIME LOADED</div><script src="main.js"></script></body></html>',$utf8)
+          [IO.File]::WriteAllText((Join-Path $dest 'main.js'),'console.log("MCP_ADOBE_SIDELOAD_PROBE_BOOT=PASS");',$utf8)
 
-      - name: Install CCX with Adobe Unified Plugin Installer
+          if(Test-Path $psJson){
+            Copy-Item $psJson ($psJson+'.mcpadobe.bak') -Force
+            try {$db=Get-Content $psJson -Raw | ConvertFrom-Json} catch {throw "Existing PS.json is invalid JSON: $psJson"}
+          } else {
+            $db=[pscustomobject]@{plugins=@()}
+          }
+          if(-not ($db.PSObject.Properties.Name -contains 'plugins')){$db | Add-Member -NotePropertyName plugins -NotePropertyValue @()}
+          $plugins=@($db.plugins | Where-Object {$_.pluginId -ne $id})
+          $entry=[pscustomobject]@{
+            hostMinVersion='22.0.0'
+            name='MCP Adobe PS24 Sideload Probe'
+            path='$localPlugins\External\com.mcpadobe.ps24.sideloadprobe'
+            pluginId=$id
+            status='enabled'
+            type='uxp'
+            versionString='1.0.0'
+          }
+          $db.plugins=@($plugins + $entry)
+          [IO.File]::WriteAllText($psJson,($db|ConvertTo-Json -Depth 12),$utf8)
+          Write-Host "PLUGIN_DIR=$dest"
+          Write-Host "PS_JSON=$psJson"
+          Get-Content $psJson -Raw | Write-Host
+          Write-Host 'PER_USER_UXP_SIDELOAD_INSTALL=PASS'
+
+      - name: Gracefully restart Photoshop to discover sideloaded plugin
         timeout-minutes: 2
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          Write-Host '--- BEFORE INSTALL ---'
-          & $env:UPI_EXE /list all 2>&1 | Out-String | Write-Host
-          $p=Start-Process -FilePath $env:UPI_EXE -ArgumentList @('/install',('"'+$env:CCX_FILE+'"')) -PassThru -Wait
-          Write-Host "UPI_INSTALL_RC=$($p.ExitCode)"
+          $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
+          if(-not $ps){throw 'Photoshop process disappeared before restart'}
+          $pidOld=$ps.Id
+          $exe=$ps.Path
+          $requested=$ps.CloseMainWindow()
+          Write-Host "CLOSE_MAIN_WINDOW_REQUESTED=$requested PID=$pidOld"
+          $until=[DateTime]::UtcNow.AddSeconds(20)
+          do {
+            if(-not (Get-Process -Id $pidOld -ErrorAction SilentlyContinue)){break}
+            Start-Sleep 1
+          } while([DateTime]::UtcNow -lt $until)
+          if(Get-Process -Id $pidOld -ErrorAction SilentlyContinue){
+            throw 'PHOTOSHOP_GRACEFUL_RESTART_BLOCKED: Photoshop remained open, likely because a dialog or unsaved document needs user action. Process was NOT force-killed.'
+          }
+          Start-Process -FilePath $exe | Out-Null
+          $until=[DateTime]::UtcNow.AddSeconds(45);$new=$null
+          do {
+            Start-Sleep 2
+            $new=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq $exe -and $_.MainWindowHandle -ne 0} | Select-Object -First 1
+            if($new){break}
+          } while([DateTime]::UtcNow -lt $until)
+          if(-not $new){throw 'Photoshop did not reopen with a main window'}
+          Write-Host "PHOTOSHOP_RESTARTED PID=$($new.Id) SESSION=$($new.SessionId)"
+          Write-Host 'PHOTOSHOP_GRACEFUL_RESTART=PASS'
+
+      - name: Open sideloaded plugin from Photoshop Plugins menu
+        timeout-minutes: 2
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1
+          if(-not $ps){throw 'Photoshop main window not found'}
+          Start-Sleep 8
+          $root=[System.Windows.Automation.AutomationElement]::FromHandle($ps.MainWindowHandle)
+          if(-not $root){throw 'UIAutomation could not attach to Photoshop'}
+          $menuCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::MenuItem)
+          $items=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$menuCond)
+          Write-Host '--- PHOTOSHOP MENU ITEMS BEFORE EXPAND ---'
+          foreach($i in $items){if($i.Current.Name){Write-Host "MENU=$($i.Current.Name)"}}
+          $plugins=$null
+          foreach($i in $items){if($i.Current.Name -match '^(Plugins|Plug-ins|プラグイン)$'){$plugins=$i;break}}
+          if(-not $plugins){
+            $plugins=($items | Where-Object {$_.Current.Name -match 'Plugin|プラグイン'} | Select-Object -First 1)
+          }
+          if(-not $plugins){throw 'Photoshop Plugins menu was not discoverable through UIAutomation'}
+          try {$plugins.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()} catch {
+            try {$plugins.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern).Expand()} catch {throw 'Could not open Photoshop Plugins menu'}
+          }
+          Start-Sleep 2
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $all=$desktop.FindAll([System.Windows.Automation.TreeScope]::Descendants,$menuCond)
+          Write-Host '--- VISIBLE MENU ITEMS AFTER PLUGINS EXPAND ---'
+          foreach($i in $all){if($i.Current.Name -match 'MCP|Sideload|Plugin|プラグイン'){Write-Host "MENU=$($i.Current.Name)"}}
+          $target=$null
+          foreach($i in $all){if($i.Current.Name -match 'MCP Sideload Probe|MCP Adobe PS24 Sideload Probe'){$target=$i;break}}
+          if(-not $target){throw 'SIDELOADED_PLUGIN_NOT_PRESENT_IN_PHOTOSHOP_MENU'}
+          $target.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
           Start-Sleep 4
-          Write-Host '--- AFTER INSTALL ---'
-          $list=(& $env:UPI_EXE /list all 2>&1 | Out-String)
-          Write-Host $list
-          $external=Join-Path $env:APPDATA 'Adobe\UXP\Plugins\External'
-          if(Test-Path $external){
-            Write-Host "--- EXTERNAL UXP ROOT: $external ---"
-            Get-ChildItem $external -Directory -Recurse -ErrorAction SilentlyContinue | Select-Object -First 80 -ExpandProperty FullName | Write-Host
-          }
-          $found=$false
-          if($list -match 'MCP Adobe PS24 Packaged Probe|com\.mcpadobe\.ps24\.packagedprobe'){$found=$true}
-          if(Test-Path $external){
-            $hits=Get-ChildItem $external -File -Filter manifest.json -Recurse -ErrorAction SilentlyContinue | Where-Object {(Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue) -match 'com\.mcpadobe\.ps24\.packagedprobe'}
-            if($hits){$found=$true;$hits | ForEach-Object {Write-Host "INSTALLED_MANIFEST=$($_.FullName)"}}
-          }
-          if(-not $found){throw 'CCX installer returned without verifiable installed plugin'}
-          Write-Host 'PHOTOSHOP_PACKAGED_UXP_INSTALL=PASS'
+          Write-Host 'SIDELOADED_PLUGIN_MENU_INVOKE=PASS'
+
+      - name: Verify plugin boot evidence in Photoshop UXP log
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $logDir=Join-Path $env:APPDATA 'Adobe\Adobe Photoshop 2023\Logs'
+          $latest=Get-ChildItem $logDir -Filter 'UXPLogs_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if(-not $latest){throw 'Photoshop UXP log not found'}
+          Write-Host "UXP_LOG=$($latest.FullName)"
+          $tail=(Get-Content $latest.FullName -Tail 240 -ErrorAction Stop | Out-String)
+          Write-Host $tail
+          if($tail -notmatch 'MCP_ADOBE_SIDELOAD_PROBE_BOOT=PASS'){throw 'Sideloaded plugin panel was invoked but boot marker is missing from UXP log'}
+          Write-Host 'PHOTOSHOP_SIDELOADED_UXP_RUNTIME=PASS'
