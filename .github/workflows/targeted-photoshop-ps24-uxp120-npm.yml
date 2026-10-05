@@ -1,4 +1,4 @@
-name: Targeted Photoshop 24 UXP host diagnostics
+name: Targeted Photoshop 24 UXP minimal v4 loader
 
 on:
   pull_request:
@@ -7,7 +7,7 @@ on:
       - ".github/workflows/targeted-photoshop-ps24-uxp120-npm.yml"
 
 concurrency:
-  group: targeted-photoshop-ps24-hostdiag-${{ github.event.pull_request.number }}
+  group: targeted-photoshop-ps24-minv4-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
@@ -16,7 +16,7 @@ permissions:
 jobs:
   live:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 6
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7.0.0
@@ -36,13 +36,9 @@ jobs:
           $cfgInfo=Get-Item $cfg
           $json=Get-Content $cfg -Raw | ConvertFrom-Json
           Write-Host "PHOTOSHOP_VERSION=$v SESSION=$($p.SessionId) START=$($p.StartTime.ToString('o'))"
-          Write-Host "DEVTOOLS_CONFIG=$cfg MODIFIED=$($cfgInfo.LastWriteTime.ToString('o')) CONTENT=$(Get-Content $cfg -Raw)"
+          Write-Host "DEVTOOLS_CONFIG_MODIFIED=$($cfgInfo.LastWriteTime.ToString('o')) CONTENT=$(Get-Content $cfg -Raw)"
           if($json.developer -ne $true){throw 'Developer mode is not persisted true'}
-          if($cfgInfo.LastWriteTime -gt $p.StartTime){
-            Write-Host 'DEVTOOLS_CONFIG_NEWER_THAN_PHOTOSHOP=YES'
-          } else {
-            Write-Host 'DEVTOOLS_CONFIG_PREDATES_PHOTOSHOP=YES'
-          }
+          if($cfgInfo.LastWriteTime -le $p.StartTime){Write-Host 'DEVTOOLS_CONFIG_PREDATES_PHOTOSHOP=YES'}else{Write-Host 'DEVTOOLS_CONFIG_NEWER_THAN_PHOTOSHOP=YES'}
           Write-Host 'PS24_DEVELOPER_STATE_READONLY_VERIFY=PASS'
 
       - name: Install published Adobe UXP CLI 1.2.0
@@ -50,7 +46,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $tool=Join-Path $env:RUNNER_TEMP 'uxp120-published-hostdiag'
+          $tool=Join-Path $env:RUNNER_TEMP 'uxp120-published-minv4'
           if(Test-Path $tool){Remove-Item -Recurse -Force $tool}
           New-Item -ItemType Directory -Force $tool | Out-Null
           Push-Location $tool
@@ -64,32 +60,49 @@ jobs:
           "UXP_JS=$(Join-Path $tool 'node_modules\@adobe\uxp-devtools-cli\src\uxp.js')" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host 'UXP_CLI_120_PUBLISHED_INSTALL=PASS'
 
-      - name: Prepare exact official Adobe Photoshop v4 starter
-        timeout-minutes: 1
+      - name: Build minimal Photoshop manifest v4 plugin with no icons
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $src=Join-Path $env:RUNNER_TEMP 'adobe-uxp-cli-120-starter-hostdiag'
-          if(Test-Path $src){Remove-Item -Recurse -Force $src}
-          git clone --filter=blob:none https://github.com/adobe-uxp/devtools-cli.git $src
-          git -C $src checkout --detach 873870213ed6069e8b3bff9af1b0c6f5d1ca683b
-          if((git -C $src rev-parse HEAD).Trim() -ne '873870213ed6069e8b3bff9af1b0c6f5d1ca683b'){throw 'Adobe starter pin mismatch'}
-          $starter=Join-Path $src 'packages\uxp-templates-pack\uxp-template-ps-starter\template'
-          "ADOBE_STARTER=$starter" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host 'ADOBE_PS_V4_STARTER_PIN=PASS'
+          $dir=Join-Path $env:RUNNER_TEMP 'ps24-minimal-v4-no-icons'
+          if(Test-Path $dir){Remove-Item -Recurse -Force $dir}
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $manifest=[ordered]@{
+            id='com.mcpadobe.ps24.minv4'
+            name='MCP Adobe PS24 Minimal V4'
+            version='1.0.0'
+            main='index.html'
+            host=@([ordered]@{app='PS';minVersion='22.0.0'})
+            manifestVersion=4
+            entrypoints=@([ordered]@{
+              type='panel'
+              id='minimal'
+              minimumSize=[ordered]@{width=230;height=200}
+              maximumSize=[ordered]@{width=2000;height=2000}
+              preferredDockedSize=[ordered]@{width=230;height=200}
+              preferredFloatingSize=[ordered]@{width=230;height=200}
+              label=[ordered]@{default='MCP Minimal V4'}
+            })
+          }
+          $utf8=New-Object System.Text.UTF8Encoding($false)
+          [IO.File]::WriteAllText((Join-Path $dir 'manifest.json'),($manifest|ConvertTo-Json -Depth 12),$utf8)
+          [IO.File]::WriteAllText((Join-Path $dir 'index.html'),'<!doctype html><html><head><meta charset="utf-8"></head><body><div>MCP Adobe PS24 minimal v4</div><script src="main.js"></script></body></html>',$utf8)
+          [IO.File]::WriteAllText((Join-Path $dir 'main.js'),'console.log("MCP_ADOBE_PS24_MINV4_BOOT=PASS");',$utf8)
+          "MINV4_DIR=$dir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Get-Content (Join-Path $dir 'manifest.json') -Raw
+          Write-Host 'PS24_MINIMAL_V4_BUILD=PASS'
 
-      - name: Load official starter and dump Photoshop UXP diagnostics
+      - name: Load minimal v4 and capture host rejection evidence
         timeout-minutes: 2
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           $svc=$null;$loader=$null
-          $svcOut=Join-Path $env:RUNNER_TEMP 'hostdiag-service.out'
-          $svcErr=Join-Path $env:RUNNER_TEMP 'hostdiag-service.err'
-          $loadOut=Join-Path $env:RUNNER_TEMP 'hostdiag-load.out'
-          $loadErr=Join-Path $env:RUNNER_TEMP 'hostdiag-load.err'
+          $svcOut=Join-Path $env:RUNNER_TEMP 'minv4-service.out'
+          $svcErr=Join-Path $env:RUNNER_TEMP 'minv4-service.err'
+          $loadOut=Join-Path $env:RUNNER_TEMP 'minv4-load.out'
+          $loadErr=Join-Path $env:RUNNER_TEMP 'minv4-load.err'
           Remove-Item -Force $svcOut,$svcErr,$loadOut,$loadErr -ErrorAction SilentlyContinue
-          $loadFailed=$true
           try {
             $svc=Start-Process node -ArgumentList @($env:UXP_JS,'service','start','--port','14001') -PassThru -RedirectStandardOutput $svcOut -RedirectStandardError $svcErr
             $deadline=[DateTime]::UtcNow.AddSeconds(35);$ready=$false
@@ -102,51 +115,27 @@ jobs:
             if(-not $ready){throw 'UXP service did not discover Photoshop'}
             Write-Host 'PS24_UXP120_DISCOVERY=PASS'
 
-            $manifest=Join-Path $env:ADOBE_STARTER 'manifest.json'
+            $manifest=Join-Path $env:MINV4_DIR 'manifest.json'
             $loader=Start-Process node -ArgumentList @($env:UXP_JS,'plugin','load','--manifest',$manifest,'--apps','PS') -PassThru -RedirectStandardOutput $loadOut -RedirectStandardError $loadErr
             if(-not $loader.WaitForExit(15000)){
               Stop-Process -Id $loader.Id -Force -ErrorAction SilentlyContinue
-              Write-Host 'OFFICIAL_STARTER_LOAD=TIMEOUT'
-            } else {
-              $stdout=if(Test-Path $loadOut){Get-Content $loadOut -Raw}else{''}
-              $stderr=if(Test-Path $loadErr){Get-Content $loadErr -Raw}else{''}
-              $text=$stdout+"`n"+$stderr
-              Write-Host '--- OFFICIAL STARTER LOAD OUTPUT ---'
-              Write-Host $text
-              $loadFailed=($text -match 'Load command failed' -or $text -match "plugin load' failed" -or $text -match 'Failed to load')
-              if(-not $loadFailed){Write-Host 'OFFICIAL_ADOBE_V4_STARTER_LOAD=PASS'}
+              throw 'Minimal v4 plugin load timed out'
+            }
+            $stdout=if(Test-Path $loadOut){Get-Content $loadOut -Raw}else{''}
+            $stderr=if(Test-Path $loadErr){Get-Content $loadErr -Raw}else{''}
+            $text=$stdout+"`n"+$stderr
+            Write-Host '--- MINIMAL V4 LOAD OUTPUT ---'
+            Write-Host $text
+            $failed=($text -match 'Load command failed' -or $text -match "plugin load' failed" -or $text -match 'Failed to load')
+
+            $latest=Get-ChildItem (Join-Path $env:APPDATA 'Adobe\Adobe Photoshop 2023\Logs') -Filter 'UXPLogs_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if($latest){
+              Write-Host "--- HOST UXP LOG: $($latest.FullName) ---"
+              Get-Content $latest.FullName -Tail 120 -ErrorAction SilentlyContinue
             }
 
-            Write-Host '--- DEVELOPER CONFIG ---'
-            $cfg=Join-Path $env:CommonProgramFiles 'Adobe\UXP\Developer\settings.json'
-            Get-Item $cfg | Format-List FullName,LastWriteTime,Length
-            Get-Content $cfg -Raw
-
-            Write-Host '--- PHOTOSHOP / NODE PROCESSES ---'
-            Get-CimInstance Win32_Process | Where-Object {$_.Name -match 'Photoshop|node|UXP'} | Select-Object Name,ProcessId,ParentProcessId,ExecutablePath,CommandLine | Format-List
-
-            Write-Host '--- LATEST PHOTOSHOP UXP LOGS ---'
-            $roots=@(
-              (Join-Path $env:APPDATA 'Adobe\Adobe Photoshop 2023\Logs'),
-              (Join-Path $env:APPDATA 'Adobe\Adobe Photoshop 2024\Logs'),
-              (Join-Path $env:APPDATA 'Adobe')
-            ) | Where-Object {Test-Path $_} | Select-Object -Unique
-            $logs=@()
-            foreach($root in $roots){
-              $logs += Get-ChildItem $root -Recurse -File -ErrorAction SilentlyContinue | Where-Object {$_.Name -like 'UXPLogs*' -or $_.FullName -match '\\Logs\\Generator\\'}
-            }
-            $logs=$logs | Sort-Object LastWriteTime -Descending | Select-Object -Unique FullName,LastWriteTime,Length | Select-Object -First 8
-            $logs | Format-Table -AutoSize
-            foreach($l in $logs){
-              Write-Host "--- LOG: $($l.FullName) ---"
-              Get-Content $l.FullName -Tail 180 -ErrorAction SilentlyContinue
-            }
-
-            Write-Host '--- DEVELOPER PLUGIN STORAGE ---'
-            $storage=Join-Path $env:APPDATA 'Adobe\UXP\PluginsStorage\PHSP\24\Developer'
-            if(Test-Path $storage){Get-ChildItem $storage -Force -Recurse -Depth 2 -ErrorAction SilentlyContinue | Select-Object FullName,LastWriteTime | Format-Table -AutoSize}else{Write-Host 'NO_PHSP24_DEVELOPER_STORAGE'}
-
-            if($loadFailed){throw 'Official Adobe v4 starter still failed; diagnostics emitted above'}
+            if($failed){throw 'PS24_MINIMAL_V4_NO_ICONS_LOAD=FAIL'}
+            Write-Host 'PS24_MINIMAL_V4_NO_ICONS_LOAD=PASS'
           } finally {
             if($loader -and -not $loader.HasExited){Stop-Process -Id $loader.Id -Force -ErrorAction SilentlyContinue}
             if($svc -and -not $svc.HasExited){Stop-Process -Id $svc.Id -Force -ErrorAction SilentlyContinue}
