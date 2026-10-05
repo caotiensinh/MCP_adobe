@@ -24,9 +24,6 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-
-          # Transport adapted from alisaitteke/photoshop-mcp master@1a8686853b33e56c970b50b4030fdb190f951c72
-          # src/platform/windows-executor.ts + windows-script-bridge.ts.
           $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue |
             Where-Object {$_.Path -and $_.MainWindowHandle -ne 0} |
             Select-Object -First 1
@@ -49,80 +46,79 @@ jobs:
           $psdJs=$psd.Replace('\\','/')
           $pngJs=$png.Replace('\\','/')
           $jsxBody=@"
-(function () {
-  var hostVersion = app.version;
-  var hostName = app.name;
-  var doc = app.documents.add(UnitValue(320, 'px'), UnitValue(240, 'px'), 72, 'MCP Adobe COM Live');
-  var psdFile = new File('$psdJs');
-  var psdOptions = new PhotoshopSaveOptions();
-  psdOptions.layers = true;
-  psdOptions.embedColorProfile = true;
-  doc.saveAs(psdFile, psdOptions, true, Extension.LOWERCASE);
-  var pngFile = new File('$pngJs');
-  var pngOptions = new PNGSaveOptions();
-  pngOptions.compression = 9;
-  pngOptions.interlaced = false;
-  doc.saveAs(pngFile, pngOptions, true, Extension.LOWERCASE);
-  return 'PHOTOSHOP_COM_LIVE=PASS|' + hostVersion + '|' + hostName + '|' + doc.name;
-})();
-"@
-          # ExtendScript evalFile detects UTF-8 reliably with BOM.
+          (function () {
+            var hostVersion = app.version;
+            var hostName = app.name;
+            var doc = app.documents.add(UnitValue(320, 'px'), UnitValue(240, 'px'), 72, 'MCP Adobe COM Live');
+            var psdFile = new File('$psdJs');
+            var psdOptions = new PhotoshopSaveOptions();
+            psdOptions.layers = true;
+            psdOptions.embedColorProfile = true;
+            doc.saveAs(psdFile, psdOptions, true, Extension.LOWERCASE);
+            var pngFile = new File('$pngJs');
+            var pngOptions = new PNGSaveOptions();
+            pngOptions.compression = 9;
+            pngOptions.interlaced = false;
+            doc.saveAs(pngFile, pngOptions, true, Extension.LOWERCASE);
+            return 'PHOTOSHOP_COM_LIVE=PASS|' + hostVersion + '|' + hostName + '|' + doc.name;
+          })();
+          "@
           [IO.File]::WriteAllText($jsx,[char]0xFEFF + $jsxBody,(New-Object Text.UTF8Encoding($false)))
 
           $vbsBody=@'
-On Error Resume Next
-Dim shell, jsxPath, outFile, photoshopApp, result, jsxForJs
+          On Error Resume Next
+          Dim shell, jsxPath, outFile, photoshopApp, result, jsxForJs
 
-Sub WriteResult(text)
-    On Error Resume Next
-    Dim fso, stream, writeErr
-    Err.Clear
-    Set fso = CreateObject("Scripting.FileSystemObject")
-    Set stream = fso.CreateTextFile(outFile, True, True)
-    writeErr = Err.Number
-    If writeErr <> 0 Then
-        WScript.Echo "ERROR: Failed to write script result (" & writeErr & ")"
-        WScript.Quit 1
-    End If
-    Err.Clear
-    stream.Write text
-    writeErr = Err.Number
-    If writeErr <> 0 Then
-        WScript.Echo "ERROR: Failed to write script result (" & writeErr & ")"
-        WScript.Quit 1
-    End If
-    stream.Close
-End Sub
+          Sub WriteResult(text)
+              On Error Resume Next
+              Dim fso, stream, writeErr
+              Err.Clear
+              Set fso = CreateObject("Scripting.FileSystemObject")
+              Set stream = fso.CreateTextFile(outFile, True, True)
+              writeErr = Err.Number
+              If writeErr <> 0 Then
+                  WScript.Echo "ERROR: Failed to write script result (" & writeErr & ")"
+                  WScript.Quit 1
+              End If
+              Err.Clear
+              stream.Write text
+              writeErr = Err.Number
+              If writeErr <> 0 Then
+                  WScript.Echo "ERROR: Failed to write script result (" & writeErr & ")"
+                  WScript.Quit 1
+              End If
+              stream.Close
+          End Sub
 
-Set shell = CreateObject("WScript.Shell")
-jsxPath = shell.Environment("PROCESS")("PSMCP_JSX")
-outFile = shell.Environment("PROCESS")("PSMCP_RESULT")
-If jsxPath = "" Or outFile = "" Then
-    WScript.Echo "ERROR: Missing Photoshop script paths"
-    WScript.Quit 1
-End If
+          Set shell = CreateObject("WScript.Shell")
+          jsxPath = shell.Environment("PROCESS")("PSMCP_JSX")
+          outFile = shell.Environment("PROCESS")("PSMCP_RESULT")
+          If jsxPath = "" Or outFile = "" Then
+              WScript.Echo "ERROR: Missing Photoshop script paths"
+              WScript.Quit 1
+          End If
 
-Set photoshopApp = CreateObject("Photoshop.Application")
-If Err.Number <> 0 Then
-    WriteResult "ERROR: Failed to connect to Photoshop - " & Err.Description
-    WScript.Quit 1
-End If
+          Set photoshopApp = CreateObject("Photoshop.Application")
+          If Err.Number <> 0 Then
+              WriteResult "ERROR: Failed to connect to Photoshop - " & Err.Description
+              WScript.Quit 1
+          End If
 
-Err.Clear
-jsxForJs = Replace(jsxPath, "\", "\\")
-jsxForJs = Replace(jsxForJs, "'", "\'")
-result = photoshopApp.DoJavaScript("$.evalFile('" & jsxForJs & "')")
-If Err.Number <> 0 Then
-    WriteResult "ERROR: " & Err.Description
-    WScript.Quit 1
-End If
-If IsNull(result) Or IsEmpty(result) Then
-    result = ""
-Else
-    result = CStr(result)
-End If
-WriteResult result
-'@
+          Err.Clear
+          jsxForJs = Replace(jsxPath, "\", "\\")
+          jsxForJs = Replace(jsxForJs, "'", "\'")
+          result = photoshopApp.DoJavaScript("$.evalFile('" & jsxForJs & "')")
+          If Err.Number <> 0 Then
+              WriteResult "ERROR: " & Err.Description
+              WScript.Quit 1
+          End If
+          If IsNull(result) Or IsEmpty(result) Then
+              result = ""
+          Else
+              result = CStr(result)
+          End If
+          WriteResult result
+          '@
           [IO.File]::WriteAllText($vbs,$vbsBody,(New-Object Text.UTF8Encoding($false)))
 
           $env:PSMCP_JSX=$jsx
