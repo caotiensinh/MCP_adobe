@@ -5,6 +5,7 @@ on:
     branches: [test/adobe-logo-live]
     paths:
       - "scripts/adobe_logo_live.py"
+      - "src/mcp_adobe/mcp_stdio.py"
       - ".github/workflows/targeted-adobe-logo-live.yml"
   workflow_dispatch:
 
@@ -14,7 +15,7 @@ permissions:
 jobs:
   logo:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 15
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@v4
 
@@ -136,10 +137,13 @@ jobs:
       - name: Draw branded logo through MCP Adobe
         shell: powershell
         env:
+          PHOTOSHOP_PATH: ${{ steps.adobe.outputs.photoshop }}
+          PHOTOSHOP_SCRIPT_TIMEOUT: "180000"
           ILLUSTRATOR_MCP_TIMEOUT_NORMAL: "120000"
           ILLUSTRATOR_MCP_TIMEOUT_HEAVY: "180000"
         run: |
           $ErrorActionPreference='Stop'
+          Write-Host "PHOTOSHOP_PATH=$env:PHOTOSHOP_PATH"
           uv run python scripts/adobe_logo_live.py
 
       - name: Upload logo source and previews
