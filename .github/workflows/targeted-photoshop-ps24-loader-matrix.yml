@@ -1,0 +1,147 @@
+name: Targeted Photoshop 24 UXP loader matrix
+
+on:
+  pull_request:
+    branches: [fix/photoshop-path-override]
+    paths:
+      - ".github/workflows/targeted-photoshop-ps24-loader-matrix.yml"
+
+concurrency:
+  group: targeted-photoshop-ps24-loader-matrix-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  loader-matrix:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '20'
+
+      - name: Verify Photoshop 24 host
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $p=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
+          if(-not $p){throw 'Photoshop is not running'}
+          $v=([regex]::Match((Get-Item $p.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
+          if(-not $v.StartsWith('24.')){throw "Expected Photoshop 24.x, got $v"}
+          Write-Host "PHOTOSHOP_VERSION=$v SESSION=$($p.SessionId)"
+          Write-Host 'PHOTOSHOP_24_PROCESS_VERIFY=PASS'
+
+      - name: Prepare Adobe UXP CLI 1.5.1 exact source
+        timeout-minutes: 6
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $adobe=Join-Path $env:RUNNER_TEMP 'adobe-uxp-cli-loader-matrix-151'
+          if(Test-Path $adobe){Remove-Item -Recurse -Force $adobe}
+          git clone https://github.com/adobe-uxp/devtools-cli.git $adobe
+          git -C $adobe checkout --detach 175d01fc4f4e4354e6d095fc54bbc99c67f3aa22
+          if((git -C $adobe rev-parse HEAD).Trim() -ne '175d01fc4f4e4354e6d095fc54bbc99c67f3aa22'){throw 'Adobe 1.5.1 source pin mismatch'}
+          Push-Location $adobe
+          try {
+            npx -y yarn@1.22.22 config set registry https://registry.npmjs.org
+            npx -y yarn@1.22.22 config set network-timeout 300000
+            npx -y yarn@1.22.22 install --ignore-scripts --non-interactive --network-concurrency 1 --network-timeout 300000
+            if($LASTEXITCODE -ne 0){throw 'Adobe UXP 1.5.1 workspace install failed'}
+            node (Join-Path $adobe 'packages\uxp-devtools-helper\scripts\devtools_setup.js')
+            if($LASTEXITCODE -ne 0){throw 'Adobe native helper setup failed'}
+          } finally { Pop-Location }
+          $uxpJs=Join-Path $adobe 'packages\uxp-devtools-cli\src\uxp.js'
+          "UXP_JS=$uxpJs" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host 'UXP_CLI_151_MATRIX_READY=PASS'
+
+      - name: Enable UXP Developer Tools
+        timeout-minutes: 2
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          '' | node $env:UXP_JS devtools enable
+          if($LASTEXITCODE -ne 0){throw "UXP devtools enable failed rc=$LASTEXITCODE"}
+          Write-Host 'UXP_DEVTOOLS_ENABLE=PASS'
+
+      - name: Run Photoshop 24 loader matrix
+        timeout-minutes: 3
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $svcOut=Join-Path $env:RUNNER_TEMP 'loader-matrix-service.out.log'
+          $svcErr=Join-Path $env:RUNNER_TEMP 'loader-matrix-service.err.log'
+          Remove-Item -Force $svcOut,$svcErr -ErrorAction SilentlyContinue
+          $svc=$null
+
+          function New-DiagPlugin([string]$name,[hashtable]$permissions) {
+            $dir=Join-Path $env:RUNNER_TEMP ("ps24-loader-"+$name)
+            if(Test-Path $dir){Remove-Item -Recurse -Force $dir}
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            $manifest=[ordered]@{
+              manifestVersion=5
+              id=("com.mcpadobe.ps24."+$name)
+              name=("MCP Adobe PS24 "+$name)
+              version='0.0.1'
+              main='index.html'
+              host=[ordered]@{app='PS';minVersion='23.3.0'}
+              entrypoints=@([ordered]@{type='panel';id='panel';main='index.html';label=[ordered]@{default=("MCP "+$name)};minimumSize=[ordered]@{width=230;height=200};preferredDockedSize=[ordered]@{width=230;height=200};preferredFloatingSize=[ordered]@{width=300;height=250}})
+            }
+            if($permissions.Count -gt 0){$manifest.requiredPermissions=$permissions}
+            $manifest | ConvertTo-Json -Depth 12 | Set-Content (Join-Path $dir 'manifest.json') -Encoding utf8
+            '<!doctype html><html><body><div id="status">PS24 loader probe</div><script src="main.js"></script></body></html>' | Set-Content (Join-Path $dir 'index.html') -Encoding utf8
+            'console.log("MCP_ADOBE_PS24_MINIMAL_PLUGIN_BOOT=PASS");' | Set-Content (Join-Path $dir 'main.js') -Encoding utf8
+            return $dir
+          }
+
+          function Invoke-BoundedLoad([string]$label,[string]$manifest) {
+            $out=Join-Path $env:RUNNER_TEMP ("load-"+$label+".out.log")
+            $err=Join-Path $env:RUNNER_TEMP ("load-"+$label+".err.log")
+            Remove-Item -Force $out,$err -ErrorAction SilentlyContinue
+            $p=Start-Process -FilePath node -ArgumentList @($env:UXP_JS,'plugin','load','--manifest',$manifest,'--apps','PS') -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+            $timedOut=-not $p.WaitForExit(12000)
+            if($timedOut){Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue; Start-Sleep 1}
+            $stdout=if(Test-Path $out){Get-Content $out -Raw}else{''}
+            $stderr=if(Test-Path $err){Get-Content $err -Raw}else{''}
+            Write-Host "=== LOAD $label ==="
+            Write-Host $stdout
+            Write-Host $stderr
+            if($timedOut){Write-Host "PS24_LOAD_${label}=TIMEOUT"; return $false}
+            if($stderr -match 'Load command failed' -or $stderr -match 'Failed to load'){
+              Write-Host "PS24_LOAD_${label}=FAIL"
+              return $false
+            }
+            Write-Host "PS24_LOAD_${label}=PASS"
+            return $true
+          }
+
+          try {
+            $svc=Start-Process -FilePath node -ArgumentList @($env:UXP_JS,'service','start','--port','14001') -PassThru -RedirectStandardOutput $svcOut -RedirectStandardError $svcErr
+            $deadline=[DateTime]::UtcNow.AddSeconds(40); $ready=$false
+            do {
+              Start-Sleep 2
+              node $env:UXP_JS apps list
+              if($LASTEXITCODE -eq 0){$ready=$true;break}
+              if($svc.HasExited){break}
+            } while([DateTime]::UtcNow -lt $deadline)
+            if(-not $ready){throw 'UXP service/Photoshop discovery failed'}
+            Write-Host 'PS24_MATRIX_DISCOVERY=PASS'
+
+            $variants=@()
+            $variants += [pscustomobject]@{Label='MINIMAL';Dir=(New-DiagPlugin 'minimal' @{})}
+            $variants += [pscustomobject]@{Label='NETWORK';Dir=(New-DiagPlugin 'network' @{network=@{domains='all'}})}
+            $variants += [pscustomobject]@{Label='FULLACCESS';Dir=(New-DiagPlugin 'fullaccess' @{network=@{domains='all'};localFileSystem='fullAccess'})}
+            $variants += [pscustomobject]@{Label='CLIPBOARD';Dir=(New-DiagPlugin 'clipboard' @{network=@{domains='all'};localFileSystem='fullAccess';clipboard='readAndWrite'})}
+
+            $results=[ordered]@{}
+            foreach($v in $variants){
+              $results[$v.Label]=Invoke-BoundedLoad $v.Label (Join-Path $v.Dir 'manifest.json')
+            }
+            Write-Host ('PS24_LOADER_MATRIX='+($results | ConvertTo-Json -Compress))
+            if(-not $results['MINIMAL']){throw 'Minimal Manifest v5 plugin cannot load on Photoshop 24 with CLI 1.5.1'}
+            Write-Host 'PS24_MINIMAL_V5_LOAD=PASS'
+          } finally {
+            if($svc -and -not $svc.HasExited){Stop-Process -Id $svc.Id -Force -ErrorAction SilentlyContinue}
+          }
