@@ -16,7 +16,7 @@ permissions:
 jobs:
   preflight:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 4
+    timeout-minutes: 5
     steps:
       - name: Verify Photoshop 24 interactive session and Adobe UXP developer settings
         shell: powershell
@@ -63,3 +63,87 @@ jobs:
 
           Write-Host 'HOST_DEVELOPER_MODE_NOTE=Photoshop Preferences > Plugins > Enable Developer Mode must also be enabled and Photoshop restarted; Adobe documents this as a separate host setting.'
           Write-Host 'PHOTOSHOP_24_DEVMODE_PREFLIGHT=PASS'
+
+      - name: Inspect Photoshop host Developer Mode checkbox through UI Automation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class Win32Focus {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+}
+'@
+
+          $ps=Get-Process -Name Photoshop -ErrorAction Stop |
+            Where-Object {$_.Path -and $_.MainWindowHandle -ne 0} |
+            Select-Object -First 1
+          if(-not $ps){throw 'PHOTOSHOP_UIA=FAIL: interactive Photoshop process not found'}
+
+          [Win32Focus]::SetForegroundWindow($ps.MainWindowHandle) | Out-Null
+          Start-Sleep -Milliseconds 500
+          [System.Windows.Forms.SendKeys]::SendWait('^k')
+          Start-Sleep 2
+
+          try {
+            $root=[System.Windows.Automation.AutomationElement]::RootElement
+            $pidCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$ps.Id)
+            $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$pidCond)
+            Write-Host "PHOTOSHOP_UIA_ELEMENT_COUNT=$($all.Count)"
+
+            $windows=@()
+            for($i=0;$i -lt $all.Count;$i++){
+              $e=$all.Item($i)
+              if($e.Current.ControlType -eq [System.Windows.Automation.ControlType]::Window){
+                $windows += $e
+                Write-Host "UIA_WINDOW name='$($e.Current.Name)' class='$($e.Current.ClassName)' automationId='$($e.Current.AutomationId)'"
+              }
+            }
+
+            $pluginNav=$null
+            for($i=0;$i -lt $all.Count;$i++){
+              $e=$all.Item($i)
+              $n=$e.Current.Name
+              if($n -and ($n -match '^(Plugins|Plug-ins|プラグイン)$')){$pluginNav=$e;break}
+            }
+            if($pluginNav){
+              Write-Host "PHOTOSHOP_UIA_PLUGINS_NAV_FOUND=$($pluginNav.Current.Name)"
+              $pat=$null
+              if($pluginNav.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$pat)){$pat.Select()}
+              elseif($pluginNav.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pat)){$pat.Invoke()}
+              else {Write-Host 'PHOTOSHOP_UIA_PLUGINS_NAV_PATTERN=NONE'}
+              Start-Sleep 1
+              $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$pidCond)
+            } else {
+              Write-Host 'PHOTOSHOP_UIA_PLUGINS_NAV_FOUND=NO'
+            }
+
+            $dev=$null
+            $checkboxNames=@()
+            for($i=0;$i -lt $all.Count;$i++){
+              $e=$all.Item($i)
+              if($e.Current.ControlType -eq [System.Windows.Automation.ControlType]::CheckBox){
+                $checkboxNames += $e.Current.Name
+                if($e.Current.Name -match 'Developer Mode|開発者モード|デベロッパ'){$dev=$e}
+              }
+            }
+            Write-Host ('PHOTOSHOP_UIA_CHECKBOXES=' + ($checkboxNames -join ' | '))
+
+            if(-not $dev){throw 'PHOTOSHOP_HOST_DEVELOPER_MODE=UNKNOWN: checkbox not exposed through UI Automation'}
+            $toggle=$null
+            if(-not $dev.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern,[ref]$toggle)){
+              throw 'PHOTOSHOP_HOST_DEVELOPER_MODE=UNKNOWN: checkbox has no TogglePattern'
+            }
+            $state=$toggle.Current.ToggleState.ToString()
+            Write-Host "PHOTOSHOP_HOST_DEVELOPER_MODE=$state"
+            if($state -eq 'On'){Write-Host 'PHOTOSHOP_HOST_DEVELOPER_MODE_UIA=PASS'}
+            elseif($state -eq 'Off'){throw 'PHOTOSHOP_HOST_DEVELOPER_MODE_UIA=FAIL: Enable Developer Mode is unchecked'}
+            else {throw "PHOTOSHOP_HOST_DEVELOPER_MODE=UNKNOWN: state=$state"}
+          } finally {
+            [Win32Focus]::SetForegroundWindow($ps.MainWindowHandle) | Out-Null
+            [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+          }
