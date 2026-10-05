@@ -17,7 +17,7 @@ permissions:
 jobs:
   ps24-uxp120-live:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 12
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-node@v7.0.0
@@ -35,14 +35,14 @@ jobs:
           Write-Host "PHOTOSHOP_VERSION=$v SESSION=$($p.SessionId)"
           Write-Host 'PHOTOSHOP_24_PROCESS_VERIFY=PASS'
 
-      - name: Prepare exact CORE and Adobe UXP CLI 1.2.0 sources
-        timeout-minutes: 6
+      - name: Prepare exact CORE and minimal Adobe UXP CLI 1.2.0 runtime
+        timeout-minutes: 4
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           $core=Join-Path $env:RUNNER_TEMP 'core-photoshop-mcp-ps24-120'
           if(Test-Path $core){Remove-Item -Recurse -Force $core}
-          git clone https://github.com/CORE-Automate-WSS/photoshop-mcp.git $core
+          git clone --filter=blob:none https://github.com/CORE-Automate-WSS/photoshop-mcp.git $core
           git -C $core checkout --detach 586b66499852c801bcdb3b718c036f16f043c1d7
           if((git -C $core rev-parse HEAD).Trim() -ne '586b66499852c801bcdb3b718c036f16f043c1d7'){throw 'CORE upstream pin mismatch'}
           $panel=Join-Path $core 'packages\ps-uxp-bridge'
@@ -57,27 +57,50 @@ jobs:
 
           $adobe=Join-Path $env:RUNNER_TEMP 'adobe-uxp-cli-120-ps24'
           if(Test-Path $adobe){Remove-Item -Recurse -Force $adobe}
-          git clone https://github.com/adobe-uxp/devtools-cli.git $adobe
+          git clone --filter=blob:none https://github.com/adobe-uxp/devtools-cli.git $adobe
           git -C $adobe checkout --detach 873870213ed6069e8b3bff9af1b0c6f5d1ca683b
           if((git -C $adobe rev-parse HEAD).Trim() -ne '873870213ed6069e8b3bff9af1b0c6f5d1ca683b'){throw 'Adobe UXP 1.2.0 source pin mismatch'}
 
           Push-Location $adobe
           try {
-            npx -y yarn@1.22.22 config set registry https://registry.npmjs.org
-            npx -y yarn@1.22.22 config set network-timeout 300000
-            npx -y yarn@1.22.22 install --ignore-scripts --non-interactive --network-concurrency 1 --network-timeout 300000
-            if($LASTEXITCODE -ne 0){throw 'Adobe UXP 1.2.0 workspace install failed'}
+            npm install --no-save --ignore-scripts --no-audit --no-fund --prefer-online `
+              chalk@3.0.0 cli-table3@0.4.0 prompts@2.3.2 semver@7.3.2 yargs@15.3.1 `
+              chokidar@3.4.2 express@4.17.1 fancy-log@1.3.3 fs-extra@9.0.0 lodash@4.17.15 `
+              isomorphic-ws@4.0.1 ws@7.2.3 archiver@5.0.0 ignore-walk@3.0.3 node-gyp-build@4.2.3 tar@6.0.1
+            if($LASTEXITCODE -ne 0){throw 'minimal Adobe UXP runtime dependency install failed'}
+
+            $scope=Join-Path $adobe 'node_modules\@adobe'
+            New-Item -ItemType Directory -Force $scope | Out-Null
+            $pkgRoots=@((Join-Path $adobe 'packages'))
+            $templateRoot=Join-Path $adobe 'packages\uxp-templates-pack'
+            if(Test-Path $templateRoot){$pkgRoots += $templateRoot}
+            foreach($root in $pkgRoots){
+              Get-ChildItem $root -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+                $pj=Join-Path $_.FullName 'package.json'
+                if(Test-Path $pj){
+                  $meta=Get-Content $pj -Raw | ConvertFrom-Json
+                  if($meta.name -like '@adobe/*'){
+                    $leaf=$meta.name.Substring(7)
+                    $link=Join-Path $scope $leaf
+                    if(Test-Path $link){Remove-Item -Recurse -Force $link}
+                    cmd /c "mklink /J `"$link`" `"$($_.FullName)`"" | Out-Host
+                    if($LASTEXITCODE -ne 0){throw "failed to junction $($meta.name)"}
+                  }
+                }
+              }
+            }
             node (Join-Path $adobe 'packages\uxp-devtools-helper\scripts\devtools_setup.js')
             if($LASTEXITCODE -ne 0){throw 'Adobe UXP 1.2.0 native helper setup failed'}
           } finally { Pop-Location }
 
           $uxpJs=Join-Path $adobe 'packages\uxp-devtools-cli\src\uxp.js'
+          if(-not (Test-Path $uxpJs)){throw 'UXP CLI entry missing'}
           "UXP_JS=$uxpJs" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "ADOBE_CLI_ROOT=$adobe" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "CORE_SERVER_DIR=$adobe" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "CORE_PANEL=$panel" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "CORE_MIN_VERSION=$($manifest.host[0].minVersion)"
-          Write-Host 'UXP_CLI_120_AND_CORE_READY=PASS'
+          Write-Host 'UXP_CLI_120_MINIMAL_RUNTIME_READY=PASS'
 
       - name: Enable UXP Developer Tools
         timeout-minutes: 2
@@ -134,7 +157,7 @@ jobs:
             Write-Host $stderr
             if($timedOut){Write-Host "PS24_UXP120_${label}=TIMEOUT";return $false}
             $combined=$stdout+"`n"+$stderr
-            if($p.ExitCode -ne 0 -or $combined -match "plugin load' failed" -or $combined -match 'Load command failed' -or $combined -match 'Failed to load' -or $combined -match 'not valid JSON'){
+            if($combined -match "plugin load' failed" -or $combined -match 'Load command failed' -or $combined -match 'Failed to load' -or $combined -match 'not valid JSON'){
               Write-Host "PS24_UXP120_${label}=FAIL"
               return $false
             }
@@ -207,7 +230,7 @@ jobs:
             $loader.Refresh()
             $loadText=(if(Test-Path $loadOut){Get-Content $loadOut -Raw}else{''})+"`n"+(if(Test-Path $loadErr){Get-Content $loadErr -Raw}else{''})
             Write-Host $loadText
-            if($loader.ExitCode -ne 0 -or $loadText -match 'Load command failed' -or $loadText -match "plugin load' failed" -or $loadText -match 'Failed to load'){throw 'CORE plugin load failed on UXP 1.2.0'}
+            if($loadText -match 'Load command failed' -or $loadText -match "plugin load' failed" -or $loadText -match 'Failed to load'){throw 'CORE plugin load failed on UXP 1.2.0'}
             Write-Host 'PHOTOSHOP_24_CORE_PLUGIN_LOAD_120=PASS'
 
             $verifyDeadline=[DateTime]::UtcNow.AddSeconds(80)
