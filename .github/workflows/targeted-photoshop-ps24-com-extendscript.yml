@@ -46,8 +46,6 @@ jobs:
           $resultFile=Join-Path $out 'mcp-adobe-com-result.txt'
           Remove-Item $psd,$png,$jsx,$vbs,$resultFile -Force -ErrorAction SilentlyContinue
 
-          # ExtendScript File accepts forward slashes. Use char replacement so a
-          # PowerShell/JSON escaping mistake cannot silently preserve Windows backslashes.
           $psdJs=$psd.Replace([char]92,[char]47)
           $pngJs=$png.Replace([char]92,[char]47)
           Write-Host "PSD_JS_PATH=$psdJs"
@@ -170,7 +168,7 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'MCP Adobe editable install failed'}
           Write-Host 'MCP_ADOBE_INSTALL=PASS'
 
-      - name: Live MCP Adobe gateway through alisaitteke transport
+      - name: Live MCP Adobe Photoshop adapter through alisaitteke transport
         timeout-minutes: 4
         shell: powershell
         run: |
@@ -178,48 +176,60 @@ jobs:
           $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue |
             Where-Object {$_.Path -and $_.MainWindowHandle -ne 0} |
             Select-Object -First 1
-          if(-not $ps){throw 'Photoshop disappeared before MCP Adobe gateway test'}
+          if(-not $ps){throw 'Photoshop disappeared before MCP Adobe adapter test'}
           $env:PHOTOSHOP_PATH=$ps.Path
           $env:PSMCP_FEEDBACK='0'
           $env:PSMCP_UPDATE_CHECK='0'
-          $out=Join-Path $env:RUNNER_TEMP 'mcp-adobe-gateway-live'
+          $out=Join-Path $env:RUNNER_TEMP 'mcp-adobe-adapter-live'
           New-Item -ItemType Directory -Force $out | Out-Null
-          $env:MCP_ADOBE_GATEWAY_OUT=$out
-          $probe=Join-Path $env:RUNNER_TEMP 'mcp_adobe_gateway_live_probe.py'
+          $env:MCP_ADOBE_ADAPTER_OUT=$out
+          $probe=Join-Path $env:RUNNER_TEMP 'mcp_adobe_photoshop_adapter_live_probe.py'
           @'
           import json
           import os
           from pathlib import Path
 
-          from mcp_adobe.server import GatewayRuntime
+          from mcp_adobe.core import CapabilityRegistry
+          from mcp_adobe.mcp_stdio import McpSubprocessToolClient, photoshop_stdio_config
+          from mcp_adobe.photoshop import PhotoshopAdapter
 
-          out = Path(os.environ["MCP_ADOBE_GATEWAY_OUT"])
+          out = Path(os.environ["MCP_ADOBE_ADAPTER_OUT"])
           out.mkdir(parents=True, exist_ok=True)
-          psd = out / "mcp-adobe-gateway-live.psd"
-          png = out / "mcp-adobe-gateway-live.png"
+          psd = out / "mcp-adobe-adapter-live.psd"
+          png = out / "mcp-adobe-adapter-live.png"
           for path in (psd, png):
               try:
                   path.unlink()
               except FileNotFoundError:
                   pass
 
-          runtime = GatewayRuntime()
+          client = McpSubprocessToolClient(photoshop_stdio_config())
+          adapter = PhotoshopAdapter(client, writes_enabled=True)
+          registry = CapabilityRegistry()
           try:
-              info = next(item for item in runtime.describe() if item.application == "photoshop")
-              print("MCP_ADOBE_PHOTOSHOP_TRANSPORT=" + info.transport)
+              registry.register(adapter)
+              info = adapter.info()
+              print("MCP_ADOBE_PHOTOSHOP_TRANSPORT=" + str(info.transport))
               print("MCP_ADOBE_PHOTOSHOP_UPSTREAM=" + str(info.upstream_repository))
               print("MCP_ADOBE_PHOTOSHOP_SNAPSHOT=" + str(info.upstream_snapshot))
               if not info.connected:
                   raise RuntimeError("MCP Adobe Photoshop subprocess transport did not connect")
               print("MCP_ADOBE_PHOTOSHOP_CONNECTED=PASS")
 
-              health = runtime.read("photoshop", "creative.health", {})
+              version = client.call_tool("photoshop_get_version", {})
+              print("MCP_ADOBE_APP_INFO=" + json.dumps(version, ensure_ascii=True, default=str))
+              version_text = json.dumps(version, ensure_ascii=True, default=str)
+              if "24.0" not in version_text:
+                  raise RuntimeError(f"Photoshop 24 version not proven through upstream MCP: {version_text}")
+              print("MCP_ADOBE_APP_INFO=PASS")
+
+              health = registry.execute("photoshop", "creative.health", {})
               print("MCP_ADOBE_HEALTH=" + json.dumps(health, ensure_ascii=True, default=str))
               if not health.get("ok"):
                   raise RuntimeError("creative.health failed")
-              print("MCP_ADOBE_APP_INFO_EQUIVALENT=PASS")
+              print("MCP_ADOBE_HEALTH=PASS")
 
-              created = runtime.write(
+              created = registry.execute(
                   "photoshop",
                   "creative.document.create",
                   {"width": 320, "height": 240, "resolution": 72, "colorMode": "RGB"},
@@ -229,7 +239,7 @@ jobs:
                   raise RuntimeError("creative.document.create failed")
               print("MCP_ADOBE_DOC_NEW=PASS")
 
-              saved = runtime.write(
+              saved = registry.execute(
                   "photoshop",
                   "creative.document.save",
                   {"path": str(psd), "format": "PSD"},
@@ -239,7 +249,7 @@ jobs:
                   raise RuntimeError("creative.document.save failed")
               print("MCP_ADOBE_SAVE_PSD=PASS")
 
-              exported = runtime.write(
+              exported = registry.execute(
                   "photoshop",
                   "creative.document.export",
                   {"path": str(png), "format": "PNG"},
@@ -249,7 +259,7 @@ jobs:
                   raise RuntimeError("creative.document.export failed")
               print("MCP_ADOBE_EXPORT_PNG=PASS")
           finally:
-              runtime.close()
+              client.close()
 
           if not psd.is_file():
               raise RuntimeError(f"MCP Adobe PSD missing: {psd}")
@@ -268,4 +278,4 @@ jobs:
           print("MCP_ADOBE_PHOTOSHOP_24_LIVE_E2E=PASS")
           '@ | Set-Content -Path $probe -Encoding utf8
           python $probe
-          if($LASTEXITCODE -ne 0){throw 'MCP Adobe Photoshop live gateway probe failed'}
+          if($LASTEXITCODE -ne 0){throw 'MCP Adobe Photoshop live adapter probe failed'}
