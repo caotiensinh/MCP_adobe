@@ -130,11 +130,16 @@ jobs:
           & cscript.exe //nologo $vbs
           $rc=$LASTEXITCODE
           Write-Host "CSCRIPT_RC=$rc"
-          if($rc -ne 0){throw "COM bridge cscript failed rc=$rc"}
+          $result=''
+          if(Test-Path $resultFile){
+            $result=Get-Content $resultFile -Raw
+            Write-Host "COM_RESULT=$result"
+          } else {
+            Write-Host 'COM_RESULT_FILE=MISSING'
+          }
+          if($result -match '^ERROR:'){throw "$result | CSCRIPT_RC=$rc"}
+          if($rc -ne 0){throw "COM bridge cscript failed rc=$rc result=$result"}
           if(-not (Test-Path $resultFile)){throw 'COM bridge produced no result file'}
-          $result=Get-Content $resultFile -Raw
-          Write-Host "COM_RESULT=$result"
-          if($result -match '^ERROR:'){throw $result}
           if($result -notmatch '^PHOTOSHOP_COM_LIVE=PASS\|24\.'){throw "Unexpected COM result: $result"}
           Write-Host 'PHOTOSHOP_COM_APP_INFO=PASS'
           Write-Host 'PHOTOSHOP_COM_DOC_NEW=PASS'
