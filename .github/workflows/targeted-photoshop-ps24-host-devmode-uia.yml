@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: targeted-photoshop-host-devmode-uia-${{ github.event.pull_request.number || github.ref }}
+  group: targeted-photoshop-host-devmode-uia-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -18,8 +18,6 @@ jobs:
   inspect:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 5
-    env:
-      SCREENSHOT: ${{ runner.temp }}\ps24-preferences.png
     steps:
       - name: Open Preferences and capture host state
         shell: powershell
@@ -72,24 +70,23 @@ jobs:
           $w=$rect.Right-$rect.Left
           $h=$rect.Bottom-$rect.Top
           if($w -le 0 -or $h -le 0){throw "PHOTOSHOP_SCREENSHOT=FAIL: invalid rect ${w}x${h}"}
+          $shot=Join-Path $env:RUNNER_TEMP 'ps24-preferences.png'
           $bmp=New-Object System.Drawing.Bitmap $w,$h
           $gfx=[System.Drawing.Graphics]::FromImage($bmp)
           try {$gfx.CopyFromScreen($rect.Left,$rect.Top,0,0,$bmp.Size)} finally {$gfx.Dispose()}
-          try {$bmp.Save($env:SCREENSHOT,[System.Drawing.Imaging.ImageFormat]::Png)} finally {$bmp.Dispose()}
-          Write-Host "PHOTOSHOP_PREFERENCES_SCREENSHOT=$env:SCREENSHOT SIZE=$((Get-Item $env:SCREENSHOT).Length)"
+          try {$bmp.Save($shot,[System.Drawing.Imaging.ImageFormat]::Png)} finally {$bmp.Dispose()}
+          Write-Host "PHOTOSHOP_PREFERENCES_SCREENSHOT=$shot SIZE=$((Get-Item $shot).Length)"
 
           try {
             $root=[System.Windows.Automation.AutomationElement]::RootElement
             $pidCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$ps.Id)
             $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$pidCond)
             Write-Host "PHOTOSHOP_UIA_ELEMENT_COUNT=$($all.Count)"
-            $names=@()
             for($i=0;$i -lt $all.Count;$i++){
               $e=$all.Item($i)
               $name=$e.Current.Name
-              if($name){$names += "[$($e.Current.ControlType.ProgrammaticName)] $name"}
+              if($name){Write-Host "UIA=[$($e.Current.ControlType.ProgrammaticName)] $name"}
             }
-            $names | Select-Object -First 120 | ForEach-Object {Write-Host "UIA=$_"}
           } finally {
             if($after.ProcessId -eq $ps.Id){[System.Windows.Forms.SendKeys]::SendWait('{ESC}')}
           }
@@ -101,6 +98,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ps24-developer-mode-${{ github.run_id }}
-          path: ${{ env.SCREENSHOT }}
+          path: ${{ runner.temp }}\ps24-preferences.png
           if-no-files-found: error
           retention-days: 1
