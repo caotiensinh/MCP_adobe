@@ -1,0 +1,54 @@
+name: Targeted Photoshop 24 JSX command-line probe
+
+on:
+  pull_request:
+    branches: [fix/photoshop-path-override]
+    paths:
+      - ".github/workflows/targeted-photoshop-jsx-commandline.yml"
+
+concurrency:
+  group: targeted-photoshop-jsx-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Execute JSX marker in running Photoshop 24
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
+          if(-not $ps){throw 'Photoshop is not running'}
+          $version=([regex]::Match((Get-Item $ps.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
+          if(-not $version.StartsWith('24.')){throw "Expected Photoshop 24.x, got $version"}
+          $marker=Join-Path $env:RUNNER_TEMP 'mcp_adobe_ps24_jsx_marker.txt'
+          $jsx=Join-Path $env:RUNNER_TEMP 'mcp_adobe_ps24_probe.jsx'
+          Remove-Item $marker -Force -ErrorAction SilentlyContinue
+          $markerJs=$marker.Replace('\\','/')
+          $script=@"
+var f = new File('$markerJs');
+f.open('w');
+f.write('PHOTOSHOP_JSX_CONTROL=PASS|' + app.version + '|' + app.name);
+f.close();
+"@
+          [IO.File]::WriteAllText($jsx,$script,(New-Object Text.UTF8Encoding($false)))
+          Write-Host "PHOTOSHOP_EXE=$($ps.Path)"
+          Write-Host "JSX=$jsx"
+          $p=Start-Process -FilePath $ps.Path -ArgumentList @('-r',$jsx) -PassThru
+          try { $p.WaitForExit(15000) | Out-Null } catch {}
+          $deadline=[DateTime]::UtcNow.AddSeconds(20)
+          do {
+            if(Test-Path $marker){break}
+            Start-Sleep 1
+          } while([DateTime]::UtcNow -lt $deadline)
+          if(-not (Test-Path $marker)){throw 'Photoshop JSX command-line marker was not created'}
+          $text=Get-Content $marker -Raw
+          Write-Host $text
+          if($text -notmatch '^PHOTOSHOP_JSX_CONTROL=PASS\|24\.'){throw "Unexpected marker: $text"}
+          Write-Host 'PHOTOSHOP_JSX_COMMANDLINE_CONTROL=PASS'

@@ -1,0 +1,163 @@
+name: Targeted Photoshop 24 shape demo
+
+on:
+  push:
+    branches: [test/photoshop-ps24-live]
+    paths:
+      - ".github/workflows/targeted-photoshop-ps24-shape-demo.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  draw:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Draw layered cube demo in live Photoshop
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class PsWin32 {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+          }
+          '@
+
+          $ps=Get-Process -Name Photoshop -ErrorAction Stop |
+            Where-Object {$_.Path -and $_.MainWindowHandle -ne 0} |
+            Select-Object -First 1
+          if(-not $ps){throw 'Photoshop is not running interactively'}
+          $version=([regex]::Match((Get-Item $ps.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
+          Write-Host "PHOTOSHOP_VERSION=$version PID=$($ps.Id) SESSION=$($ps.SessionId)"
+          if(-not $version.StartsWith('24.')){throw "Expected Photoshop 24.x, got $version"}
+          if($ps.SessionId -ne 1){throw "Expected interactive Session 1, got $($ps.SessionId)"}
+
+          # Clear any leftover modal such as Preferences, which makes Photoshop COM return RPC_E_SERVERCALL_RETRYLATER.
+          [void][PsWin32]::ShowWindow([IntPtr]$ps.MainWindowHandle,9)
+          [void][PsWin32]::SetForegroundWindow([IntPtr]$ps.MainWindowHandle)
+          Start-Sleep -Milliseconds 400
+          [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+          Start-Sleep -Milliseconds 300
+          [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+          Start-Sleep -Milliseconds 700
+
+          $out=Join-Path $env:RUNNER_TEMP 'mcp-adobe-photoshop-shape-demo'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $psd=(Join-Path $out 'mcp-adobe-cube-demo.psd').Replace([char]92,[char]47)
+          $png=(Join-Path $out 'mcp-adobe-cube-demo.png').Replace([char]92,[char]47)
+          Remove-Item $psd,$png -Force -ErrorAction SilentlyContinue
+
+          $jsx=@"
+          (function () {
+            app.displayDialogs = DialogModes.NO;
+            var doc = app.documents.add(900, 650, 72, 'MCP Adobe Cube Demo', NewDocumentMode.RGB, DocumentFill.WHITE);
+
+            function rgb(r,g,b) {
+              var c = new SolidColor();
+              c.rgb.red = r; c.rgb.green = g; c.rgb.blue = b;
+              return c;
+            }
+            function fillPoly(name, pts, color) {
+              var layer = doc.artLayers.add();
+              layer.name = name;
+              doc.activeLayer = layer;
+              doc.selection.select(pts);
+              doc.selection.fill(color);
+              doc.selection.deselect();
+              return layer;
+            }
+
+            var bg = doc.artLayers.add();
+            bg.name = 'Background';
+            doc.activeLayer = bg;
+            doc.selection.selectAll();
+            doc.selection.fill(rgb(242,245,249));
+            doc.selection.deselect();
+
+            fillPoly('Cube Front', [[250,250],[550,250],[550,500],[250,500]], rgb(37,99,235));
+            fillPoly('Cube Top', [[250,250],[390,160],[690,160],[550,250]], rgb(96,165,250));
+            fillPoly('Cube Right', [[550,250],[690,160],[690,410],[550,500]], rgb(30,64,175));
+
+            var title = doc.artLayers.add();
+            title.kind = LayerKind.TEXT;
+            title.name = 'Title';
+            title.textItem.contents = 'MCP Adobe - Photoshop Live Demo';
+            title.textItem.position = [215, 95];
+            title.textItem.size = 30;
+            title.textItem.color = rgb(31,41,55);
+
+            var subtitle = doc.artLayers.add();
+            subtitle.kind = LayerKind.TEXT;
+            subtitle.name = 'Subtitle';
+            subtitle.textItem.contents = 'Created automatically through Photoshop scripting';
+            subtitle.textItem.position = [255, 570];
+            subtitle.textItem.size = 18;
+            subtitle.textItem.color = rgb(75,85,99);
+
+            var psdFile = new File('$psd');
+            var psdOptions = new PhotoshopSaveOptions();
+            psdOptions.layers = true;
+            psdOptions.embedColorProfile = true;
+            doc.saveAs(psdFile, psdOptions, true, Extension.LOWERCASE);
+
+            var pngFile = new File('$png');
+            var web = new ExportOptionsSaveForWeb();
+            web.format = SaveDocumentType.PNG;
+            web.PNG8 = false;
+            doc.exportDocument(pngFile, ExportType.SAVEFORWEB, web);
+
+            return 'DEMO_PASS|' + app.version + '|LAYERS=' + doc.layers.length + '|PSD=' + psdFile.fsName + '|PNG=' + pngFile.fsName;
+          })();
+          "@
+
+          $app=$null
+          $result=$null
+          $lastError=$null
+          for($attempt=1;$attempt -le 12;$attempt++){
+            try {
+              if($null -eq $app){$app=New-Object -ComObject Photoshop.Application}
+              $result=$app.DoJavaScript($jsx)
+              $lastError=$null
+              break
+            } catch {
+              $lastError=$_
+              $hr=$_.Exception.HResult
+              Write-Host "PHOTOSHOP_COM_ATTEMPT=$attempt HRESULT=$hr MESSAGE=$($_.Exception.Message)"
+              if($hr -ne -2147417846){throw}
+              [void][PsWin32]::SetForegroundWindow([IntPtr]$ps.MainWindowHandle)
+              [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+              Start-Sleep -Milliseconds (300 + 200*$attempt)
+            }
+          }
+          if($lastError){throw "Photoshop remained busy after retries: $($lastError.Exception.Message)"}
+          Write-Host "PHOTOSHOP_DEMO_RESULT=$result"
+          if($result -notmatch '^DEMO_PASS\|24\.'){throw "Unexpected Photoshop result: $result"}
+
+          $psdWin=$psd.Replace('/','\')
+          $pngWin=$png.Replace('/','\')
+          if(-not (Test-Path $psdWin)){throw 'PSD demo was not created'}
+          if(-not (Test-Path $pngWin)){throw 'PNG demo was not created'}
+          $pb=[IO.File]::ReadAllBytes($psdWin)
+          $nb=[IO.File]::ReadAllBytes($pngWin)
+          if($pb.Length -lt 4 -or [Text.Encoding]::ASCII.GetString($pb,0,4) -ne '8BPS'){throw 'PSD signature invalid'}
+          $sig=@(137,80,78,71,13,10,26,10)
+          if($nb.Length -lt 8){throw 'PNG too small'}
+          for($i=0;$i -lt 8;$i++){if($nb[$i] -ne $sig[$i]){throw 'PNG signature invalid'}}
+          Write-Host "PHOTOSHOP_DEMO_PSD=$psdWin BYTES=$($pb.Length) HEADER=8BPS"
+          Write-Host "PHOTOSHOP_DEMO_PNG=$pngWin BYTES=$($nb.Length)"
+          Write-Host 'PHOTOSHOP_SHAPE_DEMO=PASS'
+
+      - name: Upload Photoshop demo
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: photoshop-shape-demo-${{ github.run_id }}
+          path: ${{ runner.temp }}\mcp-adobe-photoshop-shape-demo\*
+          if-no-files-found: warn
+          retention-days: 2

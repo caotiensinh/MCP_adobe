@@ -1,0 +1,245 @@
+name: Targeted Photoshop 24 host-object CORE live
+
+on:
+  pull_request:
+    branches: [fix/photoshop-path-override]
+    paths:
+      - ".github/workflows/targeted-photoshop-ps24-loader-matrix.yml"
+      - "scripts/probe_photoshop_core_live.cjs"
+
+concurrency:
+  group: targeted-photoshop-host-object-core-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '20'
+
+      - name: Ensure Photoshop 24 interactive host
+        timeout-minutes: 2
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
+          if(-not $ps){
+            $exe='D:\Photoshop_2023\Adobe Photoshop 2023\Photoshop.exe'
+            if(-not (Test-Path $exe)){throw "Photoshop executable missing: $exe"}
+            $tracking=$env:RUNNER_TRACKING_ID
+            Remove-Item Env:RUNNER_TRACKING_ID -ErrorAction SilentlyContinue
+            Start-Process -FilePath $exe | Out-Null
+            if($tracking){$env:RUNNER_TRACKING_ID=$tracking}
+            $until=[DateTime]::UtcNow.AddSeconds(50)
+            do {
+              Start-Sleep 2
+              $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.Path -eq $exe -and $_.MainWindowHandle -ne 0} | Select-Object -First 1
+              if($ps){break}
+            } while([DateTime]::UtcNow -lt $until)
+            if(-not $ps){throw 'Photoshop did not start with a main window'}
+          }
+          $v=([regex]::Match((Get-Item $ps.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
+          if(-not $v.StartsWith('24.')){throw "Expected Photoshop 24.x, got $v"}
+          Write-Host "PHOTOSHOP_VERSION=$v PID=$($ps.Id) SESSION=$($ps.SessionId) HWND=$($ps.MainWindowHandle)"
+          Write-Host 'PHOTOSHOP_24_INTERACTIVE_HOST=PASS'
+
+      - name: Install published Adobe UXP CLI 1.2.0 runtime
+        timeout-minutes: 3
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $tool=Join-Path $env:RUNNER_TEMP 'uxp120-hostobject-core'
+          if(Test-Path $tool){Remove-Item -Recurse -Force $tool}
+          New-Item -ItemType Directory -Force $tool | Out-Null
+          Push-Location $tool
+          try {
+            npm init -y | Out-Null
+            npm install --ignore-scripts --no-audit --no-fund --fetch-retries=2 --fetch-timeout=60000 @adobe/uxp-devtools-cli@1.2.0 tar@6 fs-extra@9
+            if($LASTEXITCODE -ne 0){throw 'Adobe UXP CLI 1.2.0 install failed'}
+            node (Join-Path $tool 'node_modules\@adobe\uxp-devtools-helper\scripts\devtools_setup.js')
+            if($LASTEXITCODE -ne 0){throw 'Adobe UXP native helper setup failed'}
+            node -e "console.log(require.resolve('ws'))"
+            if($LASTEXITCODE -ne 0){throw 'ws runtime dependency missing'}
+          } finally {Pop-Location}
+          $uxp=Join-Path $tool 'node_modules\@adobe\uxp-devtools-cli\src\uxp.js'
+          "UXP_JS=$uxp" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "CORE_SERVER_DIR=$tool" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host 'UXP_CLI_120_RUNTIME=PASS'
+
+      - name: Prove corrected third-party host object loads on Photoshop 24
+        timeout-minutes: 3
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $utf8=New-Object System.Text.UTF8Encoding($false)
+          $dir=Join-Path $env:RUNNER_TEMP 'ps24-host-object-probe'
+          if(Test-Path $dir){Remove-Item -Recurse -Force $dir}
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          $manifest=[ordered]@{
+            manifestVersion=4
+            id='com.mcpadobe.ps24.hostobjectprobe'
+            name='MCP Adobe PS24 Host Object Probe'
+            version='1.0.0'
+            main='index.html'
+            host=[ordered]@{app='PS';minVersion='22.0.0'}
+            entrypoints=@([ordered]@{type='panel';id='hostobjectprobe';minimumSize=[ordered]@{width=230;height=200};maximumSize=[ordered]@{width=2000;height=2000};preferredDockedSize=[ordered]@{width=230;height=200};preferredFloatingSize=[ordered]@{width=300;height=250};label=[ordered]@{default='MCP Host Object Probe'}})
+          }
+          [IO.File]::WriteAllText((Join-Path $dir 'manifest.json'),($manifest|ConvertTo-Json -Depth 12),$utf8)
+          [IO.File]::WriteAllText((Join-Path $dir 'index.html'),'<!doctype html><html><body><div>PS24 HOST OBJECT PROBE</div><script src="main.js"></script></body></html>',$utf8)
+          [IO.File]::WriteAllText((Join-Path $dir 'main.js'),'console.log("MCP_ADOBE_HOST_OBJECT_BOOT=PASS");',$utf8)
+
+          '' | node $env:UXP_JS devtools enable
+          if($LASTEXITCODE -ne 0){throw 'UXP developer tools enable failed'}
+
+          $svcOut=Join-Path $env:RUNNER_TEMP 'hostobj-service.out'
+          $svcErr=Join-Path $env:RUNNER_TEMP 'hostobj-service.err'
+          $loadOut=Join-Path $env:RUNNER_TEMP 'hostobj-load.out'
+          $loadErr=Join-Path $env:RUNNER_TEMP 'hostobj-load.err'
+          Remove-Item $svcOut,$svcErr,$loadOut,$loadErr -Force -ErrorAction SilentlyContinue
+          $svc=$null;$loader=$null
+          try {
+            $svc=Start-Process -FilePath node -ArgumentList @($env:UXP_JS,'service','start','--port','14001') -PassThru -RedirectStandardOutput $svcOut -RedirectStandardError $svcErr
+            $until=[DateTime]::UtcNow.AddSeconds(40);$ready=$false
+            do {
+              Start-Sleep 2
+              node $env:UXP_JS apps list
+              if($LASTEXITCODE -eq 0){$ready=$true;break}
+              if($svc.HasExited){break}
+            } while([DateTime]::UtcNow -lt $until)
+            if(-not $ready){throw 'UXP service did not discover Photoshop 24'}
+            Write-Host 'PS24_UXP_DISCOVERY=PASS'
+
+            $loader=Start-Process -FilePath node -ArgumentList @($env:UXP_JS,'plugin','load','--manifest',(Join-Path $dir 'manifest.json'),'--apps','PS') -PassThru -RedirectStandardOutput $loadOut -RedirectStandardError $loadErr
+            if(-not $loader.WaitForExit(20000)){Stop-Process -Id $loader.Id -Force -ErrorAction SilentlyContinue;throw 'Host-object probe load timed out'}
+            $stdout=if(Test-Path $loadOut){Get-Content $loadOut -Raw}else{''}
+            $stderr=if(Test-Path $loadErr){Get-Content $loadErr -Raw}else{''}
+            $text=$stdout+"`n"+$stderr
+            Write-Host '--- HOST OBJECT LOAD OUTPUT ---'
+            Write-Host $text
+            if($loader.ExitCode -ne 0 -or $text -match 'Load command failed|plugin load.*failed|Failed to load'){throw 'HOST_OBJECT_PLUGIN_LOAD=FAIL'}
+            Write-Host 'HOST_OBJECT_PLUGIN_LOAD=PASS'
+          } catch {
+            $logDir=Join-Path $env:APPDATA 'Adobe\Adobe Photoshop 2023\Logs'
+            $latest=Get-ChildItem $logDir -Filter 'UXPLogs_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if($latest){Write-Host "--- PHOTOSHOP UXP LOG ---";Get-Content $latest.FullName -Tail 220 | Write-Host}
+            throw
+          } finally {
+            if($loader -and -not $loader.HasExited){Stop-Process -Id $loader.Id -Force -ErrorAction SilentlyContinue}
+            if($svc -and -not $svc.HasExited){Stop-Process -Id $svc.Id -Force -ErrorAction SilentlyContinue}
+          }
+
+      - name: Prepare exact CORE bridge with Photoshop 24 host-object compatibility
+        timeout-minutes: 2
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $core=Join-Path $env:RUNNER_TEMP 'core-photoshop-mcp-hostobject'
+          if(Test-Path $core){Remove-Item -Recurse -Force $core}
+          git clone https://github.com/CORE-Automate-WSS/photoshop-mcp.git $core
+          if($LASTEXITCODE -ne 0){throw 'CORE clone failed'}
+          git -C $core checkout --detach 586b66499852c801bcdb3b718c036f16f043c1d7
+          if((git -C $core rev-parse HEAD).Trim() -ne '586b66499852c801bcdb3b718c036f16f043c1d7'){throw 'CORE pin mismatch'}
+          $panel=Join-Path $core 'packages\ps-uxp-bridge'
+          $manifestPath=Join-Path $panel 'manifest.json'
+          $manifest=Get-Content $manifestPath -Raw | ConvertFrom-Json
+          if($manifest.host -is [System.Array]){$manifest.host=$manifest.host[0]}
+          if([version]$manifest.host.minVersion -gt [version]'24.0.0'){throw "CORE minVersion incompatible: $($manifest.host.minVersion)"}
+          [IO.File]::WriteAllText($manifestPath,($manifest|ConvertTo-Json -Depth 20),(New-Object Text.UTF8Encoding($false)))
+          $verify=Get-Content $manifestPath -Raw | ConvertFrom-Json
+          if($verify.host -is [System.Array]){throw 'CORE host patch did not convert array to object'}
+          Write-Host "CORE_HOST_OBJECT=$($verify.host | ConvertTo-Json -Compress)"
+
+          $main=Join-Path $panel 'main.js'
+          $src=Get-Content $main -Raw
+          $needle='  log("MCP Bridge initialized");'
+          if(-not $src.Contains($needle)){throw 'CORE init marker not found'}
+          $src=$src.Replace($needle,$needle+"`r`n  setTimeout(connect, 500);")
+          [IO.File]::WriteAllText($main,$src,(New-Object Text.UTF8Encoding($false)))
+          "CORE_PANEL=$panel" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host 'CORE_PS24_HOST_OBJECT_PATCH=PASS'
+
+      - name: Live CORE Photoshop 24 create save export proof
+        timeout-minutes: 4
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $svc=$null;$probe=$null;$loader=$null
+          $svcOut=Join-Path $env:RUNNER_TEMP 'core-service.out'
+          $svcErr=Join-Path $env:RUNNER_TEMP 'core-service.err'
+          $probeOut=Join-Path $env:RUNNER_TEMP 'core-probe.out'
+          $probeErr=Join-Path $env:RUNNER_TEMP 'core-probe.err'
+          $loadOut=Join-Path $env:RUNNER_TEMP 'core-load.out'
+          $loadErr=Join-Path $env:RUNNER_TEMP 'core-load.err'
+          Remove-Item $svcOut,$svcErr,$probeOut,$probeErr,$loadOut,$loadErr -Force -ErrorAction SilentlyContinue
+          try {
+            $svc=Start-Process -FilePath node -ArgumentList @($env:UXP_JS,'service','start','--port','14001') -PassThru -RedirectStandardOutput $svcOut -RedirectStandardError $svcErr
+            $until=[DateTime]::UtcNow.AddSeconds(40);$ready=$false
+            do {
+              Start-Sleep 2
+              node $env:UXP_JS apps list
+              if($LASTEXITCODE -eq 0){$ready=$true;break}
+              if($svc.HasExited){break}
+            } while([DateTime]::UtcNow -lt $until)
+            if(-not $ready){throw 'UXP service/Photoshop discovery failed before CORE load'}
+            Write-Host 'CORE_UXP_DISCOVERY=PASS'
+
+            $out=Join-Path $env:RUNNER_TEMP 'photoshop-core-hostobject-e2e'
+            New-Item -ItemType Directory -Force $out | Out-Null
+            $env:PHOTOSHOP_PROBE_OUT=$out
+            $probe=Start-Process -FilePath node -ArgumentList @((Join-Path $env:GITHUB_WORKSPACE 'scripts\probe_photoshop_core_live.cjs')) -PassThru -RedirectStandardOutput $probeOut -RedirectStandardError $probeErr
+            Start-Sleep 2
+            if($probe.HasExited){throw "CORE probe exited before plugin load rc=$($probe.ExitCode)"}
+            Write-Host 'CORE_PROBE_LISTENER_STARTED=PASS'
+
+            $manifest=Join-Path $env:CORE_PANEL 'manifest.json'
+            $loader=Start-Process -FilePath node -ArgumentList @($env:UXP_JS,'plugin','load','--manifest',$manifest,'--apps','PS') -PassThru -RedirectStandardOutput $loadOut -RedirectStandardError $loadErr
+            if(-not $loader.WaitForExit(20000)){Stop-Process -Id $loader.Id -Force -ErrorAction SilentlyContinue;throw 'CORE plugin load timed out'}
+            $loadText=(if(Test-Path $loadOut){Get-Content $loadOut -Raw}else{''})+"`n"+(if(Test-Path $loadErr){Get-Content $loadErr -Raw}else{''})
+            Write-Host '--- CORE LOAD OUTPUT ---'
+            Write-Host $loadText
+            if($loader.ExitCode -ne 0 -or $loadText -match 'Load command failed|plugin load.*failed|Failed to load'){throw 'CORE plugin load failed after host-object patch'}
+            Write-Host 'CORE_PLUGIN_LOAD=PASS'
+
+            $until=[DateTime]::UtcNow.AddSeconds(125)
+            do {
+              Start-Sleep 2
+              if(-not (Get-Process -Id $probe.Id -ErrorAction SilentlyContinue)){break}
+            } while([DateTime]::UtcNow -lt $until)
+            if(Get-Process -Id $probe.Id -ErrorAction SilentlyContinue){
+              Write-Host '--- PROBE STDOUT SO FAR ---';if(Test-Path $probeOut){Get-Content $probeOut -Raw | Write-Host}
+              Write-Host '--- PROBE STDERR SO FAR ---';if(Test-Path $probeErr){Get-Content $probeErr -Raw | Write-Host}
+              throw 'CORE live probe timed out after successful plugin load'
+            }
+            $stdout=if(Test-Path $probeOut){Get-Content $probeOut -Raw}else{''}
+            $stderr=if(Test-Path $probeErr){Get-Content $probeErr -Raw}else{''}
+            Write-Host '--- CORE PROBE STDOUT ---';Write-Host $stdout
+            Write-Host '--- CORE PROBE STDERR ---';Write-Host $stderr
+            if($stdout -notmatch 'PHOTOSHOP_CORE_PANEL_CONNECTED=PASS'){throw 'CORE panel did not connect to probe'}
+            if($stdout -notmatch 'PHOTOSHOP_24_HOST_VERIFIED=PASS'){throw 'CORE host verification marker missing'}
+            if($stdout -notmatch 'PHOTOSHOP_CORE_PSD_VERIFY=PASS'){throw 'PSD verification marker missing'}
+            if($stdout -notmatch 'PHOTOSHOP_CORE_PNG_VERIFY=PASS'){throw 'PNG verification marker missing'}
+            if($stdout -notmatch 'PHOTOSHOP_24_LIVE_OPERATION_VERIFY=PASS'){throw 'Final live operation marker missing'}
+            Write-Host 'PHOTOSHOP_24_CORE_LIVE_E2E=PASS'
+          } catch {
+            if(Test-Path $svcOut){Write-Host '--- SERVICE STDOUT ---';Get-Content $svcOut -Raw | Write-Host}
+            if(Test-Path $svcErr){Write-Host '--- SERVICE STDERR ---';Get-Content $svcErr -Raw | Write-Host}
+            if(Test-Path $loadOut){Write-Host '--- LOAD STDOUT ---';Get-Content $loadOut -Raw | Write-Host}
+            if(Test-Path $loadErr){Write-Host '--- LOAD STDERR ---';Get-Content $loadErr -Raw | Write-Host}
+            if(Test-Path $probeOut){Write-Host '--- PROBE STDOUT ---';Get-Content $probeOut -Raw | Write-Host}
+            if(Test-Path $probeErr){Write-Host '--- PROBE STDERR ---';Get-Content $probeErr -Raw | Write-Host}
+            $logDir=Join-Path $env:APPDATA 'Adobe\Adobe Photoshop 2023\Logs'
+            $latest=Get-ChildItem $logDir -Filter 'UXPLogs_*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if($latest){Write-Host '--- PHOTOSHOP UXP LOG ---';Get-Content $latest.FullName -Tail 260 | Write-Host}
+            throw
+          } finally {
+            if($loader -and -not $loader.HasExited){Stop-Process -Id $loader.Id -Force -ErrorAction SilentlyContinue}
+            if($probe -and -not $probe.HasExited){Stop-Process -Id $probe.Id -Force -ErrorAction SilentlyContinue}
+            if($svc -and -not $svc.HasExited){Stop-Process -Id $svc.Id -Force -ErrorAction SilentlyContinue}
+          }

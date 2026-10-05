@@ -1,0 +1,149 @@
+name: Targeted Photoshop 24 developer-mode preflight
+
+on:
+  pull_request:
+    branches: [fix/photoshop-path-override]
+    paths:
+      - ".github/workflows/targeted-photoshop-ps24-devmode-preflight.yml"
+
+concurrency:
+  group: targeted-photoshop-devmode-preflight-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Verify Photoshop 24 interactive session and Adobe UXP developer settings
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+
+          $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue |
+            Where-Object {$_.Path} |
+            Select-Object -First 1
+          if(-not $ps){throw 'PHOTOSHOP_HOST=FAIL: Photoshop is not running'}
+
+          $version=([regex]::Match((Get-Item $ps.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
+          Write-Host "PHOTOSHOP_VERSION=$version PID=$($ps.Id) SESSION=$($ps.SessionId) HWND=$($ps.MainWindowHandle)"
+          if(-not $version.StartsWith('24.')){throw "PHOTOSHOP_HOST=FAIL: expected 24.x, got $version"}
+          if($ps.SessionId -ne 1 -or $ps.MainWindowHandle -eq 0){throw 'PHOTOSHOP_HOST=FAIL: Photoshop is not interactive in Session 1'}
+          Write-Host 'PHOTOSHOP_24_INTERACTIVE_HOST=PASS'
+
+          $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+          $principal=New-Object Security.Principal.WindowsPrincipal($identity)
+          $isAdmin=$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          Write-Host "RUNNER_IDENTITY=$($identity.Name) RUNNER_IS_ADMIN=$isAdmin"
+
+          $settings=Join-Path $env:CommonProgramFiles 'Adobe\UXP\Developer\settings.json'
+          Write-Host "UXP_DEVELOPER_SETTINGS=$settings"
+          if(-not (Test-Path $settings)){
+            throw 'UXP_DEVELOPER_MODE=FAIL: settings.json is missing; Adobe requires admin privileges to enable UXP Developer Mode'
+          }
+
+          $raw=Get-Content $settings -Raw
+          Write-Host "UXP_DEVELOPER_SETTINGS_CONTENT=$raw"
+          try {$json=$raw | ConvertFrom-Json} catch {throw "UXP_DEVELOPER_MODE=FAIL: invalid settings.json: $($_.Exception.Message)"}
+          if($json.developer -ne $true){throw 'UXP_DEVELOPER_MODE=FAIL: developer is not true in settings.json'}
+          Write-Host 'UXP_DEVELOPER_MODE=PASS'
+
+          $logDir=Join-Path $env:APPDATA 'Adobe\Adobe Photoshop 2023\Logs'
+          $latest=Get-ChildItem $logDir -Filter 'UXPLogs_*.log' -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if($latest){
+            Write-Host "LATEST_PHOTOSHOP_UXP_LOG=$($latest.FullName)"
+            $recent=Get-Content $latest.FullName -Tail 120 -ErrorAction SilentlyContinue
+            $recent | Where-Object {$_ -match 'Plugin rejected|devtools|Developer|IMS Access token|X_ERR_USER_SIGNEDOUT'} | Write-Host
+          }
+
+          Write-Host 'HOST_DEVELOPER_MODE_NOTE=Photoshop Preferences > Plugins > Enable Developer Mode must also be enabled and Photoshop restarted; Adobe documents this as a separate host setting.'
+          Write-Host 'PHOTOSHOP_24_DEVMODE_PREFLIGHT=PASS'
+
+      - name: Inspect Photoshop host Developer Mode checkbox through UI Automation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class Win32Focus {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+}
+'@
+
+          $ps=Get-Process -Name Photoshop -ErrorAction Stop |
+            Where-Object {$_.Path -and $_.MainWindowHandle -ne 0} |
+            Select-Object -First 1
+          if(-not $ps){throw 'PHOTOSHOP_UIA=FAIL: interactive Photoshop process not found'}
+
+          [Win32Focus]::SetForegroundWindow($ps.MainWindowHandle) | Out-Null
+          Start-Sleep -Milliseconds 500
+          [System.Windows.Forms.SendKeys]::SendWait('^k')
+          Start-Sleep 2
+
+          try {
+            $root=[System.Windows.Automation.AutomationElement]::RootElement
+            $pidCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ProcessIdProperty,$ps.Id)
+            $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$pidCond)
+            Write-Host "PHOTOSHOP_UIA_ELEMENT_COUNT=$($all.Count)"
+
+            $windows=@()
+            for($i=0;$i -lt $all.Count;$i++){
+              $e=$all.Item($i)
+              if($e.Current.ControlType -eq [System.Windows.Automation.ControlType]::Window){
+                $windows += $e
+                Write-Host "UIA_WINDOW name='$($e.Current.Name)' class='$($e.Current.ClassName)' automationId='$($e.Current.AutomationId)'"
+              }
+            }
+
+            $pluginNav=$null
+            for($i=0;$i -lt $all.Count;$i++){
+              $e=$all.Item($i)
+              $n=$e.Current.Name
+              if($n -and ($n -match '^(Plugins|Plug-ins|プラグイン)$')){$pluginNav=$e;break}
+            }
+            if($pluginNav){
+              Write-Host "PHOTOSHOP_UIA_PLUGINS_NAV_FOUND=$($pluginNav.Current.Name)"
+              $pat=$null
+              if($pluginNav.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern,[ref]$pat)){$pat.Select()}
+              elseif($pluginNav.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pat)){$pat.Invoke()}
+              else {Write-Host 'PHOTOSHOP_UIA_PLUGINS_NAV_PATTERN=NONE'}
+              Start-Sleep 1
+              $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$pidCond)
+            } else {
+              Write-Host 'PHOTOSHOP_UIA_PLUGINS_NAV_FOUND=NO'
+            }
+
+            $dev=$null
+            $checkboxNames=@()
+            for($i=0;$i -lt $all.Count;$i++){
+              $e=$all.Item($i)
+              if($e.Current.ControlType -eq [System.Windows.Automation.ControlType]::CheckBox){
+                $checkboxNames += $e.Current.Name
+                if($e.Current.Name -match 'Developer Mode|開発者モード|デベロッパ'){$dev=$e}
+              }
+            }
+            Write-Host ('PHOTOSHOP_UIA_CHECKBOXES=' + ($checkboxNames -join ' | '))
+
+            if(-not $dev){throw 'PHOTOSHOP_HOST_DEVELOPER_MODE=UNKNOWN: checkbox not exposed through UI Automation'}
+            $toggle=$null
+            if(-not $dev.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern,[ref]$toggle)){
+              throw 'PHOTOSHOP_HOST_DEVELOPER_MODE=UNKNOWN: checkbox has no TogglePattern'
+            }
+            $state=$toggle.Current.ToggleState.ToString()
+            Write-Host "PHOTOSHOP_HOST_DEVELOPER_MODE=$state"
+            if($state -eq 'On'){Write-Host 'PHOTOSHOP_HOST_DEVELOPER_MODE_UIA=PASS'}
+            elseif($state -eq 'Off'){throw 'PHOTOSHOP_HOST_DEVELOPER_MODE_UIA=FAIL: Enable Developer Mode is unchecked'}
+            else {throw "PHOTOSHOP_HOST_DEVELOPER_MODE=UNKNOWN: state=$state"}
+          } finally {
+            [Win32Focus]::SetForegroundWindow($ps.MainWindowHandle) | Out-Null
+            [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
+          }

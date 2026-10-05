@@ -1,0 +1,178 @@
+name: Targeted Photoshop 24 Generator bridge live
+
+on:
+  pull_request:
+    branches: [fix/photoshop-path-override]
+    paths:
+      - ".github/workflows/targeted-photoshop-ps24-uxp120-npm.yml"
+
+concurrency:
+  group: targeted-photoshop-generator-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '20'
+
+      - name: Establish direct JSX control of Photoshop 24
+        timeout-minutes: 2
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.Path} | Select-Object -First 1
+          if(-not $ps){throw 'Photoshop is not running'}
+          $version=([regex]::Match((Get-Item $ps.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
+          if(-not $version.StartsWith('24.')){throw "Expected Photoshop 24.x, got $version"}
+          "PHOTOSHOP_EXE=$($ps.Path)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "PHOTOSHOP_VERSION=$version SESSION=$($ps.SessionId) EXE=$($ps.Path)"
+
+          $marker=Join-Path $env:RUNNER_TEMP 'mcp_adobe_ps24_jsx_marker.txt'
+          $jsx=Join-Path $env:RUNNER_TEMP 'mcp_adobe_ps24_probe.jsx'
+          $markerJs=$marker.Replace('\\','/')
+          $script="var f=new File('$markerJs');f.open('w');f.write('PHOTOSHOP_JSX_CONTROL=PASS|'+app.version);f.close();"
+          [IO.File]::WriteAllText($jsx,$script,(New-Object Text.UTF8Encoding($false)))
+
+          function Test-Mode([string]$mode,[string[]]$args) {
+            Remove-Item $marker -Force -ErrorAction SilentlyContinue
+            Write-Host "JSX_MODE_TRY=$mode ARGS=$($args -join ' ')"
+            try { Start-Process -FilePath $ps.Path -ArgumentList $args -ErrorAction Stop | Out-Null } catch { Write-Host "JSX_MODE_START_ERROR=$($_.Exception.Message)" }
+            $deadline=[DateTime]::UtcNow.AddSeconds(12)
+            do { if(Test-Path $marker){return $true}; Start-Sleep 1 } while([DateTime]::UtcNow -lt $deadline)
+            return $false
+          }
+
+          $mode=$null
+          if(Test-Mode 'dash-r' @('-r',$jsx)){$mode='dash-r'}
+          elseif(Test-Mode 'direct-file' @($jsx)){$mode='direct-file'}
+          else {
+            Remove-Item $marker -Force -ErrorAction SilentlyContinue
+            try { Start-Process -FilePath $jsx -ErrorAction Stop | Out-Null } catch { Write-Host "JSX_ASSOC_START_ERROR=$($_.Exception.Message)" }
+            $deadline=[DateTime]::UtcNow.AddSeconds(12)
+            do { if(Test-Path $marker){$mode='association';break}; Start-Sleep 1 } while([DateTime]::UtcNow -lt $deadline)
+          }
+          if(-not $mode){throw 'No external JSX execution path reached the running Photoshop instance'}
+          $text=Get-Content $marker -Raw
+          Write-Host "JSX_MODE=$mode $text"
+          if($text -notmatch '^PHOTOSHOP_JSX_CONTROL=PASS\|24\.'){throw "Unexpected JSX marker: $text"}
+          "JSX_CONTROL_MODE=$mode" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host 'PHOTOSHOP_JSX_CONTROL=PASS'
+
+      - name: Build pinned Generator bridge and install locally
+        timeout-minutes: 3
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $src=Join-Path $env:RUNNER_TEMP 'photoshop-generator-bridge'
+          if(Test-Path $src){Remove-Item -Recurse -Force $src}
+          git clone https://github.com/emptykid/photoshop-manipulate-bridge.git $src
+          git -C $src checkout --detach c44e4b38a733a05a167b93b2522d2d9d4fb40706
+          if((git -C $src rev-parse HEAD).Trim() -ne 'c44e4b38a733a05a167b93b2522d2d9d4fb40706'){throw 'Generator upstream pin mismatch'}
+
+          $server=Join-Path $src 'src\server.ts'
+          $code=Get-Content $server -Raw
+          $needle='server.listen(this.port, () => {'
+          if(-not $code.Contains($needle)){throw 'Expected Generator listen call not found'}
+          $code=$code.Replace($needle,"server.listen(this.port, '127.0.0.1', () => {")
+          [IO.File]::WriteAllText($server,$code,(New-Object Text.UTF8Encoding($false)))
+          Write-Host 'GENERATOR_BRIDGE_LOOPBACK_ONLY_PATCH=PASS'
+
+          Push-Location $src
+          try {
+            npm install --no-audit --no-fund
+            if($LASTEXITCODE -ne 0){throw 'Generator bridge npm install failed'}
+            npm run build
+            if($LASTEXITCODE -ne 0){throw 'Generator bridge build failed'}
+          } finally { Pop-Location }
+          if(-not (Test-Path (Join-Path $src 'dist\index.js'))){throw 'Generator dist/index.js missing'}
+
+          $dest=Join-Path $env:CommonProgramFiles 'Adobe\Plug-Ins\CC\Generator\photoshop-manipulate-bridge'
+          try {
+            New-Item -ItemType Directory -Force $dest | Out-Null
+            Copy-Item (Join-Path $src 'dist\*') $dest -Recurse -Force
+          } catch {
+            Write-Host "GENERATOR_COMMON_INSTALL_ERROR=$($_.Exception.Message)"
+            throw 'Cannot install Generator bridge into Adobe Generator folder with current runner permissions'
+          }
+          if(-not (Test-Path (Join-Path $dest 'index.js'))){throw 'Generator bridge install verification failed'}
+          Write-Host "GENERATOR_BRIDGE_INSTALLED=$dest"
+          Write-Host 'GENERATOR_BRIDGE_BUILD_INSTALL=PASS'
+
+      - name: Enable Generator through JSX and wait for loopback bridge
+        timeout-minutes: 2
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $marker=Join-Path $env:RUNNER_TEMP 'mcp_adobe_generator_enable.txt'
+          $jsx=Join-Path $env:RUNNER_TEMP 'mcp_adobe_enable_generator.jsx'
+          $markerJs=$marker.Replace('\\','/')
+          $script=@"
+try {
+  $.evalFile(File(app.path + '/Presets/Scripts/generate.jsx'));
+  var f=new File('$markerJs');f.open('w');f.write('GENERATOR_ENABLE_JSX=PASS');f.close();
+} catch(e) {
+  var f2=new File('$markerJs');f2.open('w');f2.write('GENERATOR_ENABLE_JSX=FAIL|'+e.toString());f2.close();
+}
+"@
+          [IO.File]::WriteAllText($jsx,$script,(New-Object Text.UTF8Encoding($false)))
+          Remove-Item $marker -Force -ErrorAction SilentlyContinue
+          if($env:JSX_CONTROL_MODE -eq 'dash-r'){Start-Process -FilePath $env:PHOTOSHOP_EXE -ArgumentList @('-r',$jsx) | Out-Null}
+          elseif($env:JSX_CONTROL_MODE -eq 'direct-file'){Start-Process -FilePath $env:PHOTOSHOP_EXE -ArgumentList @($jsx) | Out-Null}
+          else {Start-Process -FilePath $jsx | Out-Null}
+          $deadline=[DateTime]::UtcNow.AddSeconds(20)
+          do { if(Test-Path $marker){break};Start-Sleep 1 } while([DateTime]::UtcNow -lt $deadline)
+          if(-not (Test-Path $marker)){throw 'Generator enable JSX did not execute'}
+          $enable=Get-Content $marker -Raw
+          Write-Host $enable
+          if($enable -notmatch '^GENERATOR_ENABLE_JSX=PASS'){throw $enable}
+
+          $bridgeReady=$false
+          $deadline=[DateTime]::UtcNow.AddSeconds(35)
+          do {
+            try {
+              $r=Invoke-RestMethod -Uri 'http://127.0.0.1:8020/status' -TimeoutSec 2
+              if($r.status -eq 'running'){$bridgeReady=$true;break}
+            } catch {}
+            Start-Sleep 2
+          } while([DateTime]::UtcNow -lt $deadline)
+          if(-not $bridgeReady){
+            $genLogs=Join-Path $env:APPDATA 'Adobe\Adobe Photoshop 2023\Logs\Generator'
+            if(Test-Path $genLogs){Get-ChildItem $genLogs -File | Sort-Object LastWriteTime -Descending | Select-Object -First 3 | ForEach-Object {Write-Host "--- GENERATOR LOG $($_.FullName) ---";Get-Content $_.FullName -Tail 120 -ErrorAction SilentlyContinue}}
+            throw 'Generator was enabled but bridge did not become reachable on 127.0.0.1:8020; Photoshop may require a graceful restart to discover the newly installed Generator plugin'
+          }
+          Write-Host 'GENERATOR_BRIDGE_STATUS=PASS'
+
+      - name: Create save and export through Generator bridge
+        timeout-minutes: 2
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $out=Join-Path $env:RUNNER_TEMP 'mcp-adobe-generator-live'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $psd=Join-Path $out 'generator-live.psd'
+          $png=Join-Path $out 'generator-live.png'
+          Remove-Item $psd,$png -Force -ErrorAction SilentlyContinue
+          $psdJs=$psd.Replace('\\','/')
+          $pngJs=$png.Replace('\\','/')
+          $jsx="var d=app.documents.add(320,240,72,'MCP Adobe Generator Live');var p=new File('$psdJs');var po=new PhotoshopSaveOptions();po.layers=true;d.saveAs(p,po,true,Extension.LOWERCASE);var n=new File('$pngJs');var no=new PNGSaveOptions();d.saveAs(n,no,true,Extension.LOWERCASE);'MCP_GENERATOR_WRITE=PASS|'+d.name;"
+          $body=@{script=$jsx} | ConvertTo-Json -Compress
+          $resp=Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8020/execute' -ContentType 'application/json' -Body $body -TimeoutSec 30
+          $resp | ConvertTo-Json -Depth 8
+          if(-not $resp.success){throw 'Generator execute endpoint returned failure'}
+          if(-not (Test-Path $psd)){throw 'PSD was not created'}
+          if(-not (Test-Path $png)){throw 'PNG was not created'}
+          $pb=[IO.File]::ReadAllBytes($psd)
+          $nb=[IO.File]::ReadAllBytes($png)
+          if($pb.Length -lt 4 -or [Text.Encoding]::ASCII.GetString($pb,0,4) -ne '8BPS'){throw 'PSD signature invalid'}
+          $pngSig=@(137,80,78,71,13,10,26,10)
+          for($i=0;$i -lt 8;$i++){if($nb[$i] -ne $pngSig[$i]){throw 'PNG signature invalid'}}
+          Write-Host "PSD_BYTES=$($pb.Length) PNG_BYTES=$($nb.Length)"
+          Write-Host 'PHOTOSHOP_GENERATOR_CREATE_SAVE_EXPORT=PASS'
