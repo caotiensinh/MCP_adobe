@@ -27,7 +27,7 @@ jobs:
           Add-Type -AssemblyName UIAutomationTypes
           Add-Type -AssemblyName System.Windows.Forms
           Add-Type -AssemblyName System.Drawing
-          Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; using System.Text; public static class Win32Diag { [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; } [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId); [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count); [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect); }'
+          Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; using System.Text; public static class Win32Diag { [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; } [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd); [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId); [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count); [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect); [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach); [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hWnd); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int cmdShow); [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId(); public static bool ForceForeground(IntPtr hWnd) { uint ignore; IntPtr fg=GetForegroundWindow(); uint fgThread=GetWindowThreadProcessId(fg,out ignore); uint targetThread=GetWindowThreadProcessId(hWnd,out ignore); uint currentThread=GetCurrentThreadId(); bool a=false,b=false; try { if(currentThread!=fgThread) a=AttachThreadInput(currentThread,fgThread,true); if(currentThread!=targetThread) b=AttachThreadInput(currentThread,targetThread,true); ShowWindow(hWnd,9); BringWindowToTop(hWnd); return SetForegroundWindow(hWnd); } finally { if(b) AttachThreadInput(currentThread,targetThread,false); if(a) AttachThreadInput(currentThread,fgThread,false); } } }'
 
           function Get-ForegroundInfo {
             $hwnd=[Win32Diag]::GetForegroundWindow()
@@ -48,22 +48,22 @@ jobs:
           if($ps.SessionId -ne 1){throw "PHOTOSHOP_HOST=FAIL: expected Session 1, got $($ps.SessionId)"}
 
           $set=[Win32Diag]::SetForegroundWindow([IntPtr]$ps.MainWindowHandle)
-          Start-Sleep -Milliseconds 700
+          Start-Sleep -Milliseconds 500
           $fg=Get-ForegroundInfo
           Write-Host "SET_FOREGROUND=$set FOREGROUND_PID=$($fg.ProcessId) FOREGROUND_HWND=$($fg.Hwnd) FOREGROUND_TITLE=$($fg.Title)"
           if($fg.ProcessId -ne $ps.Id){
-            $shell=New-Object -ComObject WScript.Shell
-            [void]$shell.AppActivate($ps.Id)
+            $forced=[Win32Diag]::ForceForeground([IntPtr]$ps.MainWindowHandle)
             Start-Sleep -Milliseconds 700
             $fg=Get-ForegroundInfo
-            Write-Host "APPACTIVATE_FOREGROUND_PID=$($fg.ProcessId) TITLE=$($fg.Title)"
+            Write-Host "FORCE_FOREGROUND=$forced FOREGROUND_PID=$($fg.ProcessId) HWND=$($fg.Hwnd) TITLE=$($fg.Title)"
           }
-          if($fg.ProcessId -ne $ps.Id){throw 'PHOTOSHOP_FOCUS=FAIL: refusing to send keys to a non-Photoshop foreground window'}
+          if($fg.ProcessId -ne $ps.Id){throw 'PHOTOSHOP_FOCUS=FAIL: Windows foreground lock still blocks Photoshop; refusing to send keys'}
 
           [System.Windows.Forms.SendKeys]::SendWait('^k')
           Start-Sleep 2
           $after=Get-ForegroundInfo
           Write-Host "AFTER_CTRL_K_PID=$($after.ProcessId) HWND=$($after.Hwnd) TITLE=$($after.Title)"
+          if($after.ProcessId -ne $ps.Id){throw 'PHOTOSHOP_PREFERENCES=FAIL: Ctrl+K did not leave a Photoshop-owned foreground window'}
 
           $rect=New-Object Win32Diag+RECT
           if(-not [Win32Diag]::GetWindowRect([IntPtr]$ps.MainWindowHandle,[ref]$rect)){throw 'PHOTOSHOP_SCREENSHOT=FAIL: GetWindowRect failed'}
@@ -88,7 +88,7 @@ jobs:
               if($name){Write-Host "UIA=[$($e.Current.ControlType.ProgrammaticName)] $name"}
             }
           } finally {
-            if($after.ProcessId -eq $ps.Id){[System.Windows.Forms.SendKeys]::SendWait('{ESC}')}
+            [System.Windows.Forms.SendKeys]::SendWait('{ESC}')
           }
 
           Write-Host 'PHOTOSHOP_HOST_DEVELOPER_MODE=UNKNOWN_PENDING_SCREENSHOT_REVIEW'
