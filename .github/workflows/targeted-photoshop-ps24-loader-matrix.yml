@@ -1,4 +1,4 @@
-name: Targeted Photoshop 24 Generator live
+name: Targeted Photoshop 24 packaged UXP live
 
 on:
   pull_request:
@@ -7,7 +7,7 @@ on:
       - ".github/workflows/targeted-photoshop-ps24-loader-matrix.yml"
 
 concurrency:
-  group: targeted-photoshop-generator-live-${{ github.event.pull_request.number }}
+  group: targeted-photoshop-packaged-uxp-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
@@ -23,8 +23,7 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Prove external JSX control
-        timeout-minutes: 2
+      - name: Verify Photoshop 24 host and installer
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -32,125 +31,92 @@ jobs:
           if(-not $ps){throw 'Photoshop is not running'}
           $v=([regex]::Match((Get-Item $ps.Path).VersionInfo.ProductVersion,'\d+\.\d+(?:\.\d+)?')).Value
           if(-not $v.StartsWith('24.')){throw "Expected Photoshop 24.x, got $v"}
-          "PHOTOSHOP_EXE=$($ps.Path)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "PHOTOSHOP_VERSION=$v PID=$($ps.Id) SESSION=$($ps.SessionId)"
-
-          $marker=Join-Path $env:RUNNER_TEMP 'ps24-jsx-marker.txt'
-          $jsx=Join-Path $env:RUNNER_TEMP 'ps24-marker.jsx'
-          $m=$marker.Replace('\\','/')
-          $script="var f=new File('$m');f.open('w');f.write('PASS|'+app.version);f.close();"
-          [IO.File]::WriteAllText($jsx,$script,(New-Object Text.UTF8Encoding($false)))
-
-          function Try-Jsx([string]$mode,[string[]]$argv) {
-            Remove-Item $marker -Force -ErrorAction SilentlyContinue
-            Write-Host "TRY_JSX_MODE=$mode"
-            try { Start-Process -FilePath $ps.Path -ArgumentList $argv -ErrorAction Stop | Out-Null } catch { Write-Host "START_ERROR=$($_.Exception.Message)" }
-            $until=[DateTime]::UtcNow.AddSeconds(12)
-            do { if(Test-Path $marker){return $true};Start-Sleep 1 } while([DateTime]::UtcNow -lt $until)
-            return $false
+          $upi='C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe'
+          if(-not (Test-Path $upi)){
+            $upi=Get-ChildItem 'C:\Program Files\Common Files\Adobe' -Filter 'UnifiedPluginInstallerAgent.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
           }
+          if(-not $upi){throw 'UnifiedPluginInstallerAgent.exe not found'}
+          "UPI_EXE=$upi" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "PHOTOSHOP_VERSION=$v SESSION=$($ps.SessionId)"
+          Write-Host "UPI_EXE=$upi"
+          Write-Host 'PACKAGED_UXP_PREREQUISITES=PASS'
 
-          $mode=$null
-          if(Try-Jsx 'dash-r' @('-r',$jsx)){$mode='dash-r'}
-          elseif(Try-Jsx 'direct-file' @($jsx)){$mode='direct-file'}
-          else {
-            Remove-Item $marker -Force -ErrorAction SilentlyContinue
-            try { Start-Process -FilePath $jsx -ErrorAction Stop | Out-Null } catch { Write-Host "ASSOCIATION_ERROR=$($_.Exception.Message)" }
-            $until=[DateTime]::UtcNow.AddSeconds(12)
-            do { if(Test-Path $marker){$mode='association';break};Start-Sleep 1 } while([DateTime]::UtcNow -lt $until)
-          }
-          if(-not $mode){throw 'NO_EXTERNAL_JSX_CONTROL_PATH'}
-          $result=Get-Content $marker -Raw
-          Write-Host "JSX_MODE=$mode RESULT=$result"
-          if($result -notmatch '^PASS\|24\.'){throw "Unexpected JSX result: $result"}
-          "JSX_CONTROL_MODE=$mode" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host 'PHOTOSHOP_JSX_CONTROL=PASS'
-
-      - name: Build and install pinned Generator bridge
-        timeout-minutes: 3
+      - name: Install Adobe packaging CLI
+        timeout-minutes: 2
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $src=Join-Path $env:RUNNER_TEMP 'ps-generator-bridge'
-          if(Test-Path $src){Remove-Item -Recurse -Force $src}
-          git clone https://github.com/emptykid/photoshop-manipulate-bridge.git $src
-          if($LASTEXITCODE -ne 0){throw 'Generator clone failed'}
-          git -C $src checkout --detach c44e4b38a733a05a167b93b2522d2d9d4fb40706
-          if((git -C $src rev-parse HEAD).Trim() -ne 'c44e4b38a733a05a167b93b2522d2d9d4fb40706'){throw 'Generator pin mismatch'}
-
-          $server=Join-Path $src 'src\server.ts'
-          $code=Get-Content $server -Raw
-          $needle='server.listen(this.port, () => {'
-          if(-not $code.Contains($needle)){throw 'Generator listen call changed'}
-          $code=$code.Replace($needle,"server.listen(this.port, '127.0.0.1', () => {")
-          [IO.File]::WriteAllText($server,$code,(New-Object Text.UTF8Encoding($false)))
-
-          Push-Location $src
+          $tool=Join-Path $env:RUNNER_TEMP 'uxp120-package-cli'
+          if(Test-Path $tool){Remove-Item -Recurse -Force $tool}
+          New-Item -ItemType Directory -Force $tool | Out-Null
+          Push-Location $tool
           try {
-            npm install --no-audit --no-fund
-            if($LASTEXITCODE -ne 0){throw 'Generator npm install failed'}
-            npm run build
-            if($LASTEXITCODE -ne 0){throw 'Generator build failed'}
+            npm init -y | Out-Null
+            npm install --ignore-scripts --no-audit --no-fund --fetch-retries=2 --fetch-timeout=60000 @adobe/uxp-devtools-cli@1.2.0 tar@6 fs-extra@9
+            if($LASTEXITCODE -ne 0){throw 'Adobe UXP CLI install failed'}
           } finally { Pop-Location }
-          if(-not (Test-Path (Join-Path $src 'dist\index.js'))){throw 'Generator dist/index.js missing'}
+          $uxp=Join-Path $tool 'node_modules\@adobe\uxp-devtools-cli\src\uxp.js'
+          if(-not (Test-Path $uxp)){throw 'UXP CLI entry missing'}
+          "UXP_JS=$uxp" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host 'UXP_PACKAGING_CLI=PASS'
 
-          $dest=Join-Path $env:CommonProgramFiles 'Adobe\Plug-Ins\CC\Generator\photoshop-manipulate-bridge'
-          New-Item -ItemType Directory -Force $dest | Out-Null
-          Copy-Item (Join-Path $src 'dist\*') $dest -Recurse -Force
-          if(-not (Test-Path (Join-Path $dest 'index.js'))){throw 'Generator install verify failed'}
-          Write-Host "GENERATOR_DEST=$dest"
-          Write-Host 'GENERATOR_BUILD_INSTALL=PASS'
-
-      - name: Enable Generator and prove HTTP bridge
+      - name: Package minimal Photoshop plugin as CCX
         timeout-minutes: 2
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $marker=Join-Path $env:RUNNER_TEMP 'generator-enable-marker.txt'
-          $jsx=Join-Path $env:RUNNER_TEMP 'enable-generator.jsx'
-          $m=$marker.Replace('\\','/')
-          $script="try{$.evalFile(File(app.path+'/Presets/Scripts/generate.jsx'));var f=new File('$m');f.open('w');f.write('PASS');f.close();}catch(e){var f=new File('$m');f.open('w');f.write('FAIL|'+e.toString());f.close();}"
-          [IO.File]::WriteAllText($jsx,$script,(New-Object Text.UTF8Encoding($false)))
-          Remove-Item $marker -Force -ErrorAction SilentlyContinue
-          if($env:JSX_CONTROL_MODE -eq 'dash-r'){Start-Process -FilePath $env:PHOTOSHOP_EXE -ArgumentList @('-r',$jsx) | Out-Null}
-          elseif($env:JSX_CONTROL_MODE -eq 'direct-file'){Start-Process -FilePath $env:PHOTOSHOP_EXE -ArgumentList @($jsx) | Out-Null}
-          else {Start-Process -FilePath $jsx | Out-Null}
-          $until=[DateTime]::UtcNow.AddSeconds(20)
-          do { if(Test-Path $marker){break};Start-Sleep 1 } while([DateTime]::UtcNow -lt $until)
-          if(-not (Test-Path $marker)){throw 'Generator enable JSX did not execute'}
-          $result=Get-Content $marker -Raw
-          Write-Host "GENERATOR_ENABLE_RESULT=$result"
-          if($result -notmatch '^PASS'){throw $result}
+          $dir=Join-Path $env:RUNNER_TEMP 'ps24-packaged-probe'
+          $out=Join-Path $env:RUNNER_TEMP 'ps24-packaged-output'
+          Remove-Item $dir,$out -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $dir,$out | Out-Null
+          $utf8=New-Object System.Text.UTF8Encoding($false)
+          $manifest=[ordered]@{
+            id='com.mcpadobe.ps24.packagedprobe'
+            name='MCP Adobe PS24 Packaged Probe'
+            version='1.0.0'
+            main='index.html'
+            host=@([ordered]@{app='PS';minVersion='22.0.0'})
+            manifestVersion=4
+            entrypoints=@([ordered]@{type='panel';id='packagedprobe';minimumSize=[ordered]@{width=230;height=200};maximumSize=[ordered]@{width=2000;height=2000};preferredDockedSize=[ordered]@{width=230;height=200};preferredFloatingSize=[ordered]@{width=300;height=250};label=[ordered]@{default='MCP Packaged Probe'}})
+          }
+          [IO.File]::WriteAllText((Join-Path $dir 'manifest.json'),($manifest|ConvertTo-Json -Depth 12),$utf8)
+          [IO.File]::WriteAllText((Join-Path $dir 'index.html'),'<!doctype html><html><body><h3>MCP Adobe Packaged Probe</h3><div id="state">loaded</div><script src="main.js"></script></body></html>',$utf8)
+          [IO.File]::WriteAllText((Join-Path $dir 'main.js'),'console.log("MCP_ADOBE_PACKAGED_PROBE_BOOT=PASS");',$utf8)
+          Push-Location $dir
+          try {
+            node $env:UXP_JS plugin package --manifest (Join-Path $dir 'manifest.json') --apps PS --outputPath $out
+            if($LASTEXITCODE -ne 0){throw 'UXP plugin package command failed'}
+          } finally { Pop-Location }
+          Get-ChildItem $out -Force | Format-List FullName,Length,LastWriteTime
+          $ccx=Get-ChildItem $out -Filter '*.ccx' -File -Recurse | Select-Object -First 1 -ExpandProperty FullName
+          if(-not $ccx){throw 'No CCX package produced'}
+          "CCX_FILE=$ccx" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "CCX_FILE=$ccx"
+          Write-Host 'PHOTOSHOP_CCX_PACKAGE=PASS'
 
-          $ready=$false
-          $until=[DateTime]::UtcNow.AddSeconds(35)
-          do {
-            try {$r=Invoke-RestMethod 'http://127.0.0.1:8020/status' -TimeoutSec 2;if($r.status -eq 'running'){$ready=$true;break}} catch {}
-            Start-Sleep 2
-          } while([DateTime]::UtcNow -lt $until)
-          if(-not $ready){throw 'GENERATOR_BRIDGE_NOT_REACHABLE_AFTER_ENABLE'}
-          Write-Host 'GENERATOR_HTTP_BRIDGE=PASS'
-
-      - name: Create PSD and PNG through Photoshop
+      - name: Install CCX with Adobe Unified Plugin Installer
         timeout-minutes: 2
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $out=Join-Path $env:RUNNER_TEMP 'ps-generator-e2e'
-          New-Item -ItemType Directory -Force $out | Out-Null
-          $psd=Join-Path $out 'live.psd';$png=Join-Path $out 'live.png'
-          Remove-Item $psd,$png -Force -ErrorAction SilentlyContinue
-          $p=$psd.Replace('\\','/');$n=$png.Replace('\\','/')
-          $jsx="var d=app.documents.add(320,240,72,'MCP Adobe Generator Live');var f1=new File('$p');var o1=new PhotoshopSaveOptions();o1.layers=true;d.saveAs(f1,o1,true,Extension.LOWERCASE);var f2=new File('$n');var o2=new PNGSaveOptions();d.saveAs(f2,o2,true,Extension.LOWERCASE);'PASS';"
-          $body=@{script=$jsx}|ConvertTo-Json -Compress
-          $resp=Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8020/execute' -ContentType 'application/json' -Body $body -TimeoutSec 30
-          $resp|ConvertTo-Json -Depth 8
-          if(-not $resp.success){throw 'Generator execute failed'}
-          if(-not (Test-Path $psd)){throw 'PSD missing'}
-          if(-not (Test-Path $png)){throw 'PNG missing'}
-          $pb=[IO.File]::ReadAllBytes($psd);$nb=[IO.File]::ReadAllBytes($png)
-          if([Text.Encoding]::ASCII.GetString($pb,0,4) -ne '8BPS'){throw 'PSD signature invalid'}
-          $sig=@(137,80,78,71,13,10,26,10)
-          for($i=0;$i -lt 8;$i++){if($nb[$i] -ne $sig[$i]){throw 'PNG signature invalid'}}
-          Write-Host "PSD_BYTES=$($pb.Length) PNG_BYTES=$($nb.Length)"
-          Write-Host 'PHOTOSHOP_GENERATOR_CREATE_SAVE_EXPORT=PASS'
+          Write-Host '--- BEFORE INSTALL ---'
+          & $env:UPI_EXE /list all 2>&1 | Out-String | Write-Host
+          $p=Start-Process -FilePath $env:UPI_EXE -ArgumentList @('/install',('"'+$env:CCX_FILE+'"')) -PassThru -Wait
+          Write-Host "UPI_INSTALL_RC=$($p.ExitCode)"
+          Start-Sleep 4
+          Write-Host '--- AFTER INSTALL ---'
+          $list=(& $env:UPI_EXE /list all 2>&1 | Out-String)
+          Write-Host $list
+          $external=Join-Path $env:APPDATA 'Adobe\UXP\Plugins\External'
+          if(Test-Path $external){
+            Write-Host "--- EXTERNAL UXP ROOT: $external ---"
+            Get-ChildItem $external -Directory -Recurse -ErrorAction SilentlyContinue | Select-Object -First 80 -ExpandProperty FullName | Write-Host
+          }
+          $found=$false
+          if($list -match 'MCP Adobe PS24 Packaged Probe|com\.mcpadobe\.ps24\.packagedprobe'){$found=$true}
+          if(Test-Path $external){
+            $hits=Get-ChildItem $external -File -Filter manifest.json -Recurse -ErrorAction SilentlyContinue | Where-Object {(Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue) -match 'com\.mcpadobe\.ps24\.packagedprobe'}
+            if($hits){$found=$true;$hits | ForEach-Object {Write-Host "INSTALLED_MANIFEST=$($_.FullName)"}}
+          }
+          if(-not $found){throw 'CCX installer returned without verifiable installed plugin'}
+          Write-Host 'PHOTOSHOP_PACKAGED_UXP_INSTALL=PASS'
