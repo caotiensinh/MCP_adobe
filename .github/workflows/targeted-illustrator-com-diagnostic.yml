@@ -1,0 +1,86 @@
+name: Targeted Illustrator COM diagnostic
+
+on:
+  push:
+    branches: [test/adobe-logo-live]
+    paths:
+      - ".github/workflows/targeted-illustrator-com-diagnostic.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Discover Illustrator
+        id: adobe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          ./scripts/adobe_inventory.ps1 -GitHubOutput
+
+      - name: Start Illustrator and inspect COM registration
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          $aiPath='${{ steps.adobe.outputs.illustrator }}'
+          if([string]::IsNullOrWhiteSpace($aiPath)){ throw 'Illustrator executable was not discovered' }
+          Write-Host "ILLUSTRATOR_EXE=$aiPath"
+
+          if(-not (Get-Process -Name Illustrator -ErrorAction SilentlyContinue)) {
+            Start-Process -FilePath $aiPath
+            Start-Sleep -Seconds 10
+          }
+
+          Get-Process -Name Illustrator -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "ILLUSTRATOR_PROCESS PID=$($_.Id) SESSION=$($_.SessionId) HWND=$($_.MainWindowHandle) PATH=$($_.Path)"
+          }
+
+          Write-Host '--- ProgID registry ---'
+          $progKey='Registry::HKEY_CLASSES_ROOT\Illustrator.Application\CLSID'
+          if(Test-Path $progKey) {
+            $clsid=(Get-ItemProperty -LiteralPath $progKey).'(default)'
+            if(-not $clsid){ $clsid=(Get-Item -LiteralPath $progKey).GetValue('') }
+            Write-Host "ILLUSTRATOR_CLSID=$clsid"
+            if($clsid) {
+              $localServer="Registry::HKEY_CLASSES_ROOT\CLSID\$clsid\LocalServer32"
+              if(Test-Path $localServer) {
+                $server=(Get-Item -LiteralPath $localServer).GetValue('')
+                Write-Host "ILLUSTRATOR_LOCALSERVER32=$server"
+              } else {
+                Write-Host "ILLUSTRATOR_LOCALSERVER32=MISSING"
+              }
+            }
+          } else {
+            Write-Host 'ILLUSTRATOR_PROGID_CLSID=MISSING'
+          }
+
+          Write-Host '--- Direct COM activation ---'
+          try {
+            $t=[type]::GetTypeFromProgID('Illustrator.Application',$false)
+            if($null -eq $t){ Write-Host 'ILLUSTRATOR_PROGID_TYPE=NULL' } else { Write-Host "ILLUSTRATOR_PROGID_TYPE=$($t.FullName)" }
+          } catch {
+            Write-Host "ILLUSTRATOR_PROGID_TYPE_ERROR=$($_.Exception.Message)"
+          }
+
+          try {
+            $ai=New-Object -ComObject 'Illustrator.Application' -ErrorAction Stop
+            Write-Host "ILLUSTRATOR_COM=PASS VERSION=$($ai.Version) VISIBLE=$($ai.Visible)"
+            try {
+              $v=$ai.DoJavaScript('app.version')
+              Write-Host "ILLUSTRATOR_DOJAVASCRIPT=PASS RESULT=$v"
+            } catch {
+              Write-Host "ILLUSTRATOR_DOJAVASCRIPT=FAIL HRESULT=0x$('{0:X8}' -f ($_.Exception.HResult -band 0xffffffff)) MESSAGE=$($_.Exception.Message)"
+              exit 3
+            }
+          } catch {
+            $hr=$_.Exception.HResult
+            Write-Host "ILLUSTRATOR_COM=FAIL HRESULT=0x$('{0:X8}' -f ($hr -band 0xffffffff)) MESSAGE=$($_.Exception.Message)"
+            if($_.Exception.InnerException){ Write-Host "ILLUSTRATOR_COM_INNER=$($_.Exception.InnerException.Message)" }
+            exit 2
+          }
