@@ -20,10 +20,9 @@ class ToolBinding:
     risk: RiskClass
 
 
-# Curated bounded interaction surface. Prefer these object/path/text operations
-# for conversational editing instead of monolithic generated scripts.
 _BINDINGS: dict[str, ToolBinding] = {
     "creative.health": ToolBinding("list_fonts", RiskClass.READ),
+    "creative.context.get": ToolBinding("get_document_info", RiskClass.READ),
     "creative.document.info": ToolBinding("get_document_info", RiskClass.READ),
     "creative.document.structure": ToolBinding("get_document_structure", RiskClass.READ),
     "creative.selection.get": ToolBinding("get_selection", RiskClass.READ),
@@ -55,15 +54,7 @@ _BINDINGS: dict[str, ToolBinding] = {
 
 
 class IllustratorAdapter:
-    """Thin adapter over the pinned ie3jp Illustrator MCP tool surface."""
-
-    def __init__(
-        self,
-        client: UpstreamToolClient,
-        *,
-        version: str | None = None,
-        writes_enabled: bool = True,
-    ) -> None:
+    def __init__(self, client: UpstreamToolClient, *, version: str | None = None, writes_enabled: bool = True) -> None:
         self._client = client
         self._version = version
         self._writes_enabled = writes_enabled
@@ -108,32 +99,15 @@ class IllustratorAdapter:
     def probe_ready(self) -> Mapping[str, Any]:
         now = time.monotonic()
         if self._ready_until > now:
-            return {
-                "ready": True,
-                "application": "illustrator",
-                "source": "list_fonts",
-                "cached": True,
-            }
+            return {"ready": True, "application": "illustrator", "source": "list_fonts", "cached": True}
         try:
             result = self._client.call_tool("list_fonts", {"limit": 1})
         except Exception:
             self._ready_until = 0.0
-            return {
-                "ready": False,
-                "application": "illustrator",
-                "source": "list_fonts",
-                "cached": False,
-                "reason": "illustrator_health_probe_failed",
-            }
+            return {"ready": False, "application": "illustrator", "source": "list_fonts", "cached": False, "reason": "illustrator_health_probe_failed"}
         ready = self._health_ready(result)
         self._ready_until = now + READINESS_TTL_SECONDS if ready else 0.0
-        return {
-            "ready": ready,
-            "application": "illustrator",
-            "source": "list_fonts",
-            "cached": False,
-            "reason": None if ready else "illustrator_health_probe_not_ready",
-        }
+        return {"ready": ready, "application": "illustrator", "source": "list_fonts", "cached": False, "reason": None if ready else "illustrator_health_probe_not_ready"}
 
     def execute(self, capability: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         try:
@@ -141,16 +115,19 @@ class IllustratorAdapter:
         except KeyError as exc:
             raise LookupError(f"unsupported Illustrator capability: {capability}") from exc
 
-        file_snapshot = (
-            capture_file_snapshot(arguments)
-            if binding.risk is RiskClass.FILE_WRITE
-            else None
-        )
+        file_snapshot = capture_file_snapshot(arguments) if binding.risk is RiskClass.FILE_WRITE else None
         try:
-            result = self._client.call_tool(
-                binding.upstream_tool,
-                self._translate_arguments(capability, arguments),
-            )
+            if capability == "creative.context.get":
+                document = self._client.call_tool("get_document_info", {})
+                selection = self._client.call_tool("get_selection", {})
+                result: Mapping[str, Any] = {
+                    "document": document,
+                    "selection": selection,
+                }
+                upstream_tool = "get_document_info+get_selection"
+            else:
+                result = self._client.call_tool(binding.upstream_tool, self._translate_arguments(capability, arguments))
+                upstream_tool = binding.upstream_tool
         except TimeoutError as exc:
             if self._is_mutating(capability):
                 self._ready_until = 0.0
@@ -158,17 +135,17 @@ class IllustratorAdapter:
             raise
 
         if capability == "creative.health":
-            self._ready_until = (
-                time.monotonic() + READINESS_TTL_SECONDS if self._health_ready(result) else 0.0
-            )
+            self._ready_until = time.monotonic() + READINESS_TTL_SECONDS if self._health_ready(result) else 0.0
 
         payload: dict[str, Any] = {
             "ok": True,
             "application": "illustrator",
             "capability": capability,
-            "upstream_tool": binding.upstream_tool,
+            "upstream_tool": upstream_tool,
             "result": result,
         }
+        if capability == "creative.context.get":
+            payload["context_source"] = "live-document+selection"
         if binding.risk is RiskClass.READ:
             payload["outcome"] = "read"
             payload["verification"] = {"status": "not_applicable"}
