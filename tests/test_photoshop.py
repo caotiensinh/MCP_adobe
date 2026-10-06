@@ -39,7 +39,7 @@ class PhotoshopAdapterTests(unittest.TestCase):
         )
         self.assertTrue(info.undo_supported)
 
-    def test_safe_subset_maps_to_exact_upstream_tools(self) -> None:
+    def test_bounded_interaction_surface_maps_to_exact_upstream_tools(self) -> None:
         client = FakeClient()
         adapter = PhotoshopAdapter(client)
         expected = {
@@ -47,11 +47,31 @@ class PhotoshopAdapterTests(unittest.TestCase):
             "creative.capabilities": "photoshop_get_capabilities",
             "creative.document.info": "photoshop_get_state",
             "creative.document.preview": "photoshop_get_preview",
+            "creative.selection.get": "photoshop_get_state",
+            "creative.layer.list": "photoshop_get_layers",
             "creative.document.create": "photoshop_create_document",
             "creative.document.open": "photoshop_open_image",
             "creative.document.save": "photoshop_save_document",
             "creative.document.export": "photoshop_export_as",
+            "creative.layer.select": "photoshop_select_layer_by_name",
+            "creative.layer.create": "photoshop_create_layer",
+            "creative.layer.rename": "photoshop_rename_layer",
+            "creative.layer.delete": "photoshop_delete_layer",
+            "creative.text.create": "photoshop_create_text_layer",
+            "creative.text.update": "photoshop_update_text_content",
+            "creative.object.move": "photoshop_move_layer",
+            "creative.object.scale": "photoshop_scale_layer",
+            "creative.object.rotate": "photoshop_rotate_layer",
+            "creative.style.fill": "photoshop_fill_layer",
+            "creative.style.opacity": "photoshop_set_layer_opacity",
+            "creative.style.blend_mode": "photoshop_set_layer_blend_mode",
+            "creative.selection.rectangle": "photoshop_select_rectangle",
+            "creative.selection.ellipse": "photoshop_select_ellipse",
+            "creative.selection.clear": "photoshop_deselect",
+            "creative.mask.create": "photoshop_create_layer_mask",
+            "creative.mask.delete": "photoshop_delete_layer_mask",
             "creative.undo": "photoshop_undo",
+            "creative.redo": "photoshop_redo",
         }
         for capability, upstream_tool in expected.items():
             adapter.execute(capability, {})
@@ -89,6 +109,27 @@ class PhotoshopAdapterTests(unittest.TestCase):
             adapter.execute("creative.document.create", {"width": 100, "height": 100})
         self.assertEqual(ctx.exception.capability, "creative.document.create")
         self.assertEqual(ctx.exception.upstream_tool, "photoshop_create_document")
+
+    def test_registry_allows_normal_bounded_transform_after_readiness_probe(self) -> None:
+        client = FakeClient()
+        registry = CapabilityRegistry()
+        registry.register(PhotoshopAdapter(client))
+        result = registry.execute(
+            "photoshop",
+            "creative.object.move",
+            {"deltaX": 12, "deltaY": 0},
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(client.calls[0][0], "photoshop_ping")
+        self.assertEqual(client.calls[-1], ("photoshop_move_layer", {"deltaX": 12, "deltaY": 0}))
+
+    def test_registry_blocks_destructive_interaction_without_explicit_authorization(self) -> None:
+        client = FakeClient()
+        registry = CapabilityRegistry()
+        registry.register(PhotoshopAdapter(client))
+        with self.assertRaises(PermissionError):
+            registry.execute("photoshop", "creative.layer.delete", {})
+        self.assertEqual(client.calls, [])
 
     def test_registry_blocks_native_script_before_upstream_call(self) -> None:
         client = FakeClient()
