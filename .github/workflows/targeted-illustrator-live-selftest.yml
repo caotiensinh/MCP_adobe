@@ -1,0 +1,133 @@
+name: Targeted Illustrator live self-test
+
+on:
+  push:
+    branches: [test/illustrator-xd-live-selftest]
+    paths:
+      - ".github/workflows/targeted-illustrator-live-selftest.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  illustrator-live:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 18
+    env:
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Discover Illustrator
+        id: adobe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          ./scripts/adobe_inventory.ps1 -GitHubOutput
+          if([string]::IsNullOrWhiteSpace('${{ steps.adobe.outputs.illustrator }}')){ throw 'Illustrator executable not discovered' }
+
+      - name: Bootstrap runtime
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+            $uvDir=Join-Path $HOME '.local\bin'
+            if(Test-Path (Join-Path $uvDir 'uv.exe')) {
+              $uvDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+              $env:Path="$uvDir;$env:Path"
+            }
+          }
+          if(-not (Get-Command node -ErrorAction SilentlyContinue)){ throw 'node unavailable' }
+          if(-not (Get-Command npx -ErrorAction SilentlyContinue)){ throw 'npx unavailable' }
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){ throw 'uv unavailable' }
+          node --version
+          npx --version
+          uv --version
+          uv sync
+
+      - name: Launch and observe Illustrator startup
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $aiPath='${{ steps.adobe.outputs.illustrator }}'
+          $existing=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          if($existing.Count -eq 0){
+            $launched=Start-Process -FilePath $aiPath -PassThru
+            Write-Host "ILLUSTRATOR_LAUNCH_PID=$($launched.Id)"
+          } else {
+            Write-Host "ILLUSTRATOR_ALREADY_RUNNING=$($existing.Id -join ',')"
+          }
+
+          $deadline=(Get-Date).AddSeconds(75)
+          $visible=$null
+          $last=''
+          do {
+            $procs=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+            if($procs.Count -gt 0){
+              $snapshot=($procs | ForEach-Object { "PID=$($_.Id) HWND=$($_.MainWindowHandle) TITLE=$($_.MainWindowTitle) RESP=$($_.Responding) SESSION=$($_.SessionId)" }) -join ' | '
+              if($snapshot -ne $last){ Write-Host "ILLUSTRATOR_PROCESS $snapshot"; $last=$snapshot }
+              $visible=$procs | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+              if($visible){ break }
+            }
+            Start-Sleep -Seconds 2
+          } until((Get-Date) -gt $deadline)
+
+          $procs=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          if($procs.Count -eq 0){ throw 'Illustrator process exited during startup' }
+          if($visible){
+            Write-Host "ILLUSTRATOR_HOST_VISIBLE=PASS PID=$($visible.Id) SESSION=$($visible.SessionId) HWND=$($visible.MainWindowHandle) TITLE=$($visible.MainWindowTitle)"
+          } else {
+            Write-Warning 'Illustrator process is alive but no MainWindowHandle appeared within 75s; continuing to MCP E2E so the real transport decides readiness.'
+          }
+
+      - name: Live Illustrator create save export through MCP
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $out=Join-Path $env:RUNNER_TEMP 'mcp-adobe-illustrator-live-retry'
+          if(Test-Path $out){ Remove-Item -Recurse -Force $out }
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          @'
+          from dataclasses import replace
+          from pathlib import Path
+          import os
+          from mcp_adobe.mcp_stdio import McpSubprocessToolClient, illustrator_stdio_config
+          from scripts.real_e2e import _illustrator, _emit
+
+          out = Path(os.environ['RUNNER_TEMP']) / 'mcp-adobe-illustrator-live-retry'
+          cfg = replace(illustrator_stdio_config(), startup_timeout_seconds=180.0, call_timeout_seconds=180.0)
+          with McpSubprocessToolClient(cfg) as client:
+              _emit('PASS', 'mcp_connect', {'application': 'illustrator'})
+              _illustrator(client, True, out)
+          _emit('PASS', 'ILLUSTRATOR_LIVE_E2E', {'output_dir': str(out)})
+          '@ | Set-Content -Path illustrator_live_retry.py -Encoding UTF8
+          uv run python illustrator_live_retry.py
+
+          $ai=Join-Path $out 'mcp_adobe_smoke.ai'
+          $png=Join-Path $out 'mcp_adobe_smoke.png'
+          if(-not (Test-Path $ai)){ throw 'AI output missing' }
+          if(-not (Test-Path $png)){ throw 'PNG output missing' }
+          $aiBytes=[IO.File]::ReadAllBytes($ai)
+          $pngBytes=[IO.File]::ReadAllBytes($png)
+          if($aiBytes.Length -lt 32){ throw 'AI output too small' }
+          if($pngBytes.Length -lt 8){ throw 'PNG output too small' }
+          $pngSig=[BitConverter]::ToString($pngBytes[0..7])
+          if($pngSig -ne '89-50-4E-47-0D-0A-1A-0A'){ throw "Invalid PNG signature: $pngSig" }
+          $prefix=[Text.Encoding]::ASCII.GetString($aiBytes[0..([Math]::Min(31,$aiBytes.Length-1))])
+          Write-Host "ILLUSTRATOR_AI=PASS BYTES=$($aiBytes.Length) PREFIX=$prefix"
+          Write-Host "ILLUSTRATOR_PNG=PASS BYTES=$($pngBytes.Length) SIGNATURE=$pngSig"
+          Write-Host 'ILLUSTRATOR_CREATE_SAVE_EXPORT=PASS'
+
+      - name: Upload Illustrator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: illustrator-live-retry-${{ github.run_id }}
+          path: ${{ runner.temp }}\mcp-adobe-illustrator-live-retry\*
+          if-no-files-found: warn
+          retention-days: 2
