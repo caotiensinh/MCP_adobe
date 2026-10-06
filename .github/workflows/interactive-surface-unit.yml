@@ -1,0 +1,23 @@
+name: Interactive surface unit validation
+
+on:
+  push:
+    branches:
+      - feat/interactive-surface-v1
+
+permissions:
+  contents: read
+
+jobs:
+  targeted-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.17"
+      - name: Sync runtime
+        run: uv sync --python 3.12
+      - name: Targeted interaction adapter tests
+        run: uv run python -m unittest tests.test_photoshop tests.test_illustrator -v
