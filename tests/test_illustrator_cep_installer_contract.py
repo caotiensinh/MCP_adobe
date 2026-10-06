@@ -45,6 +45,13 @@ class IllustratorCepInstallerContractTests(unittest.TestCase):
         self.assertIn("Installed Illustrator CEP validation", self.backend_installer)
         self.assertIn('"CSXS\\manifest.xml"', self.backend_installer)
 
+    def test_installer_builds_missing_pinned_panel_dist(self) -> None:
+        self.assertIn('"dist\\index.html"', self.backend_installer)
+        self.assertIn('Invoke-Checked $npm @("ci", "--no-audit", "--no-fund")', self.backend_installer)
+        self.assertIn('Invoke-Checked $npm @("run", "build")', self.backend_installer)
+        self.assertIn("Illustrator CEP dist is absent at the pinned upstream SHA", self.backend_installer)
+        self.assertIn("illustrator_cep_build=PASS", self.backend_installer)
+
     def test_main_windows_installer_installs_backend_by_default(self) -> None:
         self.assertIn("install_illustrator_cep_backend.ps1", self.windows_installer)
         self.assertIn('Write-Host "illustrator_backend=install"', self.windows_installer)

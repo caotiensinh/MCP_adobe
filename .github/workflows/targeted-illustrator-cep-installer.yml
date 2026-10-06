@@ -24,6 +24,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Provision pinned Node for isolated CEP build
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.19.0"
+
+      - name: Verify isolated Node toolchain
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $node=(Get-Command node -ErrorAction Stop).Source
+          $npm=(Get-Command npm.cmd -ErrorAction SilentlyContinue)
+          if(-not $npm){ $npm=Get-Command npm -ErrorAction Stop }
+          Write-Host "INSTALLER_NODE=$(& $node --version)"
+          Write-Host "INSTALLER_NPM=$(& $npm.Source --version)"
+
       - name: Contract tests
         shell: powershell
         run: |
@@ -57,6 +72,9 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           $uv=(Get-Command uv).Source
+          $node=(Get-Command node).Source
+          $npmCmd=Get-Command npm.cmd -ErrorAction SilentlyContinue
+          if($npmCmd){ $npm=$npmCmd.Source } else { $npm=(Get-Command npm -ErrorAction Stop).Source }
           $root=Join-Path $env:RUNNER_TEMP 'mcp-adobe-illustrator-installer-test'
           $panel=Join-Path $env:RUNNER_TEMP 'mcp-adobe-illustrator-panel-test'
           if(Test-Path $root){ Remove-Item -Recurse -Force $root }
@@ -67,6 +85,8 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_illustrator_cep_backend.ps1 `
             -PythonVersion 3.12 `
             -UvCommandPath $uv `
+            -NodeCommandPath $node `
+            -NpmCommandPath $npm `
             -InstallRoot $root `
             -PanelTarget $panel `
             -SkipRegistry

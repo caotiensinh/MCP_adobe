@@ -2,6 +2,8 @@
 param(
     [string]$PythonVersion = "3.12",
     [string]$UvCommandPath = "",
+    [string]$NodeCommandPath = "",
+    [string]$NpmCommandPath = "",
     [string]$InstallRoot = "",
     [string]$PanelTarget = "",
     [switch]$SkipRegistry
@@ -124,9 +126,19 @@ if ([string]::IsNullOrWhiteSpace($uv) -or -not (Test-Path -LiteralPath $uv)) {
 }
 $git = Resolve-CommandPath "git"
 if (-not $git) { throw "git is required for the pinned Illustrator backend install" }
-$node = Resolve-CommandPath "node"
+$node = $NodeCommandPath
+if ([string]::IsNullOrWhiteSpace($node)) { $node = Resolve-CommandPath "node" }
+if (-not [string]::IsNullOrWhiteSpace($node) -and -not (Test-Path -LiteralPath $node)) {
+    throw "Node command path does not exist: $node"
+}
+$npm = $NpmCommandPath
+if ([string]::IsNullOrWhiteSpace($npm)) { $npm = Resolve-CommandPath "npm.cmd" }
+if ([string]::IsNullOrWhiteSpace($npm)) { $npm = Resolve-CommandPath "npm" }
+if (-not [string]::IsNullOrWhiteSpace($npm) -and -not (Test-Path -LiteralPath $npm)) {
+    throw "npm command path does not exist: $npm"
+}
 if (-not $node) {
-    Write-Host "illustrator_cep_validator=node-unavailable; using PowerShell payload validation"
+    Write-Host "illustrator_cep_validator=node-unavailable; PowerShell validation remains available for prebuilt payloads"
 }
 
 # Never replace a backend while its persistent bridge may still be serving Illustrator.
@@ -190,10 +202,38 @@ try {
     }
 
     $cepSource = Join-Path $source "cep-extension"
+    $distIndex = Join-Path $cepSource "dist\index.html"
+    if (-not (Test-Path -LiteralPath $distIndex)) {
+        if (-not $node -or -not $npm) {
+            throw "Illustrator CEP dist is absent at the pinned upstream SHA; Node.js and npm are required to build the panel."
+        }
+        Write-Host "illustrator_cep_build=START"
+        Push-Location $cepSource
+        try {
+            Invoke-Checked $npm @("ci", "--no-audit", "--no-fund") "Illustrator CEP npm ci"
+            Invoke-Checked $npm @("run", "build") "Illustrator CEP npm build"
+        }
+        finally {
+            Pop-Location
+        }
+        if (-not (Test-Path -LiteralPath $distIndex)) {
+            throw "Illustrator CEP build completed without dist/index.html"
+        }
+        Write-Host "illustrator_cep_build=PASS"
+    }
+    else {
+        Write-Host "illustrator_cep_build=SKIP prebuilt-dist-present"
+    }
     Invoke-CepPanelValidation $cepSource "Illustrator source CEP validation"
 
     Copy-Item -LiteralPath $cepSource -Destination $panelStage -Recurse -Force
     Invoke-CepPanelValidation $panelStage "Illustrator staged CEP validation"
+
+    $nodeModules = Join-Path $source "cep-extension\node_modules"
+    if (Test-Path -LiteralPath $nodeModules) {
+        Remove-Item -LiteralPath $nodeModules -Recurse -Force
+        Write-Host "illustrator_cep_build_dependencies=REMOVED"
+    }
 
     $metadata = [ordered]@{
         upstream_repository = "jinkeda/Illustrator_MCP"
