@@ -1,0 +1,56 @@
+name: Targeted Illustrator COM diagnostic
+
+on:
+  push:
+    branches: [test/illustrator-xd-live-selftest]
+    paths:
+      - ".github/workflows/targeted-illustrator-com-diagnostic.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  illustrator-com:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Direct COM probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Host "Runner=$env:RUNNER_NAME Machine=$env:COMPUTERNAME User=$([Environment]::UserName) Session=$env:SESSIONNAME"
+          Write-Host '--- registered Illustrator ProgIDs ---'
+          Get-ChildItem Registry::HKEY_CLASSES_ROOT -ErrorAction SilentlyContinue |
+            Where-Object { $_.PSChildName -like 'Illustrator.Application*' } |
+            Select-Object -ExpandProperty PSChildName | Sort-Object | ForEach-Object { Write-Host $_ }
+
+          function Try-Com([string]$progId) {
+            try {
+              Write-Host "COM_TRY=$progId"
+              $app = New-Object -ComObject $progId
+              $version = $app.Version
+              $name = $app.Name
+              $visible = $app.Visible
+              $docs = $app.Documents.Count
+              Write-Host "COM_CONNECT=PASS PROGID=$progId VERSION=$version NAME=$name VISIBLE=$visible DOCS=$docs"
+              try {
+                $result = $app.DoJavaScript("app.version + '|' + app.name + '|docs=' + app.documents.length")
+                Write-Host "COM_DOJAVASCRIPT=PASS PROGID=$progId RESULT=$result"
+              } catch {
+                Write-Host "COM_DOJAVASCRIPT=FAIL PROGID=$progId HResult=$($_.Exception.HResult) MESSAGE=$($_.Exception.Message)"
+              }
+              [Runtime.InteropServices.Marshal]::FinalReleaseComObject($app) | Out-Null
+              return $true
+            } catch {
+              Write-Host "COM_CONNECT=FAIL PROGID=$progId HResult=$($_.Exception.HResult) MESSAGE=$($_.Exception.Message)"
+              return $false
+            }
+          }
+
+          $ok = Try-Com 'Illustrator.Application'
+          if(-not $ok){ $ok = Try-Com 'Illustrator.Application.27' }
+          if(-not $ok){ throw 'Illustrator COM connection failed for generic and v27 ProgID' }
+          Write-Host 'ILLUSTRATOR_RAW_COM=PASS'
