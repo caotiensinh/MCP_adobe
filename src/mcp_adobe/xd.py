@@ -21,6 +21,7 @@ class ToolBinding:
 
 _BINDINGS: dict[str, ToolBinding] = {
     "creative.health": ToolBinding("xd.health", RiskClass.READ),
+    "creative.context.get": ToolBinding("xd.document.info", RiskClass.READ),
     "creative.document.info": ToolBinding("xd.document.info", RiskClass.READ),
     "creative.selection.get": ToolBinding("xd.selection.get", RiskClass.READ),
     "xd.queue.status": ToolBinding("xd.queue.status", RiskClass.READ),
@@ -32,21 +33,7 @@ _BINDINGS: dict[str, ToolBinding] = {
 
 
 class XdAdapter:
-    """Adobe XD adapter backed by the local UXP WebSocket bridge.
-
-    Adobe XD only permits ``application.editDocument()`` from explicit user UI
-    actions. Therefore bridge-triggered mutations are queued, not applied in the
-    WebSocket callback. The user approves the pending batch from the XD panel,
-    where the plugin applies it atomically inside ``editDocument()``.
-    """
-
-    def __init__(
-        self,
-        client: UpstreamToolClient,
-        *,
-        version: str | None = None,
-        writes_enabled: bool = True,
-    ) -> None:
+    def __init__(self, client: UpstreamToolClient, *, version: str | None = None, writes_enabled: bool = True) -> None:
         self._client = client
         self._version = version
         self._writes_enabled = writes_enabled
@@ -86,32 +73,15 @@ class XdAdapter:
     def probe_ready(self) -> Mapping[str, Any]:
         now = time.monotonic()
         if self._ready_until > now:
-            return {
-                "ready": True,
-                "application": "xd",
-                "source": "xd.health",
-                "cached": True,
-            }
+            return {"ready": True, "application": "xd", "source": "xd.health", "cached": True}
         try:
             result = self._client.call_tool("xd.health", {})
         except Exception:
             self._ready_until = 0.0
-            return {
-                "ready": False,
-                "application": "xd",
-                "source": "xd.health",
-                "cached": False,
-                "reason": "xd_health_probe_failed",
-            }
+            return {"ready": False, "application": "xd", "source": "xd.health", "cached": False, "reason": "xd_health_probe_failed"}
         ready = self._health_ready(result)
         self._ready_until = now + READINESS_TTL_SECONDS if ready else 0.0
-        return {
-            "ready": ready,
-            "application": "xd",
-            "source": "xd.health",
-            "cached": False,
-            "reason": None if ready else "xd_health_probe_not_ready",
-        }
+        return {"ready": ready, "application": "xd", "source": "xd.health", "cached": False, "reason": None if ready else "xd_health_probe_not_ready"}
 
     def execute(self, capability: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         try:
@@ -120,7 +90,14 @@ class XdAdapter:
             raise LookupError(f"unsupported Adobe XD capability: {capability}") from exc
 
         try:
-            result = self._client.call_tool(binding.bridge_method, dict(arguments))
+            if capability == "creative.context.get":
+                document = self._client.call_tool("xd.document.info", {})
+                selection = self._client.call_tool("xd.selection.get", {})
+                result: Mapping[str, Any] = {"document": document, "selection": selection}
+                bridge_method = "xd.document.info+xd.selection.get"
+            else:
+                result = self._client.call_tool(binding.bridge_method, dict(arguments))
+                bridge_method = binding.bridge_method
         except TimeoutError as exc:
             if self._is_mutating(capability):
                 self._ready_until = 0.0
@@ -128,17 +105,17 @@ class XdAdapter:
             raise
 
         if capability == "creative.health":
-            self._ready_until = (
-                time.monotonic() + READINESS_TTL_SECONDS if self._health_ready(result) else 0.0
-            )
+            self._ready_until = time.monotonic() + READINESS_TTL_SECONDS if self._health_ready(result) else 0.0
 
         payload: dict[str, Any] = {
             "ok": True,
             "application": "xd",
             "capability": capability,
-            "bridge_method": binding.bridge_method,
+            "bridge_method": bridge_method,
             "result": result,
         }
+        if capability == "creative.context.get":
+            payload["context_source"] = "live-document+selection"
         if binding.risk is RiskClass.READ:
             payload["outcome"] = "read"
             payload["verification"] = {"status": "not_applicable"}
@@ -149,9 +126,7 @@ class XdAdapter:
         ):
             outcome, verification = pending_user_approval(result.get("operation_id"))
         else:
-            outcome, verification = unverified_mutation(
-                "xd-mutation-response-not-confirmed-applied"
-            )
+            outcome, verification = unverified_mutation("xd-mutation-response-not-confirmed-applied")
         payload["outcome"] = outcome
         payload["verification"] = verification
         return payload
