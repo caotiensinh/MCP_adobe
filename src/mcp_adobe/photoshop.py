@@ -42,16 +42,39 @@ class ToolBinding:
     risk: RiskClass
 
 
+# Curated bounded interaction surface. Keep arbitrary script execution as an
+# explicitly privileged escape hatch; normal conversational editing should use
+# the semantic capabilities below.
 _BINDINGS: dict[str, ToolBinding] = {
     "creative.health": ToolBinding("photoshop_ping", RiskClass.READ),
     "creative.capabilities": ToolBinding("photoshop_get_capabilities", RiskClass.READ),
     "creative.document.info": ToolBinding("photoshop_get_state", RiskClass.READ),
     "creative.document.preview": ToolBinding("photoshop_get_preview", RiskClass.READ),
+    "creative.selection.get": ToolBinding("photoshop_get_state", RiskClass.READ),
+    "creative.layer.list": ToolBinding("photoshop_get_layers", RiskClass.READ),
     "creative.document.create": ToolBinding("photoshop_create_document", RiskClass.WRITE_REVERSIBLE),
     "creative.document.open": ToolBinding("photoshop_open_image", RiskClass.WRITE_REVERSIBLE),
     "creative.document.save": ToolBinding("photoshop_save_document", RiskClass.FILE_WRITE),
     "creative.document.export": ToolBinding("photoshop_export_as", RiskClass.FILE_WRITE),
+    "creative.layer.select": ToolBinding("photoshop_select_layer_by_name", RiskClass.WRITE_REVERSIBLE),
+    "creative.layer.create": ToolBinding("photoshop_create_layer", RiskClass.WRITE_REVERSIBLE),
+    "creative.layer.rename": ToolBinding("photoshop_rename_layer", RiskClass.WRITE_REVERSIBLE),
+    "creative.layer.delete": ToolBinding("photoshop_delete_layer", RiskClass.DESTRUCTIVE),
+    "creative.text.create": ToolBinding("photoshop_create_text_layer", RiskClass.WRITE_REVERSIBLE),
+    "creative.text.update": ToolBinding("photoshop_update_text_content", RiskClass.WRITE_REVERSIBLE),
+    "creative.object.move": ToolBinding("photoshop_move_layer", RiskClass.WRITE_REVERSIBLE),
+    "creative.object.scale": ToolBinding("photoshop_scale_layer", RiskClass.WRITE_REVERSIBLE),
+    "creative.object.rotate": ToolBinding("photoshop_rotate_layer", RiskClass.WRITE_REVERSIBLE),
+    "creative.style.fill": ToolBinding("photoshop_fill_layer", RiskClass.DESTRUCTIVE),
+    "creative.style.opacity": ToolBinding("photoshop_set_layer_opacity", RiskClass.WRITE_REVERSIBLE),
+    "creative.style.blend_mode": ToolBinding("photoshop_set_layer_blend_mode", RiskClass.WRITE_REVERSIBLE),
+    "creative.selection.rectangle": ToolBinding("photoshop_select_rectangle", RiskClass.WRITE_REVERSIBLE),
+    "creative.selection.ellipse": ToolBinding("photoshop_select_ellipse", RiskClass.WRITE_REVERSIBLE),
+    "creative.selection.clear": ToolBinding("photoshop_deselect", RiskClass.WRITE_REVERSIBLE),
+    "creative.mask.create": ToolBinding("photoshop_create_layer_mask", RiskClass.WRITE_REVERSIBLE),
+    "creative.mask.delete": ToolBinding("photoshop_delete_layer_mask", RiskClass.DESTRUCTIVE),
     "creative.undo": ToolBinding("photoshop_undo", RiskClass.WRITE_REVERSIBLE),
+    "creative.redo": ToolBinding("photoshop_redo", RiskClass.WRITE_REVERSIBLE),
     "photoshop.execute_script": ToolBinding("photoshop_execute_script", RiskClass.NATIVE_SCRIPT),
 }
 
