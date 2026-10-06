@@ -2,9 +2,17 @@
 
 Audit source: `docs/UPSTREAM_AUDIT.md`
 
+Canonical product contract: `docs/PRODUCT_SPEC.md`
+
+Blocking completion checklist: `docs/INTERACTIVE_MCP_CHECKLIST.md`
+
 ## Goal
 
 Convert the verified upstream work into a single client-neutral Adobe Creative MCP gateway without reimplementing mature app control or inheriting unsafe behavior.
+
+The gateway is not considered complete if it only lets an agent generate a large script, send it to Adobe, and export a file. The required product is a persistent conversational session in which ChatGPT/Claude can directly inspect and incrementally edit the document currently open in Photoshop, Illustrator, and XD through bounded MCP tools.
+
+GitHub Actions/self-hosted runners remain CI/E2E infrastructure. They are not the primary end-user interaction path.
 
 ## Phase 1 — Photoshop + Illustrator
 
@@ -17,14 +25,17 @@ Adopt first:
 - health/ping;
 - capabilities/state/preview;
 - document open/create/save/export;
+- live active-document and selection inspection;
 - layer/object/text operations;
+- bounded shape/selection/transform/style/mask operations where supported;
 - undo/history;
 - recipe operations with one-history-state semantics;
-- structured error codes and recovery hints.
+- structured error codes and recovery hints;
+- persistent session/reconnect behavior.
 
 Do not expose by default:
 
-- arbitrary `photoshop_execute_script`;
+- arbitrary `photoshop_execute_script` as the normal product interface;
 - destructive/batch operations without an explicit policy classification;
 - silent file overwrite;
 - upstream telemetry as gateway telemetry.
@@ -36,13 +47,18 @@ Upstream baseline: `ie3jp/illustrator-mcp-server@57c5c101a5192c61535493f39b653e6
 Adopt first:
 
 - document info/structure;
+- live active-document, artboard, and selection inspection;
 - artboards;
 - object and text creation/modification;
 - selection and object lookup;
+- transform, fill/stroke/style operations;
+- bounded path/anchor/vector-geometry editing sufficient for real logo/design refinement;
+- grouping/order/pathfinder or equivalent composition operations;
 - save/export;
 - preflight/design-token inspection;
 - version targeting;
-- timeout categories.
+- timeout categories;
+- persistent session/reconnect behavior.
 
 Preserve:
 
@@ -50,6 +66,8 @@ Preserve:
 - default protection against overwriting files;
 - local-only application execution;
 - explicit Windows/macOS platform abstraction.
+
+Generated JSX/COM eval can remain as an implementation mechanism or privileged escape hatch, but a monolithic generated script is not sufficient to satisfy the interactive Illustrator product gates.
 
 ## Unified capability model
 
@@ -63,7 +81,10 @@ creative.document.open
 creative.document.create
 creative.document.save
 creative.document.export
+creative.document.preview
 creative.selection.get
+creative.object.list
+creative.object.select
 creative.object.create
 creative.object.update
 creative.object.delete
@@ -72,6 +93,7 @@ creative.text.create
 creative.text.update
 creative.asset.place
 creative.undo
+creative.redo
 ```
 
 Application-specific power remains available under native namespaces:
@@ -103,16 +125,19 @@ A gateway write is considered PASS only when all available checks succeed:
 
 ```text
 resolve application
+-> resolve live session/document/selection
 -> discover capability
--> validate target/document
+-> validate target/document/object
 -> evaluate policy
--> execute adapter operation
+-> execute bounded adapter operation
 -> inspect returned state/error
--> verify postcondition when possible
+-> verify postcondition/preview when possible
 -> record audit result
 ```
 
 Transport success alone is not PASS.
+
+For conversational editing, a result is not product-complete if the system had to create a replacement document when the user intended to edit the currently open document.
 
 ## File safety contract
 
@@ -120,6 +145,7 @@ Transport success alone is not PASS.
 - If the destination exists, reject unless overwrite was explicitly authorized.
 - Temporary files stay under a gateway-owned temporary directory where possible.
 - Batch operations must report per-item success/failure rather than only a global success flag.
+- Incremental live edits must preserve unrelated user layers/objects/content.
 
 ## Connection contract
 
@@ -142,6 +168,8 @@ Adapters must report at least:
 
 Health and connection state are explicit. An adapter must not convert a timeout into a generic success or silently retry a mutating command after an ambiguous timeout.
 
+For the interactive product, the live session must additionally resolve/refetch active document and selection state so human changes inside Adobe do not leave the AI mutating a stale target.
+
 ## Timeout/retry rule
 
 Read-only calls may be retried if the adapter can prove they are idempotent.
@@ -156,71 +184,83 @@ This rule is especially important for scripting hosts where killing the external
 
 ## XD policy
 
-The two audited XD repositories parse XD files/share data; neither is a verified live desktop write bridge.
+The initial audited XD repositories did not provide a verified live desktop-write bridge, so the project must supply or adopt one.
 
-Current XD scope:
-
-```text
-read/parse design document
-extract artboards/specs/tokens
-optionally generate code/assets through gateway-controlled output paths
-```
-
-Not yet claimed:
+The product target is now explicitly live XD interaction:
 
 ```text
-create/edit/delete nodes inside a running Adobe XD application
+persistent XD plugin/UXP bridge
+-> read current document/artboard/selection
+-> create/edit supported nodes/text/properties
+-> reflect human selection changes back into MCP context
+-> verify applied state/preview
 ```
 
-A real XD write adapter requires either a separately verified plugin/UXP bridge or a new implementation.
+If XD requires a user gesture or explicit approval for a mutation, that restriction must be exposed honestly as part of the MCP result/UX. It must not be hidden behind a false PASS.
 
 ## Phase gates
+
+The detailed, fixed denominator is `docs/INTERACTIVE_MCP_CHECKLIST.md`. The gates below are summary gates only and must not be used to inflate completion percentages.
 
 ### Gate A — adapter contract
 
 - [ ] Upstream snapshots represented in adapter metadata.
 - [ ] Health/capability discovery implemented.
 - [ ] Risk class attached to every exposed capability.
-- [ ] Native arbitrary scripting default-deny.
+- [ ] Native arbitrary scripting default-deny/privileged escape hatch only.
 - [ ] File overwrite default-deny.
+- [ ] Persistent live-session contract represented.
+- [ ] Active document/selection refresh represented.
 
-### Gate B — Photoshop real E2E
+### Gate B — Photoshop live interactive E2E
 
-- [ ] Windows Photoshop detected.
-- [ ] Read state.
-- [ ] Create document.
-- [ ] Create/update text/layer.
-- [ ] Save to new path.
-- [ ] Export to new path.
-- [ ] Undo verified.
+- [ ] Attach to the document already open in Photoshop.
+- [ ] Read state and visual preview.
+- [ ] Select/create/update bounded layer/object/text/shape operations.
+- [ ] Perform successive incremental transforms/styles from chat.
+- [ ] Human selection change is respected by the next command.
+- [ ] Undo/redo verified.
+- [ ] Save/export verified without replacing unrelated user work.
 - [ ] Disconnect/restart/reconnect verified.
 - [ ] Timeout ambiguity test.
 
-### Gate C — Illustrator real E2E
+### Gate C — Illustrator live interactive E2E
 
-- [ ] Windows Illustrator detected.
-- [ ] Read document structure.
-- [ ] Create artboard/object/text.
-- [ ] Modify object.
-- [ ] Save to new path.
-- [ ] Export to new path.
-- [ ] Existing-output rejection verified.
+- [ ] Attach to the document already open in Illustrator.
+- [ ] Read document/artboard/selection and visual state.
+- [ ] Create/modify vector objects/text through bounded tools.
+- [ ] Path/anchor or equivalent granular vector editing proven.
+- [ ] Successive incremental transforms/fill/stroke/composition proven.
+- [ ] Human selection change is respected by the next command.
+- [ ] Undo/recovery verified.
+- [ ] Save `.ai` and export SVG/PNG with verified outputs.
 - [ ] Restart/reconnect verified.
 
-### Gate D — client compatibility
+### Gate D — XD live interactive E2E
 
-Run the same gateway build with:
+- [ ] Persistent XD plugin/bridge connection.
+- [ ] Read active document/artboard/selection.
+- [ ] Human selection changes flow back into MCP context.
+- [ ] Create and modify supported nodes/text/properties.
+- [ ] Required user approval semantics are explicit and verified.
+- [ ] Readback/preview confirms mutation.
+
+### Gate E — client compatibility and final acceptance
+
+Run the same gateway/adapters with:
 
 - [ ] Claude MCP client.
-- [ ] OpenAI/Codex MCP client.
+- [ ] ChatGPT/OpenAI-compatible MCP client.
+
+Then prove the final conversational acceptance sequence from `docs/PRODUCT_SPEC.md`: existing open document -> live state/selection -> multiple small edits -> human co-edit/selection change -> preview -> undo -> save/export, all in one persistent session and without GitHub Actions as the user command transport.
 
 The adapter layer must remain unchanged between clients.
 
-## Out of scope until Phase 1 passes
+## Out of scope until the interactive initial scope passes
 
 - Premiere Pro
 - After Effects
 - InDesign
-- remote/non-local Adobe application control
 - automatic arbitrary-script enablement
-- production claims for XD editing
+- completion claims based only on generated scripts/exported files
+- treating CI/runner automation as the primary product interaction path
