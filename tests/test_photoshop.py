@@ -33,11 +33,9 @@ class PhotoshopAdapterTests(unittest.TestCase):
         self.assertTrue(info.connected)
         self.assertEqual(info.version, "27.0")
         self.assertEqual(info.upstream_repository, "alisaitteke/photoshop-mcp")
-        self.assertEqual(
-            info.upstream_snapshot,
-            "ecd502c666f0e5b3889d3ef7bc42e5b3eb1119c2",
-        )
+        self.assertEqual(info.upstream_snapshot, "ecd502c666f0e5b3889d3ef7bc42e5b3eb1119c2")
         self.assertTrue(info.undo_supported)
+        self.assertIn("creative.context.get", info.common_capabilities)
 
     def test_bounded_interaction_surface_maps_to_exact_upstream_tools(self) -> None:
         client = FakeClient()
@@ -45,6 +43,7 @@ class PhotoshopAdapterTests(unittest.TestCase):
         expected = {
             "creative.health": "photoshop_ping",
             "creative.capabilities": "photoshop_get_capabilities",
+            "creative.context.get": "photoshop_get_state",
             "creative.document.info": "photoshop_get_state",
             "creative.document.preview": "photoshop_get_preview",
             "creative.selection.get": "photoshop_get_state",
@@ -74,29 +73,22 @@ class PhotoshopAdapterTests(unittest.TestCase):
             "creative.redo": "photoshop_redo",
         }
         for capability, upstream_tool in expected.items():
-            adapter.execute(capability, {})
+            result = adapter.execute(capability, {})
             self.assertEqual(client.calls[-1][0], upstream_tool)
+            if capability == "creative.context.get":
+                self.assertEqual(result["context_source"], "live-photoshop-state")
 
     def test_open_path_is_translated_to_file_path(self) -> None:
         client = FakeClient()
         adapter = PhotoshopAdapter(client)
         adapter.execute("creative.document.open", {"path": "C:/work/photo.jpg"})
-        self.assertEqual(
-            client.calls[-1],
-            ("photoshop_open_image", {"filePath": "C:/work/photo.jpg"}),
-        )
+        self.assertEqual(client.calls[-1], ("photoshop_open_image", {"filePath": "C:/work/photo.jpg"}))
 
     def test_gateway_only_overwrite_flag_is_not_sent_upstream(self) -> None:
         client = FakeClient()
         adapter = PhotoshopAdapter(client)
-        adapter.execute(
-            "creative.document.export",
-            {"path": "C:/out/result.png", "format": "PNG", "overwrite": True},
-        )
-        self.assertEqual(
-            client.calls[-1],
-            ("photoshop_export_as", {"path": "C:/out/result.png", "format": "PNG"}),
-        )
+        adapter.execute("creative.document.export", {"path": "C:/out/result.png", "format": "PNG", "overwrite": True})
+        self.assertEqual(client.calls[-1], ("photoshop_export_as", {"path": "C:/out/result.png", "format": "PNG"}))
 
     def test_read_timeout_remains_timeout(self) -> None:
         adapter = PhotoshopAdapter(FakeClient(timeout_tools={"photoshop_get_state"}))
@@ -114,11 +106,7 @@ class PhotoshopAdapterTests(unittest.TestCase):
         client = FakeClient()
         registry = CapabilityRegistry()
         registry.register(PhotoshopAdapter(client))
-        result = registry.execute(
-            "photoshop",
-            "creative.object.move",
-            {"deltaX": 12, "deltaY": 0},
-        )
+        result = registry.execute("photoshop", "creative.object.move", {"deltaX": 12, "deltaY": 0})
         self.assertTrue(result["ok"])
         self.assertEqual(client.calls[0][0], "photoshop_ping")
         self.assertEqual(client.calls[-1], ("photoshop_move_layer", {"deltaX": 12, "deltaY": 0}))
@@ -136,23 +124,14 @@ class PhotoshopAdapterTests(unittest.TestCase):
         registry = CapabilityRegistry()
         registry.register(PhotoshopAdapter(client))
         with self.assertRaises(PermissionError):
-            registry.execute(
-                "photoshop",
-                "photoshop.execute_script",
-                {"code": "alert('x')"},
-            )
+            registry.execute("photoshop", "photoshop.execute_script", {"code": "alert('x')"})
         self.assertEqual(client.calls, [])
 
     def test_registry_can_enable_native_script_explicitly(self) -> None:
         client = FakeClient()
         registry = CapabilityRegistry()
         registry.register(PhotoshopAdapter(client))
-        result = registry.execute(
-            "photoshop",
-            "photoshop.execute_script",
-            {"code": "return 1"},
-            policy=ExecutionPolicy(allow_native_script=True),
-        )
+        result = registry.execute("photoshop", "photoshop.execute_script", {"code": "return 1"}, policy=ExecutionPolicy(allow_native_script=True))
         self.assertTrue(result["ok"])
         self.assertEqual(client.calls[0][0], "photoshop_ping")
         self.assertEqual(client.calls[-1][0], "photoshop_execute_script")
