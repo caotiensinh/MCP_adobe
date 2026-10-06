@@ -40,6 +40,64 @@ function Get-ExistingItem([string]$Path) {
     return Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
 }
 
+function Test-CepPanelPayload([string]$Root, [string]$Label) {
+    $rootFull = [IO.Path]::GetFullPath($Root)
+    $prefix = $rootFull.TrimEnd([char[]]"\/") + [IO.Path]::DirectorySeparatorChar
+
+    function Require-PanelFile([string]$RelativePath) {
+        $candidate = [IO.Path]::GetFullPath((Join-Path $rootFull $RelativePath))
+        if (-not $candidate.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "$Label failed: panel path escapes root: $RelativePath"
+        }
+        $item = Get-Item -LiteralPath $candidate -Force -ErrorAction SilentlyContinue
+        if ($null -eq $item -or $item.PSIsContainer -or $item.Length -le 0) {
+            throw "$Label failed: missing, empty, or invalid panel file: $RelativePath"
+        }
+        return $candidate
+    }
+
+    foreach ($required in @("dist/index.html", "dist/CSInterface.js", "CSXS/manifest.xml", "jsx/host.jsx")) {
+        Require-PanelFile $required | Out-Null
+    }
+
+    $htmlPath = Require-PanelFile "dist/index.html"
+    $html = [IO.File]::ReadAllText($htmlPath)
+    $matches = [regex]::Matches(
+        $html,
+        '\b(?:src|href)\s*=\s*["'']([^"'']+)["'']',
+        [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+    $assetCount = 0
+    foreach ($match in $matches) {
+        $url = $match.Groups[1].Value
+        if ($url.StartsWith("#") -or $url.StartsWith("data:")) { continue }
+        if ($url -match '^(?:[a-z]+:|/)') {
+            throw "$Label failed: panel asset must be local and relative: $url"
+        }
+        $clean = ($url -split '[?#]', 2)[0]
+        $decoded = [Uri]::UnescapeDataString($clean)
+        Require-PanelFile (Join-Path "dist" $decoded) | Out-Null
+        $assetCount++
+    }
+    if ($assetCount -eq 0) {
+        throw "$Label failed: panel HTML contains no asset references"
+    }
+    Write-Host "$Label=PASS assets=$assetCount validator=powershell"
+}
+
+function Invoke-CepPanelValidation([string]$Root, [string]$Label) {
+    $validator = Join-Path $Root "validate-panel.mjs"
+    if (-not (Test-Path -LiteralPath $validator)) {
+        throw "$Label failed: upstream validator missing: $validator"
+    }
+    if ($node) {
+        Invoke-Checked $node @($validator, $Root) $Label
+        Write-Host "$Label validator=node"
+        return
+    }
+    Test-CepPanelPayload $Root $Label
+}
+
 # A child PowerShell (for example from GitHub Actions or the main installer)
 # can inherit a stale PATH even when Node/Git were installed system-wide.
 # Refresh before resolving any external executable so this script is robust
@@ -67,7 +125,9 @@ if ([string]::IsNullOrWhiteSpace($uv) -or -not (Test-Path -LiteralPath $uv)) {
 $git = Resolve-CommandPath "git"
 if (-not $git) { throw "git is required for the pinned Illustrator backend install" }
 $node = Resolve-CommandPath "node"
-if (-not $node) { throw "node is required to validate the Illustrator CEP panel" }
+if (-not $node) {
+    Write-Host "illustrator_cep_validator=node-unavailable; using PowerShell payload validation"
+}
 
 # Never replace a backend while its persistent bridge may still be serving Illustrator.
 $listeners = @(Get-NetTCPConnection -State Listen -LocalPort 8081 -ErrorAction SilentlyContinue)
@@ -130,15 +190,10 @@ try {
     }
 
     $cepSource = Join-Path $source "cep-extension"
-    $validator = Join-Path $cepSource "validate-panel.mjs"
-    if (-not (Test-Path -LiteralPath $validator)) {
-        throw "Illustrator CEP validator missing: $validator"
-    }
-    Invoke-Checked $node @($validator, $cepSource) "Illustrator source CEP validation"
+    Invoke-CepPanelValidation $cepSource "Illustrator source CEP validation"
 
     Copy-Item -LiteralPath $cepSource -Destination $panelStage -Recurse -Force
-    $stagedValidator = Join-Path $panelStage "validate-panel.mjs"
-    Invoke-Checked $node @($stagedValidator, $panelStage) "Illustrator staged CEP validation"
+    Invoke-CepPanelValidation $panelStage "Illustrator staged CEP validation"
 
     $metadata = [ordered]@{
         upstream_repository = "jinkeda/Illustrator_MCP"
@@ -187,8 +242,7 @@ try {
     if ($LASTEXITCODE -ne 0 -or $finalVersion -ne $ExpectedPackageVersion) {
         throw "Installed Illustrator package verification failed: $finalVersion"
     }
-    $finalValidator = Join-Path $PanelTarget "validate-panel.mjs"
-    Invoke-Checked $node @($finalValidator, $PanelTarget) "Installed Illustrator CEP validation"
+    Invoke-CepPanelValidation $PanelTarget "Installed Illustrator CEP validation"
     $manifest = Join-Path $PanelTarget "CSXS\manifest.xml"
     if (-not (Test-Path -LiteralPath $manifest)) {
         throw "Installed Illustrator CEP manifest missing: $manifest"
