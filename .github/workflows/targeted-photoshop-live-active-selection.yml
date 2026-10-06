@@ -1,0 +1,95 @@
+name: Targeted Photoshop live active selection
+
+on:
+  push:
+    branches: [test/photoshop-live-active-selection]
+    paths:
+      - "scripts/photoshop_live_active_selection.py"
+      - ".github/workflows/targeted-photoshop-live-active-selection.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-selection:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Discover Adobe applications
+        id: adobe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          ./scripts/adobe_inventory.ps1 -GitHubOutput
+
+      - name: Bootstrap runtime
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+
+          if(-not (Get-Command node -ErrorAction SilentlyContinue) -or -not (Get-Command npx -ErrorAction SilentlyContinue)) {
+            $standard='C:\Program Files\nodejs'
+            if(Test-Path (Join-Path $standard 'node.exe')) {
+              $standard | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+              $env:Path="$standard;$env:Path"
+            }
+          }
+          if(-not (Get-Command node -ErrorAction SilentlyContinue) -or -not (Get-Command npx -ErrorAction SilentlyContinue)) {
+            throw 'node/npx unavailable on runner'
+          }
+
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+            $uvDir=Join-Path $HOME '.local\bin'
+            if(Test-Path (Join-Path $uvDir 'uv.exe')) {
+              $uvDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+              $env:Path="$uvDir;$env:Path"
+            }
+          }
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)) { throw 'uv unavailable on runner' }
+          node --version
+          npx --version
+          uv --version
+
+      - name: Verify interactive Photoshop host
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $psPath='${{ steps.adobe.outputs.photoshop }}'
+          if([string]::IsNullOrWhiteSpace($psPath)){ throw 'Photoshop executable not discovered' }
+          if(-not (Get-Process -Name Photoshop -ErrorAction SilentlyContinue)) {
+            Start-Process -FilePath $psPath
+            Start-Sleep -Seconds 5
+          }
+          $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1
+          if(-not $ps){ throw 'Photoshop interactive window not found' }
+          Write-Host "PHOTOSHOP_HOST=PASS PID=$($ps.Id) SESSION=$($ps.SessionId) HWND=$($ps.MainWindowHandle)"
+
+      - name: Install gateway runtime
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          uv sync
+
+      - name: Move and update the live Photoshop active layer through MCP Adobe
+        shell: powershell
+        env:
+          PHOTOSHOP_PATH: ${{ steps.adobe.outputs.photoshop }}
+          PHOTOSHOP_SCRIPT_TIMEOUT: "180000"
+        run: |
+          $ErrorActionPreference='Stop'
+          uv run python scripts/photoshop_live_active_selection.py
+
+      - name: Upload active-selection evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: photoshop-active-selection-${{ github.run_id }}
+          path: ${{ runner.temp }}\mcp-adobe-photoshop-active-selection\*
+          if-no-files-found: warn
+          retention-days: 2
