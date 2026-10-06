@@ -1,0 +1,140 @@
+name: Targeted Photoshop active-selection live self-test
+
+on:
+  push:
+    branches:
+      - test/photoshop-active-selection-live-selftest
+
+permissions:
+  contents: read
+
+concurrency:
+  group: photoshop-active-selection-live-selftest
+  cancel-in-progress: true
+
+jobs:
+  live-photoshop-selection:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '20'
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          version: '0.12.17'
+          enable-cache: false
+
+      - name: Sync gateway
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          uv python install 3.12
+          uv sync --python 3.12
+
+      - name: Live Photoshop active-layer move update undo verify
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import json
+          from mcp_adobe import McpSubprocessToolClient, PhotoshopAdapter, photoshop_stdio_config
+
+          def state(client):
+              raw = client.call_tool('photoshop_get_state', {})
+              print('STATE=' + json.dumps(raw, ensure_ascii=False), flush=True)
+              return raw
+
+          setup = r'''
+          var d = app.documents.add(640, 480, 72, "MCP_ACTIVE_SELECTION_SELFTEST", NewDocumentMode.RGB, DocumentFill.WHITE);
+          var l = d.artLayers.add();
+          l.name = "MCP_ACTIVE_TARGET";
+          var c = new SolidColor();
+          c.rgb.red = 37; c.rgb.green = 99; c.rgb.blue = 235;
+          d.selection.select([[120,120],[300,120],[300,300],[120,300]]);
+          d.selection.fill(c);
+          d.selection.deselect();
+          d.activeLayer = l;
+          return "SELFTEST_SETUP_PASS";
+          '''
+
+          cleanup = r'''
+          try {
+            if (app.documents.length > 0 && app.activeDocument.name.indexOf("MCP_ACTIVE_SELECTION_SELFTEST") === 0) {
+              app.activeDocument.close(SaveOptions.DONOTSAVECHANGES);
+            }
+          } catch (e) {}
+          return "SELFTEST_CLEANUP_PASS";
+          '''
+
+          with McpSubprocessToolClient(photoshop_stdio_config()) as client:
+              required = {
+                  'photoshop_ping', 'photoshop_get_state', 'photoshop_execute_script',
+                  'photoshop_move_layer', 'photoshop_set_layer_opacity', 'photoshop_undo'
+              }
+              missing = sorted(required - set(client.tool_names))
+              if missing:
+                  raise RuntimeError(f'missing tools: {missing}')
+              print('TOOLS_PASS=' + ','.join(sorted(required)), flush=True)
+              print('PING=' + json.dumps(client.call_tool('photoshop_ping', {}), ensure_ascii=False), flush=True)
+              try:
+                  print('SETUP=' + json.dumps(client.call_tool('photoshop_execute_script', {'code': setup}), ensure_ascii=False), flush=True)
+                  adapter = PhotoshopAdapter(client, writes_enabled=True)
+
+                  before = state(client)
+                  move = adapter.execute('creative.selection.move', {'deltaX': 12, 'deltaY': -4})
+                  print('MOVE=' + json.dumps(move, ensure_ascii=False), flush=True)
+                  if move.get('outcome') != 'verified':
+                      raise RuntimeError(f'move not verified: {move}')
+
+                  opacity = adapter.execute('creative.selection.update', {'properties': {'opacity': 60}})
+                  print('OPACITY=' + json.dumps(opacity, ensure_ascii=False), flush=True)
+                  if opacity.get('outcome') != 'verified':
+                      raise RuntimeError(f'opacity not verified: {opacity}')
+
+                  after = state(client)
+
+                  print('UNDO_OPACITY=' + json.dumps(client.call_tool('photoshop_undo', {}), ensure_ascii=False), flush=True)
+                  print('UNDO_MOVE=' + json.dumps(client.call_tool('photoshop_undo', {}), ensure_ascii=False), flush=True)
+                  restored = state(client)
+
+                  def layer(payload):
+                      if isinstance(payload, dict):
+                          if isinstance(payload.get('activeLayer'), dict):
+                              return payload['activeLayer']
+                          if isinstance(payload.get('result'), dict):
+                              got = layer(payload['result'])
+                              if got: return got
+                          if isinstance(payload.get('text'), str):
+                              try: return layer(json.loads(payload['text']))
+                              except Exception: pass
+                      return None
+
+                  b = layer(before)
+                  r = layer(restored)
+                  if not b or not r:
+                      raise RuntimeError(f'cannot read before/restored active layer: before={before} restored={restored}')
+                  if str(r.get('name')) != 'MCP_ACTIVE_TARGET':
+                      raise RuntimeError(f'wrong restored layer: {r}')
+                  if abs(float(r.get('opacity', -1)) - 100.0) > 0.01:
+                      raise RuntimeError(f'opacity not restored: {r}')
+                  bb, rb = b.get('bounds'), r.get('bounds')
+                  if not isinstance(bb, dict) or not isinstance(rb, dict):
+                      raise RuntimeError(f'bounds unavailable for undo verification: before={b} restored={r}')
+                  if abs(float(rb['left']) - float(bb['left'])) > 0.5 or abs(float(rb['top']) - float(bb['top'])) > 0.5:
+                      raise RuntimeError(f'move not restored: before={bb} restored={rb}')
+
+                  print('PHOTOSHOP_ACTIVE_SELECTION_LIVE_SELFTEST=PASS', flush=True)
+              finally:
+                  try:
+                      print('CLEANUP=' + json.dumps(client.call_tool('photoshop_execute_script', {'code': cleanup}), ensure_ascii=False), flush=True)
+                  except Exception as exc:
+                      print('CLEANUP_WARNING=' + repr(exc), flush=True)
+          '@ | Set-Content -Path live_selftest.py -Encoding UTF8
+          uv run python live_selftest.py
