@@ -96,7 +96,7 @@ jobs:
           if(-not (Test-Path $panel)){ throw "Installed MCP Control panel not found: $panel" }
           Write-Host 'ILLUSTRATOR_CEP_PANEL_INSTALLED=PASS version=1.0.2'
 
-      - name: Persistent CEP bridge live read edit verify undo
+      - name: Persistent CEP bridge live read edit verify rollback
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -159,8 +159,6 @@ jobs:
               if missing:
                   raise RuntimeError('missing required tools: ' + ','.join(sorted(missing)))
 
-              # The installed CEP panel retries every 3s. Keep the Python MCP server
-              # alive persistently and wait for the actual panel->server socket.
               status=None
               for attempt in range(1, 31):
                   status=client.call_tool('illustrator_connection_status', {'params': {'probe': True, 'timeout': 5.0}})
@@ -196,6 +194,12 @@ jobs:
                   raise RuntimeError('could not extract baseline pageItems count')
               print(f'ILLUSTRATOR_LIVE_READ=PASS items={before_items}', flush=True)
 
+              checkpoint_name='mcp_adobe_live_probe_before_edit'
+              checkpoint=client.call_tool('illustrator_history', {'params': {'action':'checkpoint_save','name':checkpoint_name}})
+              dump('ILLUSTRATOR_CHECKPOINT_SAVE', checkpoint)
+              if not execution_ok(checkpoint):
+                  raise RuntimeError('Illustrator checkpoint_save failed')
+
               edit=client.call_tool('illustrator_execute_task', {'params': {'batch': {'operations': [
                   {'task':'element_create','params': {'type':'rect','x':80,'y':80,'width':180,'height':110,'id':'mcp_adobe_live_probe','fill':{'r':24,'g':119,'b':242}}}
               ], 'stopOnError': True}}})
@@ -210,17 +214,27 @@ jobs:
                   raise RuntimeError(f'pageItems verification failed: before={before_items} after={after_items}')
               print(f'ILLUSTRATOR_BOUNDED_EDIT_VERIFY=PASS before={before_items} after={after_items}', flush=True)
 
-              undo=client.call_tool('illustrator_history', {'params': {'action':'undo','count':1}})
-              dump('ILLUSTRATOR_UNDO', undo)
-              if not execution_ok(undo):
-                  raise RuntimeError('Illustrator undo failed')
+              # Native app.undo() is exposed and reaches Illustrator, but upstream
+              # explicitly warns that one Illustrator history step is not guaranteed
+              # to equal one logical MCP operation. Exercise it, then use the named
+              # checkpoint as the reliable conversational-operation rollback fence.
+              native_undo=client.call_tool('illustrator_history', {'params': {'action':'undo','count':1}})
+              dump('ILLUSTRATOR_NATIVE_UNDO', native_undo)
+              if not execution_ok(native_undo):
+                  raise RuntimeError('Illustrator native undo call failed')
+              print('ILLUSTRATOR_NATIVE_UNDO_CALL=PASS', flush=True)
+
+              rollback=client.call_tool('illustrator_history', {'params': {'action':'checkpoint_restore','name':checkpoint_name}})
+              dump('ILLUSTRATOR_CHECKPOINT_RESTORE', rollback)
+              if not execution_ok(rollback):
+                  raise RuntimeError('Illustrator checkpoint_restore failed')
 
               restored=client.call_tool('illustrator_execute_script', {'params': {'script':read_script,'read_only':True}})
               dump('ILLUSTRATOR_LIVE_READ_RESTORED', restored)
               restored_items=find_key(restored,'items')
               if restored_items != before_items:
-                  raise RuntimeError(f'undo verification failed: expected={before_items} actual={restored_items}')
-              print(f'ILLUSTRATOR_UNDO_VERIFY=PASS items={restored_items}', flush=True)
+                  raise RuntimeError(f'checkpoint rollback verification failed: expected={before_items} actual={restored_items}')
+              print(f'ILLUSTRATOR_LOGICAL_ROLLBACK_VERIFY=PASS items={restored_items}', flush=True)
 
               if created_doc:
                   closed=client.call_tool('illustrator_document', {'params': {'action':'close','save_before_close':False}})
