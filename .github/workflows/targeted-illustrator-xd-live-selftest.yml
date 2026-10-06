@@ -1,0 +1,253 @@
+name: Targeted Illustrator and XD live self-test
+
+on:
+  push:
+    branches: [test/illustrator-xd-live-selftest]
+    paths:
+      - ".github/workflows/targeted-illustrator-xd-live-selftest.yml"
+      - "scripts/**"
+      - "src/**"
+      - "adobe-xd-plugin/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  illustrator-live:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Discover Adobe applications
+        id: adobe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          ./scripts/adobe_inventory.ps1 -GitHubOutput
+
+      - name: Bootstrap runtime
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command node -ErrorAction SilentlyContinue) -or -not (Get-Command npx -ErrorAction SilentlyContinue)) {
+            $standard='C:\Program Files\nodejs'
+            if(Test-Path (Join-Path $standard 'node.exe')) {
+              $standard | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+              $env:Path="$standard;$env:Path"
+            }
+          }
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+            $uvDir=Join-Path $HOME '.local\bin'
+            if(Test-Path (Join-Path $uvDir 'uv.exe')) {
+              $uvDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+              $env:Path="$uvDir;$env:Path"
+            }
+          }
+          if(-not (Get-Command node -ErrorAction SilentlyContinue)){ throw 'node unavailable' }
+          if(-not (Get-Command npx -ErrorAction SilentlyContinue)){ throw 'npx unavailable' }
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){ throw 'uv unavailable' }
+          node --version
+          npx --version
+          uv --version
+
+      - name: Verify interactive Illustrator host
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $aiPath='${{ steps.adobe.outputs.illustrator }}'
+          if([string]::IsNullOrWhiteSpace($aiPath)){ throw 'Illustrator executable not discovered' }
+          if(-not (Get-Process -Name Illustrator -ErrorAction SilentlyContinue)) {
+            Start-Process -FilePath $aiPath
+            Start-Sleep -Seconds 8
+          }
+          $ai=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1
+          if(-not $ai){ throw 'Illustrator interactive window not found' }
+          Write-Host "ILLUSTRATOR_HOST=PASS PID=$($ai.Id) SESSION=$($ai.SessionId) HWND=$($ai.MainWindowHandle)"
+
+      - name: Install gateway runtime
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          uv sync
+
+      - name: Live Illustrator create save export through MCP Adobe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $out=Join-Path $env:RUNNER_TEMP 'mcp-adobe-illustrator-live'
+          if(Test-Path $out){ Remove-Item -Recurse -Force $out }
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          @'
+          from dataclasses import replace
+          from pathlib import Path
+          import os
+          from mcp_adobe.mcp_stdio import McpSubprocessToolClient, illustrator_stdio_config
+          from scripts.real_e2e import _illustrator, _emit
+
+          out = Path(os.environ['RUNNER_TEMP']) / 'mcp-adobe-illustrator-live'
+          cfg = replace(illustrator_stdio_config(), startup_timeout_seconds=180.0, call_timeout_seconds=180.0)
+          with McpSubprocessToolClient(cfg) as client:
+              _emit('PASS', 'mcp_connect', {'application': 'illustrator'})
+              _illustrator(client, True, out)
+          _emit('PASS', 'ILLUSTRATOR_LIVE_E2E', {'output_dir': str(out)})
+          '@ | Set-Content -Path illustrator_live_selftest.py -Encoding UTF8
+          uv run python illustrator_live_selftest.py
+
+          $ai=Join-Path $out 'mcp_adobe_smoke.ai'
+          $png=Join-Path $out 'mcp_adobe_smoke.png'
+          if(-not (Test-Path $ai)){ throw 'AI output missing' }
+          if(-not (Test-Path $png)){ throw 'PNG output missing' }
+          $aiBytes=[IO.File]::ReadAllBytes($ai)
+          $pngBytes=[IO.File]::ReadAllBytes($png)
+          if($aiBytes.Length -lt 32){ throw 'AI output too small' }
+          $pngSig=[BitConverter]::ToString($pngBytes[0..7])
+          if($pngSig -ne '89-50-4E-47-0D-0A-1A-0A'){ throw "Invalid PNG signature: $pngSig" }
+          $prefix=[Text.Encoding]::ASCII.GetString($aiBytes[0..([Math]::Min(15,$aiBytes.Length-1))])
+          Write-Host "ILLUSTRATOR_AI=PASS BYTES=$($aiBytes.Length) PREFIX=$prefix"
+          Write-Host "ILLUSTRATOR_PNG=PASS BYTES=$($pngBytes.Length) SIGNATURE=$pngSig"
+          Write-Host 'ILLUSTRATOR_CREATE_SAVE_EXPORT=PASS'
+
+      - name: Upload Illustrator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: illustrator-live-${{ github.run_id }}
+          path: ${{ runner.temp }}\mcp-adobe-illustrator-live\*
+          if-no-files-found: warn
+          retention-days: 2
+
+  xd-live:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Discover Adobe XD
+        id: adobe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          ./scripts/adobe_inventory.ps1 -GitHubOutput
+          $pkgs=@(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'Adobe.*XD|XD.*Adobe' })
+          if($pkgs.Count -eq 0){ throw 'Adobe XD package not visible to interactive runner user' }
+          $pkgs | Select-Object Name,Version,PackageFamilyName,InstallLocation | Format-List
+
+      - name: Bootstrap runtime
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+            $uvDir=Join-Path $HOME '.local\bin'
+            if(Test-Path (Join-Path $uvDir 'uv.exe')) {
+              $uvDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+              $env:Path="$uvDir;$env:Path"
+            }
+          }
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){ throw 'uv unavailable' }
+          uv --version
+          uv sync
+
+      - name: Install XD MCP bridge plugin
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          powershell -ExecutionPolicy Bypass -File scripts/install_xd_plugin.ps1 -NoReloadHint
+
+      - name: Launch XD and open MCP Adobe Bridge panel
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $xd=Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^XD$|Adobe.*XD' -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+          if(-not $xd){
+            $app=Get-StartApps | Where-Object { $_.Name -match 'Adobe XD|^XD$' } | Select-Object -First 1
+            if(-not $app){ throw 'Adobe XD StartApps entry not found' }
+            Write-Host "XD_AUMID=$($app.AppID)"
+            Start-Process explorer.exe "shell:AppsFolder\$($app.AppID)"
+            $deadline=(Get-Date).AddSeconds(30)
+            do {
+              Start-Sleep -Seconds 1
+              $xd=Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^XD$|Adobe.*XD' -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1
+            } until($xd -or (Get-Date) -gt $deadline)
+          }
+          if(-not $xd){ throw 'Adobe XD interactive window not found' }
+          Write-Host "XD_HOST=PASS PID=$($xd.Id) SESSION=$($xd.SessionId) HWND=$($xd.MainWindowHandle) TITLE=$($xd.MainWindowTitle)"
+
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Win32XD {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+          }
+          '@
+          [Win32XD]::ShowWindow($xd.MainWindowHandle,9) | Out-Null
+          [Win32XD]::SetForegroundWindow($xd.MainWindowHandle) | Out-Null
+          Start-Sleep -Milliseconds 500
+          $ws=New-Object -ComObject WScript.Shell
+          $ws.SendKeys('^+r')
+          Start-Sleep -Seconds 3
+
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
+          if($root){
+            $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+            $targets=@()
+            for($i=0;$i -lt $all.Count;$i++){
+              $e=$all.Item($i)
+              $n=$e.Current.Name
+              if($n -and ($n -eq 'Plugins' -or $n -eq 'MCP Adobe Bridge' -or $n -match 'MCP Adobe Bridge')){ $targets += $e }
+            }
+            foreach($e in $targets){ Write-Host "XD_UIA_CANDIDATE name=$($e.Current.Name) type=$($e.Current.ControlType.ProgrammaticName)" }
+            $plugins=$targets | Where-Object { $_.Current.Name -eq 'Plugins' } | Select-Object -First 1
+            if($plugins){
+              try {
+                $p=$plugins.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                $p.Invoke(); Start-Sleep -Seconds 1
+              } catch { Write-Warning "Could not invoke Plugins UIA element: $($_.Exception.Message)" }
+            }
+            $all2=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+            $bridge=$null
+            for($i=0;$i -lt $all2.Count;$i++){
+              $e=$all2.Item($i)
+              if($e.Current.Name -match 'MCP Adobe Bridge'){ $bridge=$e; break }
+            }
+            if($bridge){
+              Write-Host "XD_BRIDGE_UIA_FOUND type=$($bridge.Current.ControlType.ProgrammaticName)"
+              try {
+                $p=$bridge.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                $p.Invoke(); Start-Sleep -Seconds 2
+                Write-Host 'XD_BRIDGE_UIA_INVOKE=PASS'
+              } catch { Write-Warning "Bridge UIA invoke failed: $($_.Exception.Message)" }
+            } else {
+              Write-Warning 'MCP Adobe Bridge UI element not found automatically; live bridge probe will determine whether panel is already open.'
+            }
+          }
+
+      - name: Live XD bridge read E2E
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          uv run python scripts/xd_real_e2e.py --connect-timeout 45
+
+      - name: XD status evidence
+        if: always()
+        shell: powershell
+        run: |
+          Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match '^XD$|Adobe.*XD' } | Select-Object ProcessName,Id,SessionId,MainWindowTitle,MainWindowHandle | Format-Table -AutoSize
+          $pkgs=@(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'Adobe.*XD|XD.*Adobe' })
+          $pkgs | Select-Object Name,Version,PackageFamilyName,InstallLocation | Format-List
