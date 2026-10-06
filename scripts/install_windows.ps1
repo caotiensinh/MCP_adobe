@@ -95,7 +95,7 @@ function Ensure-NodeToolchain {
 
     $winget = Resolve-CommandPath "winget"
     if (-not $winget) {
-        throw "Node.js/npx is required for the pinned Photoshop and Illustrator MCP launchers, and WinGet is unavailable. Install Node.js LTS and rerun this script."
+        throw "Node.js/npx is required for the pinned Photoshop launcher and Illustrator CEP validation, and WinGet is unavailable. Install Node.js LTS and rerun this script."
     }
 
     Write-Host "node=installing Node.js LTS via WinGet"
@@ -171,6 +171,10 @@ function Write-ClientConfigs([string]$UvExe) {
         "Direct smoke:",
         '"' + $UvExe + '" run --directory "' + $RepoRoot + '" mcp-adobe --transport stdio',
         "",
+        "Illustrator backend:",
+        "The installer pins jinkeda/Illustrator_MCP and installs its CEP panel automatically.",
+        "Start Illustrator, then open Window > Extensions > MCP Control if the panel is not already visible.",
+        "",
         "No OAuth secret is stored in these generated local stdio configs."
     ) -join [Environment]::NewLine
     $instructionsPath = Join-Path $OutputDir "LOCAL_MCP_SETUP.txt"
@@ -213,6 +217,10 @@ if ($LASTEXITCODE -ne 0) { throw "mcp-adobe-oauth-preflight CLI smoke failed" }
 Write-Host "smoke=remote-probe"
 & $uvExe run --directory $RepoRoot mcp-adobe-remote-probe --help | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "mcp-adobe-remote-probe CLI smoke failed" }
+
+Write-Host "illustrator_backend=install"
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "install_illustrator_cep_backend.ps1") -PythonVersion $PythonVersion -UvCommandPath $uvExe
+if ($LASTEXITCODE -ne 0) { throw "Illustrator CEP backend installation failed (exit $LASTEXITCODE)" }
 
 if ($InstallXdPlugin) {
     Write-Host "xd_plugin=install"
