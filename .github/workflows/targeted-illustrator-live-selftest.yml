@@ -34,6 +34,15 @@ jobs:
           $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
           $user=[Environment]::GetEnvironmentVariable('Path','User')
           $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+
+          if(-not (Get-Command node -ErrorAction SilentlyContinue) -or -not (Get-Command npx -ErrorAction SilentlyContinue)) {
+            $standard='C:\Program Files\nodejs'
+            if(Test-Path (Join-Path $standard 'node.exe')) {
+              $standard | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+              $env:Path="$standard;$env:Path"
+            }
+          }
+
           if(-not (Get-Command uv -ErrorAction SilentlyContinue)) {
             $uvDir=Join-Path $HOME '.local\bin'
             if(Test-Path (Join-Path $uvDir 'uv.exe')) {
