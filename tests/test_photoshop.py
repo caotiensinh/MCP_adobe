@@ -47,7 +47,7 @@ class FakeClient:
 
         layer = self.state.get("activeLayer")
         if isinstance(layer, dict):
-            if name == "photoshop_move_layer":
+            if name == "photoshop_move_layer" and "deltaX" in args and "deltaY" in args:
                 bounds = layer.get("bounds")
                 if isinstance(bounds, dict):
                     dx = float(args["deltaX"])
@@ -56,15 +56,15 @@ class FakeClient:
                     bounds["right"] = float(bounds["right"]) + dx
                     bounds["top"] = float(bounds["top"]) + dy
                     bounds["bottom"] = float(bounds["bottom"]) + dy
-            elif name == "photoshop_set_layer_opacity":
+            elif name == "photoshop_set_layer_opacity" and "opacity" in args:
                 layer["opacity"] = args["opacity"]
-            elif name == "photoshop_set_layer_blend_mode":
+            elif name == "photoshop_set_layer_blend_mode" and "blendMode" in args:
                 layer["blendMode"] = f"BlendMode.{args['blendMode']}"
-            elif name == "photoshop_rename_layer":
+            elif name == "photoshop_rename_layer" and "name" in args:
                 layer["name"] = args["name"]
-            elif name == "photoshop_set_layer_visibility":
+            elif name == "photoshop_set_layer_visibility" and "visible" in args:
                 layer["visible"] = args["visible"]
-            elif name == "photoshop_set_layer_locked":
+            elif name == "photoshop_set_layer_locked" and "locked" in args:
                 layer["locked"] = args["locked"]
         return {"tool": name, "arguments": args}
 
