@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: interactive-surface-unit-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   targeted-unit:
     runs-on: ubuntu-latest

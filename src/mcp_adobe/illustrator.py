@@ -26,6 +26,10 @@ _BINDINGS: dict[str, ToolBinding] = {
     "creative.document.info": ToolBinding("get_document_info", RiskClass.READ),
     "creative.document.structure": ToolBinding("get_document_structure", RiskClass.READ),
     "creative.selection.get": ToolBinding("get_selection", RiskClass.READ),
+    # These two capabilities intentionally re-read Illustrator selection immediately
+    # before the mutation. They never trust a selection UUID cached by the LLM/client.
+    "creative.selection.update": ToolBinding("modify_object", RiskClass.WRITE_REVERSIBLE),
+    "creative.selection.move": ToolBinding("modify_object", RiskClass.WRITE_REVERSIBLE),
     "creative.artboard.list": ToolBinding("get_artboards", RiskClass.READ),
     "creative.layer.list": ToolBinding("get_layers", RiskClass.READ),
     "creative.path.list": ToolBinding("get_path_items", RiskClass.READ),
@@ -96,6 +100,94 @@ class IllustratorAdapter:
             return False
         return any(key in result for key in ("totalAvailable", "count", "fonts"))
 
+    @staticmethod
+    def _single_selected_item(selection: Mapping[str, Any]) -> Mapping[str, Any]:
+        items = selection.get("items")
+        if not isinstance(items, list):
+            raise ValueError("Illustrator selection response has no items list")
+        if len(items) == 0:
+            raise ValueError("no Illustrator object is currently selected")
+        if len(items) != 1:
+            raise ValueError(
+                f"exactly one Illustrator object must be selected for this operation; got {len(items)}"
+            )
+        item = items[0]
+        if not isinstance(item, Mapping):
+            raise ValueError("selected Illustrator item has an invalid shape")
+        uuid = item.get("uuid")
+        if not isinstance(uuid, str) or not uuid.strip():
+            raise ValueError("selected Illustrator object has no stable UUID")
+        return item
+
+    @staticmethod
+    def _selection_coordinate_arguments(arguments: Mapping[str, Any]) -> dict[str, Any]:
+        coordinate_system = arguments.get("coordinate_system")
+        if isinstance(coordinate_system, str) and coordinate_system.strip():
+            return {"coordinate_system": coordinate_system}
+        return {}
+
+    def _execute_selected_update(self, arguments: Mapping[str, Any]) -> tuple[Mapping[str, Any], str, str]:
+        properties = arguments.get("properties")
+        if not isinstance(properties, Mapping) or not properties:
+            raise ValueError("creative.selection.update requires a non-empty properties object")
+
+        # The read happens immediately before the mutation so a manual mouse click
+        # in Illustrator becomes the target of the very next conversational edit.
+        selection_args = self._selection_coordinate_arguments(arguments)
+        selection = self._client.call_tool("get_selection", selection_args)
+        item = self._single_selected_item(selection)
+        selected_uuid = str(item["uuid"])
+
+        modify_args: dict[str, Any] = {
+            "uuid": selected_uuid,
+            "properties": dict(properties),
+        }
+        modify_args.update(selection_args)
+        try:
+            result = self._client.call_tool("modify_object", modify_args)
+        except TimeoutError as exc:
+            # Selection resolution is read-only; only a timeout after modify_object
+            # starts has an ambiguous mutation outcome.
+            self._ready_until = 0.0
+            raise OperationUnknownError("creative.selection.update", "modify_object") from exc
+        return result, "get_selection->modify_object", selected_uuid
+
+    def _execute_selected_move(self, arguments: Mapping[str, Any]) -> tuple[Mapping[str, Any], str, str]:
+        dx = arguments.get("deltaX", 0)
+        dy = arguments.get("deltaY", 0)
+        if not isinstance(dx, (int, float)) or isinstance(dx, bool):
+            raise ValueError("creative.selection.move deltaX must be numeric")
+        if not isinstance(dy, (int, float)) or isinstance(dy, bool):
+            raise ValueError("creative.selection.move deltaY must be numeric")
+        if dx == 0 and dy == 0:
+            raise ValueError("creative.selection.move requires a non-zero deltaX or deltaY")
+
+        selection_args = self._selection_coordinate_arguments(arguments)
+        selection = self._client.call_tool("get_selection", selection_args)
+        item = self._single_selected_item(selection)
+        selected_uuid = str(item["uuid"])
+        bounds = item.get("bounds")
+        if not isinstance(bounds, Mapping):
+            raise ValueError("selected Illustrator object has no readable bounds")
+        x = bounds.get("x")
+        y = bounds.get("y")
+        if not isinstance(x, (int, float)) or isinstance(x, bool):
+            raise ValueError("selected Illustrator object has no numeric x position")
+        if not isinstance(y, (int, float)) or isinstance(y, bool):
+            raise ValueError("selected Illustrator object has no numeric y position")
+
+        modify_args: dict[str, Any] = {
+            "uuid": selected_uuid,
+            "properties": {"position": {"x": x + dx, "y": y + dy}},
+        }
+        modify_args.update(selection_args)
+        try:
+            result = self._client.call_tool("modify_object", modify_args)
+        except TimeoutError as exc:
+            self._ready_until = 0.0
+            raise OperationUnknownError("creative.selection.move", "modify_object") from exc
+        return result, "get_selection->modify_object", selected_uuid
+
     def probe_ready(self) -> Mapping[str, Any]:
         now = time.monotonic()
         if self._ready_until > now:
@@ -116,19 +208,26 @@ class IllustratorAdapter:
             raise LookupError(f"unsupported Illustrator capability: {capability}") from exc
 
         file_snapshot = capture_file_snapshot(arguments) if binding.risk is RiskClass.FILE_WRITE else None
+        selected_uuid: str | None = None
         try:
             if capability == "creative.context.get":
                 document = self._client.call_tool("get_document_info", {})
                 selection = self._client.call_tool("get_selection", {})
-                result: Mapping[str, Any] = {
-                    "document": document,
-                    "selection": selection,
-                }
+                result: Mapping[str, Any] = {"document": document, "selection": selection}
                 upstream_tool = "get_document_info+get_selection"
+            elif capability == "creative.selection.update":
+                # Any timeout in the live selection read remains a normal read timeout.
+                result, upstream_tool, selected_uuid = self._execute_selected_update(arguments)
+            elif capability == "creative.selection.move":
+                result, upstream_tool, selected_uuid = self._execute_selected_move(arguments)
             else:
                 result = self._client.call_tool(binding.upstream_tool, self._translate_arguments(capability, arguments))
                 upstream_tool = binding.upstream_tool
         except TimeoutError as exc:
+            if capability in {"creative.selection.update", "creative.selection.move"}:
+                # The composite helpers already convert only the mutating timeout to UNKNOWN;
+                # a TimeoutError reaching here came from the read-only get_selection call.
+                raise
             if self._is_mutating(capability):
                 self._ready_until = 0.0
                 raise OperationUnknownError(capability, binding.upstream_tool) from exc
@@ -146,6 +245,9 @@ class IllustratorAdapter:
         }
         if capability == "creative.context.get":
             payload["context_source"] = "live-document+selection"
+        if selected_uuid is not None:
+            payload["selection_source"] = "live-get_selection"
+            payload["selected_uuid"] = selected_uuid
         if binding.risk is RiskClass.READ:
             payload["outcome"] = "read"
             payload["verification"] = {"status": "not_applicable"}

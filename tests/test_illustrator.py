@@ -7,9 +7,20 @@ from mcp_adobe import CapabilityRegistry, ExecutionPolicy, IllustratorAdapter, O
 
 
 class FakeClient:
-    def __init__(self, *, connected: bool = True, timeout_tools: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        connected: bool = True,
+        timeout_tools: set[str] | None = None,
+        selection_items: list[dict[str, Any]] | None = None,
+    ) -> None:
         self._connected = connected
         self.timeout_tools = timeout_tools or set()
+        self.selection_items = (
+            selection_items
+            if selection_items is not None
+            else [{"uuid": "selected-1", "name": "Logo", "bounds": {"x": 100, "y": 50, "width": 80, "height": 40}}]
+        )
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
     @property
@@ -22,6 +33,18 @@ class FakeClient:
             raise TimeoutError(name)
         if name == "list_fonts":
             return {"count": 1, "fonts": ["Arial"]}
+        if name == "get_selection":
+            return {
+                "selectionCount": len(self.selection_items),
+                "coordinateSystem": arguments.get("coordinate_system", "artboard-web"),
+                "items": list(self.selection_items),
+            }
+        if name == "modify_object":
+            return {
+                "success": True,
+                "uuid": arguments.get("uuid"),
+                "verified": {"uuid": arguments.get("uuid")},
+            }
         return {"tool": name, "arguments": dict(arguments)}
 
 
@@ -33,6 +56,8 @@ class IllustratorAdapterTests(unittest.TestCase):
         self.assertEqual(info.upstream_snapshot, "57c5c101a5192c61535493f39b653e6f92b8eb29")
         self.assertTrue(info.undo_supported)
         self.assertIn("creative.context.get", info.common_capabilities)
+        self.assertIn("creative.selection.update", info.common_capabilities)
+        self.assertIn("creative.selection.move", info.common_capabilities)
 
     def test_live_context_reads_document_and_current_selection(self) -> None:
         client = FakeClient()
@@ -41,7 +66,7 @@ class IllustratorAdapterTests(unittest.TestCase):
         self.assertEqual(client.calls, [("get_document_info", {}), ("get_selection", {})])
         self.assertEqual(result["context_source"], "live-document+selection")
         self.assertEqual(result["result"]["document"]["tool"], "get_document_info")
-        self.assertEqual(result["result"]["selection"]["tool"], "get_selection")
+        self.assertEqual(result["result"]["selection"]["items"][0]["uuid"], "selected-1")
 
     def test_bounded_interaction_surface_maps_to_upstream_tools(self) -> None:
         client = FakeClient()
@@ -78,6 +103,105 @@ class IllustratorAdapterTests(unittest.TestCase):
         for capability, tool in expected.items():
             adapter.execute(capability, {})
             self.assertEqual(client.calls[-1][0], tool)
+
+    def test_selection_update_rereads_live_selection_and_injects_uuid(self) -> None:
+        client = FakeClient(selection_items=[{"uuid": "mouse-selected", "bounds": {"x": 10, "y": 20}}])
+        registry = CapabilityRegistry()
+        registry.register(IllustratorAdapter(client))
+
+        result = registry.execute(
+            "illustrator",
+            "creative.selection.update",
+            {"properties": {"opacity": 60}},
+        )
+
+        self.assertEqual(
+            client.calls,
+            [
+                ("list_fonts", {"limit": 1}),
+                ("get_selection", {}),
+                ("modify_object", {"uuid": "mouse-selected", "properties": {"opacity": 60}}),
+            ],
+        )
+        self.assertEqual(result["selection_source"], "live-get_selection")
+        self.assertEqual(result["selected_uuid"], "mouse-selected")
+
+    def test_selection_move_converts_delta_to_absolute_position_from_fresh_bounds(self) -> None:
+        client = FakeClient(selection_items=[{"uuid": "mouse-selected", "bounds": {"x": 100, "y": 50}}])
+        registry = CapabilityRegistry()
+        registry.register(IllustratorAdapter(client))
+
+        result = registry.execute(
+            "illustrator",
+            "creative.selection.move",
+            {"deltaX": 12, "deltaY": -4},
+        )
+
+        self.assertEqual(
+            client.calls[-1],
+            (
+                "modify_object",
+                {
+                    "uuid": "mouse-selected",
+                    "properties": {"position": {"x": 112, "y": 46}},
+                },
+            ),
+        )
+        self.assertEqual(result["selected_uuid"], "mouse-selected")
+
+    def test_selection_update_rejects_no_selection_before_mutation(self) -> None:
+        client = FakeClient(selection_items=[])
+        registry = CapabilityRegistry()
+        registry.register(IllustratorAdapter(client))
+        with self.assertRaisesRegex(ValueError, "no Illustrator object"):
+            registry.execute(
+                "illustrator",
+                "creative.selection.update",
+                {"properties": {"opacity": 60}},
+            )
+        self.assertEqual([name for name, _ in client.calls], ["list_fonts", "get_selection"])
+
+    def test_selection_update_rejects_multiple_selection_before_mutation(self) -> None:
+        client = FakeClient(
+            selection_items=[
+                {"uuid": "a", "bounds": {"x": 0, "y": 0}},
+                {"uuid": "b", "bounds": {"x": 10, "y": 10}},
+            ]
+        )
+        registry = CapabilityRegistry()
+        registry.register(IllustratorAdapter(client))
+        with self.assertRaisesRegex(ValueError, "exactly one Illustrator object"):
+            registry.execute(
+                "illustrator",
+                "creative.selection.update",
+                {"properties": {"opacity": 60}},
+            )
+        self.assertEqual([name for name, _ in client.calls], ["list_fonts", "get_selection"])
+
+    def test_selection_read_timeout_is_not_misreported_as_unknown_mutation(self) -> None:
+        client = FakeClient(timeout_tools={"get_selection"})
+        registry = CapabilityRegistry()
+        registry.register(IllustratorAdapter(client))
+        with self.assertRaises(TimeoutError):
+            registry.execute(
+                "illustrator",
+                "creative.selection.update",
+                {"properties": {"opacity": 60}},
+            )
+        self.assertEqual([name for name, _ in client.calls], ["list_fonts", "get_selection"])
+
+    def test_selection_modify_timeout_becomes_unknown_after_target_resolution(self) -> None:
+        client = FakeClient(timeout_tools={"modify_object"})
+        registry = CapabilityRegistry()
+        registry.register(IllustratorAdapter(client))
+        with self.assertRaises(OperationUnknownError) as ctx:
+            registry.execute(
+                "illustrator",
+                "creative.selection.update",
+                {"properties": {"opacity": 60}},
+            )
+        self.assertEqual(ctx.exception.capability, "creative.selection.update")
+        self.assertEqual([name for name, _ in client.calls], ["list_fonts", "get_selection", "modify_object"])
 
     def test_export_path_translates_to_output_path(self) -> None:
         client = FakeClient()
