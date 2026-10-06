@@ -52,8 +52,9 @@ class IllustratorAdapterTests(unittest.TestCase):
     def test_metadata_is_pinned(self) -> None:
         info = IllustratorAdapter(FakeClient(), version="30.0").info()
         self.assertEqual(info.application, "illustrator")
-        self.assertEqual(info.upstream_repository, "ie3jp/illustrator-mcp-server")
-        self.assertEqual(info.upstream_snapshot, "57c5c101a5192c61535493f39b653e6f92b8eb29")
+        self.assertEqual(info.upstream_repository, "jinkeda/Illustrator_MCP")
+        self.assertEqual(info.upstream_snapshot, "5d7a3edc8ebc89a0fc56b059e1311d3b2bfca815")
+        self.assertEqual(info.transport, "mcp+cep-websocket")
         self.assertTrue(info.undo_supported)
         self.assertIn("creative.context.get", info.common_capabilities)
         self.assertIn("creative.selection.update", info.common_capabilities)
