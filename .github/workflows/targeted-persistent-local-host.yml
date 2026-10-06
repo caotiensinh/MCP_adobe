@@ -1,0 +1,171 @@
+name: Deploy persistent MCP Adobe local host
+
+on:
+  push:
+    branches: [feat/illustrator-cep-backend]
+    paths:
+      - "src/mcp_adobe/server.py"
+      - "scripts/install_local_host.ps1"
+      - "scripts/install_windows.ps1"
+      - "tests/test_server.py"
+      - "tests/test_install_windows.py"
+      - "tests/test_persistent_local_host.py"
+      - ".github/workflows/targeted-persistent-local-host.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: persistent-mcp-adobe-host-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy-persistent-host:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 30
+    env:
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Provision pinned Node for CEP build
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.19.0"
+
+      - name: Refresh toolchain and targeted unit tests
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+            $uvDir=Join-Path $HOME '.local\bin'
+            if(Test-Path (Join-Path $uvDir 'uv.exe')) { $env:Path="$uvDir;$env:Path" }
+          }
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){ throw 'uv unavailable' }
+          uv sync
+          uv run python -m unittest tests.test_server tests.test_install_windows tests.test_persistent_local_host -v
+
+      - name: Install production Illustrator CEP backend
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $uv=(Get-Command uv).Source
+          $node=(Get-Command node).Source
+          $npmCmd=Get-Command npm.cmd -ErrorAction SilentlyContinue
+          if($npmCmd){ $npm=$npmCmd.Source } else { $npm=(Get-Command npm -ErrorAction Stop).Source }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_illustrator_cep_backend.ps1 `
+            -PythonVersion 3.12 `
+            -UvCommandPath $uv `
+            -NodeCommandPath $node `
+            -NpmCommandPath $npm
+          if($LASTEXITCODE -ne 0){ throw "production Illustrator backend install failed: $LASTEXITCODE" }
+
+      - name: Install and start persistent local host
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $uv=(Get-Command uv).Source
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_local_host.ps1 -PythonVersion 3.12 -UvCommandPath $uv
+          if($LASTEXITCODE -ne 0){ throw "persistent local host install failed: $LASTEXITCODE" }
+
+      - name: Ensure Illustrator interactive host is open
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $aiPath='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
+          if(-not (Test-Path $aiPath)){ throw "Illustrator executable missing: $aiPath" }
+          $existing=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          if($existing.Count -eq 0){
+            $p=Start-Process -FilePath $aiPath -PassThru
+            Write-Host "ILLUSTRATOR_LAUNCHED_PID=$($p.Id)"
+          } else {
+            Write-Host "ILLUSTRATOR_ALREADY_RUNNING=$($existing.Id -join ',')"
+          }
+          $deadline=(Get-Date).AddSeconds(100)
+          do {
+            Start-Sleep -Seconds 2
+            $visible=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1
+          } until($visible -or (Get-Date) -gt $deadline)
+          if(-not $visible){ throw 'Illustrator interactive window did not become visible within 100 seconds' }
+          Write-Host "ILLUSTRATOR_HOST=PASS PID=$($visible.Id) SESSION=$($visible.SessionId)"
+
+      - name: Verify persistent ports
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Start-Sleep -Seconds 5
+          foreach($port in @(8787,8081,8765)){
+            $listeners=@(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
+            if($listeners.Count -ne 1){ throw "expected one listener on $port, got $($listeners.Count)" }
+            $pid=$listeners[0].OwningProcess
+            $p=Get-CimInstance Win32_Process -Filter "ProcessId=$pid"
+            Write-Host "PERSISTENT_PORT_$port=PASS PID=$pid EXE=$($p.ExecutablePath) CMD=$($p.CommandLine)"
+          }
+
+      - name: Verify HTTP MCP to live Illustrator twice
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import asyncio
+          import json
+          import time
+          from mcp import Client
+
+          URL = "http://127.0.0.1:8787/mcp"
+
+          async def probe(label: str) -> None:
+              async with Client(URL) as client:
+                  listed = await client.list_tools()
+                  names = {tool.name for tool in listed.tools}
+                  required = {
+                      "creative_discover",
+                      "creative_read",
+                      "creative_write",
+                      "creative_authorized_write",
+                  }
+                  if names != required:
+                      raise RuntimeError(f"unexpected tools: {sorted(names)}")
+                  result = await client.call_tool(
+                      "creative_read",
+                      {
+                          "application": "illustrator",
+                          "capability": "creative.health",
+                          "arguments": {},
+                      },
+                  )
+                  if result.is_error:
+                      raise RuntimeError(f"Illustrator health failed: {result}")
+                  print(label + "=" + json.dumps(result.structured_content, ensure_ascii=False, default=str), flush=True)
+
+          for attempt in range(1, 31):
+              try:
+                  asyncio.run(probe("PERSISTENT_HTTP_ILLUSTRATOR_HEALTH_1"))
+                  break
+              except Exception as exc:
+                  print(f"PERSISTENT_HEALTH_WAIT attempt={attempt} error={type(exc).__name__}:{exc}", flush=True)
+                  if attempt == 30:
+                      raise
+                  time.sleep(2)
+
+          time.sleep(8)
+          asyncio.run(probe("PERSISTENT_HTTP_ILLUSTRATOR_HEALTH_2"))
+          print("PERSISTENT_MCP_ADOBE_HOST_E2E=PASS", flush=True)
+          '@ | Set-Content -Path persistent_host_probe.py -Encoding UTF8
+          uv run python persistent_host_probe.py
+
+      - name: Verify host survives client disconnect
+        shell: powershell
+        run: |
+          Start-Sleep -Seconds 5
+          foreach($port in @(8787,8081,8765)){
+            if(@(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue).Count -eq 0){
+              throw "persistent host lost port $port after client disconnect"
+            }
+          }
+          Write-Host 'PERSISTENT_HOST_AFTER_CLIENT_DISCONNECT=PASS'

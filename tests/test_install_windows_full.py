@@ -34,6 +34,7 @@ class WindowsFullBootstrapTests(unittest.TestCase):
                     "3.12",
                     "-UvCommandPath",
                     str(uv),
+                    "-SkipPersistentHost",
                     "-OutputDir",
                     str(output),
                 ],

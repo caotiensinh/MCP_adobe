@@ -3,6 +3,7 @@ param(
     [string]$PythonVersion = "3.12",
     [switch]$InstallXdPlugin,
     [switch]$GenerateConfigsOnly,
+    [switch]$SkipPersistentHost,
     [string]$UvCommandPath = "",
     [string]$OutputDir = ""
 )
@@ -122,60 +123,52 @@ function ConvertTo-TomlString([string]$Value) {
 function Write-ClientConfigs([string]$UvExe) {
     New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 
-    $stdioArgs = @(
-        "run",
-        "--directory",
-        $RepoRoot,
-        "mcp-adobe",
-        "--transport",
-        "stdio"
-    )
-
+    $localMcpUrl = "http://127.0.0.1:8787/mcp"
     $claudeConfig = [ordered]@{
         mcpServers = [ordered]@{
             "adobe-creative" = [ordered]@{
-                type = "stdio"
-                command = $UvExe
-                args = $stdioArgs
+                type = "http"
+                url = $localMcpUrl
             }
         }
     }
     $claudePath = Join-Path $OutputDir "claude-code.mcp.json"
     $claudeConfig | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $claudePath -Encoding UTF8
 
-    $tomlArgs = ($stdioArgs | ForEach-Object { ConvertTo-TomlString $_ }) -join ", "
     $codex = @(
         "[mcp_servers.adobe_creative]",
-        "command = $(ConvertTo-TomlString $UvExe)",
-        "args = [$tomlArgs]",
-        "cwd = $(ConvertTo-TomlString $RepoRoot)"
+        "url = $(ConvertTo-TomlString $localMcpUrl)"
     ) -join [Environment]::NewLine
     $codexPath = Join-Path $OutputDir "codex.config.toml.snippet"
     Set-Content -LiteralPath $codexPath -Value $codex -Encoding UTF8
 
-    $claudeCommand = 'claude mcp add --transport stdio --scope user adobe-creative -- "' + $UvExe + '" run --directory "' + $RepoRoot + '" mcp-adobe --transport stdio'
+    $claudeCommand = 'claude mcp add --transport http --scope user adobe-creative ' + $localMcpUrl
     $instructions = @(
-        "MCP Adobe local stdio setup",
+        "MCP Adobe persistent local host",
+        "",
+        "Local MCP URL:",
+        $localMcpUrl,
         "",
         "Claude Code:",
         $claudeCommand,
         "Verify: claude mcp get adobe-creative",
         "",
-        "Claude Desktop / JSON-compatible clients:",
+        "Claude Desktop / JSON-compatible HTTP clients:",
         "Use: $claudePath",
         "",
         "Codex:",
-        "Merge the following file into your Codex config:",
+        "CLI: codex mcp add adobe-creative --url " + $localMcpUrl,
+        "Or merge the following file into your Codex config:",
         $codexPath,
         "",
-        "Direct smoke:",
-        '"' + $UvExe + '" run --directory "' + $RepoRoot + '" mcp-adobe --transport stdio',
-        "",
         "Illustrator backend:",
-        "The installer pins jinkeda/Illustrator_MCP and installs its CEP panel automatically.",
+        "The local host owns the single persistent Illustrator WebSocket bridge on 127.0.0.1:8081.",
         "Start Illustrator, then open Window > Extensions > MCP Control if the panel is not already visible.",
         "",
-        "No OAuth secret is stored in these generated local stdio configs."
+        "ChatGPT cloud cannot call a loopback URL directly; use the project's authenticated HTTPS/Secure MCP tunnel path for ChatGPT.",
+        "",
+        "Do not start a second stdio MCP Adobe gateway while this persistent host is running.",
+        "No OAuth secret is stored in these generated local HTTP configs."
     ) -join [Environment]::NewLine
     $instructionsPath = Join-Path $OutputDir "LOCAL_MCP_SETUP.txt"
     Set-Content -LiteralPath $instructionsPath -Value $instructions -Encoding UTF8
@@ -221,6 +214,12 @@ if ($LASTEXITCODE -ne 0) { throw "mcp-adobe-remote-probe CLI smoke failed" }
 Write-Host "illustrator_backend=install"
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "install_illustrator_cep_backend.ps1") -PythonVersion $PythonVersion -UvCommandPath $uvExe
 if ($LASTEXITCODE -ne 0) { throw "Illustrator CEP backend installation failed (exit $LASTEXITCODE)" }
+
+if (-not $SkipPersistentHost) {
+    Write-Host "local_host=install"
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "install_local_host.ps1") -PythonVersion $PythonVersion -UvCommandPath $uvExe
+    if ($LASTEXITCODE -ne 0) { throw "MCP Adobe persistent local host installation failed (exit $LASTEXITCODE)" }
+}
 
 if ($InstallXdPlugin) {
     Write-Host "xd_plugin=install"

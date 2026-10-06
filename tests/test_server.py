@@ -9,7 +9,7 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 
 from mcp_adobe.auth import HIGH_RISK_SCOPE, WRITE_SCOPE, OAuthResourceConfig
 from mcp_adobe.core import AdapterInfo, RiskClass
-from mcp_adobe.server import build_server
+from mcp_adobe.server import GatewayRuntime, build_server
 
 
 class FakeRuntime:
@@ -288,6 +288,53 @@ class McpServerContractTests(unittest.TestCase):
         self.assertFalse(high.is_error)
         self.assertEqual(high.structured_content["mode"], "authorized_write")
         self.assertEqual([name for name, _ in self.runtime.calls], ["authorized_write"])
+
+
+class _StartableBridge:
+    def __init__(self, *, error: Exception | None = None) -> None:
+        self.starts = 0
+        self.error = error
+
+    def start(self) -> None:
+        self.starts += 1
+        if self.error is not None:
+            raise self.error
+
+
+class GatewayRuntimePrewarmTests(unittest.TestCase):
+    def _runtime(self):
+        runtime = object.__new__(GatewayRuntime)
+        runtime._photoshop_client = _StartableBridge()
+        runtime._illustrator_client = _StartableBridge()
+        runtime._xd_client = _StartableBridge()
+        return runtime
+
+    def test_prewarm_deduplicates_and_starts_requested_bridges(self) -> None:
+        runtime = self._runtime()
+        result = runtime.prewarm(["illustrator", "xd", "illustrator"])
+        self.assertEqual(result, {"illustrator": "started", "xd": "started"})
+        self.assertEqual(runtime._illustrator_client.starts, 1)
+        self.assertEqual(runtime._xd_client.starts, 1)
+        self.assertEqual(runtime._photoshop_client.starts, 0)
+
+    def test_prewarm_all_starts_each_bridge_once(self) -> None:
+        runtime = self._runtime()
+        result = runtime.prewarm(["all"])
+        self.assertEqual(set(result), {"photoshop", "illustrator", "xd"})
+        self.assertTrue(all(value == "started" for value in result.values()))
+
+    def test_prewarm_best_effort_reports_failure_without_killing_host(self) -> None:
+        runtime = self._runtime()
+        runtime._illustrator_client = _StartableBridge(error=RuntimeError("boom"))
+        result = runtime.prewarm(["illustrator", "xd"])
+        self.assertTrue(result["illustrator"].startswith("error:RuntimeError:"))
+        self.assertEqual(result["xd"], "started")
+
+    def test_prewarm_strict_raises(self) -> None:
+        runtime = self._runtime()
+        runtime._illustrator_client = _StartableBridge(error=RuntimeError("boom"))
+        with self.assertRaisesRegex(RuntimeError, "failed to prewarm illustrator"):
+            runtime.prewarm(["illustrator"], strict=True)
 
 
 if __name__ == "__main__":

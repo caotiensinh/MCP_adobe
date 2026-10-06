@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 import atexit
 import os
+import sys
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Mapping, Protocol
+from typing import Any, Iterable, Mapping, Protocol
 from uuid import uuid4
 
 from mcp.server import MCPServer
@@ -85,6 +86,42 @@ class GatewayRuntime:
 
     def describe(self) -> tuple[AdapterInfo, ...]:
         return self.registry.describe()
+
+    def prewarm(
+        self,
+        applications: Iterable[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, str]:
+        """Start selected Adobe bridges before the first MCP tool call."""
+        requested: list[str] = []
+        for raw in applications:
+            name = str(raw).strip().lower()
+            if not name:
+                continue
+            names = ("photoshop", "illustrator", "xd") if name == "all" else (name,)
+            for item in names:
+                if item not in {"photoshop", "illustrator", "xd"}:
+                    raise ValueError(f"unsupported prewarm application: {item}")
+                if item not in requested:
+                    requested.append(item)
+
+        starters = {
+            "photoshop": self._photoshop_client.start,
+            "illustrator": self._illustrator_client.start,
+            "xd": self._xd_client.start,
+        }
+        results: dict[str, str] = {}
+        for application in requested:
+            try:
+                starters[application]()
+            except Exception as exc:
+                results[application] = f"error:{type(exc).__name__}:{exc}"
+                if strict:
+                    raise RuntimeError(f"failed to prewarm {application}") from exc
+            else:
+                results[application] = "started"
+        return results
 
     def _risk(self, application: str, capability: str) -> RiskClass:
         adapter = self.registry.resolve(application, capability)
@@ -500,6 +537,18 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=int(os.environ.get("MCP_ADOBE_PORT", "8787")))
     parser.add_argument("--path", default=os.environ.get("MCP_ADOBE_PATH", "/mcp"))
     parser.add_argument(
+        "--prewarm",
+        action="append",
+        choices=("photoshop", "illustrator", "xd", "all"),
+        default=[],
+        help="Start selected Adobe bridge(s) when the gateway starts; repeatable.",
+    )
+    parser.add_argument(
+        "--prewarm-strict",
+        action="store_true",
+        help="Exit if a requested prewarm bridge cannot be started.",
+    )
+    parser.add_argument(
         "--allow-non-loopback",
         action="store_true",
         help="Allow an OAuth-protected non-loopback bind. Prefer Secure MCP Tunnel/reverse proxy.",
@@ -553,7 +602,15 @@ def main() -> None:
         if not loopback and not oauth_config.resource_url.startswith("https://"):
             raise SystemExit("Non-loopback OAuth resource URL must use https")
 
+    runtime: GatewayRuntime | None = None
+    if args.prewarm:
+        runtime = _get_default_runtime()
+        results = runtime.prewarm(args.prewarm, strict=args.prewarm_strict)
+        for application, status in results.items():
+            print(f"mcp_adobe_prewarm {application}={status}", file=sys.stderr, flush=True)
+
     mcp = build_server(
+        runtime=runtime,
         oauth_config=oauth_config,
         token_verifier=token_verifier,
         audit_sink=audit_sink,
