@@ -58,6 +58,16 @@ def main() -> None:
     config = replace(photoshop_stdio_config(), startup_timeout_seconds=180.0)
 
     with McpSubprocessToolClient(config) as client:
+        # The upstream Photoshop MCP intentionally defers host detection until
+        # photoshop_ping. get_state before a successful ping is invalid on a
+        # cold server and returns "Photoshop info not available".
+        ping = client.call_tool("photoshop_ping", {})
+        evidence["ping"] = dict(ping)
+        ping_text = " ".join(str(ping.get(key, "")) for key in ("text", "message", "value"))
+        if ping.get("connected") is not True and "successfully connected to photoshop" not in ping_text.lower():
+            raise RuntimeError(f"Photoshop ping did not establish a live host connection: {ping!r}")
+        print("PHOTOSHOP_PING=PASS " + json.dumps(ping, ensure_ascii=False, sort_keys=True), flush=True)
+
         registry = CapabilityRegistry()
         registry.register(PhotoshopAdapter(client, writes_enabled=True))
 
