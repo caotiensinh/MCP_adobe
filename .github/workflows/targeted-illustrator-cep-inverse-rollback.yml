@@ -1,0 +1,188 @@
+name: Targeted Illustrator CEP inverse rollback
+
+on:
+  push:
+    branches: [diag/illustrator-panel-ws]
+    paths:
+      - ".github/workflows/targeted-illustrator-cep-inverse-rollback.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  illustrator-inverse-rollback:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: copy
+      UPSTREAM_SHA: 5d7a3edc8ebc89a0fc56b059e1311d3b2bfca815
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare pinned Illustrator CEP MCP
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){
+            $uvDir=Join-Path $HOME '.local\bin'
+            if(Test-Path (Join-Path $uvDir 'uv.exe')){ $env:Path="$uvDir;$env:Path" }
+          }
+          uv sync
+          $up=Join-Path $env:RUNNER_TEMP 'jinkeda-Illustrator_MCP'
+          $venv=Join-Path $env:RUNNER_TEMP 'jinkeda-Illustrator_MCP-venv'
+          if(Test-Path $up){ Remove-Item -Recurse -Force $up }
+          if(Test-Path $venv){ Remove-Item -Recurse -Force $venv }
+          git clone --no-checkout https://github.com/jinkeda/Illustrator_MCP.git $up
+          git -C $up fetch --depth=1 origin $env:UPSTREAM_SHA
+          git -C $up checkout --detach $env:UPSTREAM_SHA
+          $actual=(git -C $up rev-parse HEAD).Trim()
+          if($actual -ne $env:UPSTREAM_SHA){ throw "upstream SHA mismatch: $actual" }
+          uv venv --python 3.12 $venv
+          $py=Join-Path $venv 'Scripts\python.exe'
+          uv pip install --python $py -e $up
+          "ILLUSTRATOR_CEP_SERVER_PY=$py" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "PINNED_ILLUSTRATOR_MCP=$actual"
+
+      - name: Require free bridge port
+        shell: powershell
+        run: |
+          $listeners=@(Get-NetTCPConnection -State Listen -LocalPort 8081 -ErrorAction SilentlyContinue)
+          if($listeners.Count -gt 0){
+            $listeners | Select-Object LocalAddress,LocalPort,OwningProcess | Format-Table -AutoSize
+            throw 'Port 8081 is occupied; refusing blind process termination.'
+          }
+          Write-Host 'PORT_8081_FREE=PASS'
+
+      - name: Start Illustrator and verify installed panel
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $aiPath='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
+          if(-not (Test-Path $aiPath)){ throw 'Illustrator 2023 executable missing' }
+          $existing=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          if($existing.Count -eq 0){
+            $p=Start-Process -FilePath $aiPath -PassThru
+            Write-Host "ILLUSTRATOR_LAUNCH_PID=$($p.Id)"
+          } else {
+            Write-Host "ILLUSTRATOR_ALREADY_RUNNING=$($existing.Id -join ',')"
+          }
+          $deadline=(Get-Date).AddSeconds(100)
+          do {
+            Start-Sleep -Seconds 2
+            $ai=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1
+          } until($ai -or (Get-Date) -gt $deadline)
+          if(-not $ai){ throw 'Illustrator interactive window unavailable' }
+          Write-Host "ILLUSTRATOR_HOST=PASS PID=$($ai.Id) SESSION=$($ai.SessionId) TITLE=$($ai.MainWindowTitle)"
+          $manifest='C:\Users\caodu\AppData\Roaming\Adobe\CEP\extensions\com.illustrator.mcp.panel\CSXS\manifest.xml'
+          if(-not (Test-Path $manifest)){ throw 'MCP Control CEP panel is not installed' }
+          Write-Host 'ILLUSTRATOR_CEP_PANEL=PASS version=1.0.2'
+
+      - name: Live create then inverse-delete and verify
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json, os, time
+          from mcp_adobe.mcp_stdio import McpSubprocessToolClient, SubprocessMcpConfig
+
+          cfg=SubprocessMcpConfig(
+              command=os.environ['ILLUSTRATOR_CEP_SERVER_PY'],
+              args=('-B','-m','illustrator_mcp.server'),
+              env={'WS_HOST':'127.0.0.1','WS_PORT':'8081','TIMEOUT':'30'},
+              startup_timeout_seconds=90.0,
+              call_timeout_seconds=90.0,
+          )
+
+          def emit(label,v): print(label+'='+json.dumps(v,ensure_ascii=False,default=str),flush=True)
+          def find(v,key):
+              if isinstance(v,dict):
+                  if key in v: return v[key]
+                  for x in v.values():
+                      r=find(x,key)
+                      if r is not None: return r
+              elif isinstance(v,list):
+                  for x in v:
+                      r=find(x,key)
+                      if r is not None: return r
+              return None
+          def ok(v): return find(v,'execution')=='succeeded' or find(v,'ok') is True
+          def layer(v,name):
+              d=v.get('data',{}) if isinstance(v,dict) else {}
+              return d.get('layers',{}).get(name,{}).get('status')
+
+          created_doc=False
+          with McpSubprocessToolClient(cfg) as c:
+              print('ILLUSTRATOR_TOOLS='+str(len(c.tool_names)),flush=True)
+              status=None
+              for attempt in range(1,31):
+                  status=c.call_tool('illustrator_connection_status',{'params':{'probe':True,'timeout':5.0}})
+                  print(f"CHAIN attempt={attempt} server={layer(status,'server')} panel={layer(status,'panel')} illustrator={layer(status,'illustrator')} document={layer(status,'document')}",flush=True)
+                  if layer(status,'server')=='ok' and layer(status,'panel')=='ok' and layer(status,'illustrator')=='ok': break
+                  time.sleep(2)
+              else: raise RuntimeError('persistent Illustrator CEP chain did not become ready')
+              print('ILLUSTRATOR_CEP_PERSISTENT_BRIDGE=PASS',flush=True)
+
+              if layer(status,'document') in ('none_open','unknown'):
+                  r=c.call_tool('illustrator_document',{'params':{'action':'create','width':640,'height':420,'color_mode':'RGB','name':'MCP Adobe Inverse Probe'}})
+                  emit('DOCUMENT_CREATE',r)
+                  if not ok(r): raise RuntimeError('document create failed')
+                  created_doc=True
+                  time.sleep(1)
+
+              read="JSON.stringify({items:app.activeDocument.pageItems.length,document:app.activeDocument.name,version:app.version});"
+              before=c.call_tool('illustrator_execute_script',{'params':{'script':read,'read_only':True}})
+              emit('READ_BEFORE',before)
+              n0=find(before,'items')
+              if not isinstance(n0,(int,float)): raise RuntimeError('baseline item count unavailable')
+
+              create=c.call_tool('illustrator_execute_task',{'params':{'batch':{'operations':[
+                  {'task':'element_create','params':{'type':'rect','x':80,'y':80,'width':180,'height':110,'id':'mcp_adobe_live_probe','fill':{'r':24,'g':119,'b':242}}}
+              ],'stopOnError':True}}})
+              emit('BOUNDED_CREATE',create)
+              if not ok(create): raise RuntimeError('bounded create failed')
+              created=find(create,'created')
+              if not isinstance(created,list) or 'mcp_adobe_live_probe' not in created:
+                  raise RuntimeError(f'created effect missing expected id: {created}')
+
+              after=c.call_tool('illustrator_execute_script',{'params':{'script':read,'read_only':True}})
+              emit('READ_AFTER_CREATE',after)
+              n1=find(after,'items')
+              if n1 != n0+1: raise RuntimeError(f'create verification failed: {n0}->{n1}')
+              print(f'ILLUSTRATOR_BOUNDED_CREATE_VERIFY=PASS before={n0} after={n1}',flush=True)
+
+              inverse=c.call_tool('illustrator_execute_task',{'params':{'batch':{'operations':[
+                  {'task':'element_delete','targets':{'type':'id','ids':['mcp_adobe_live_probe']},'params':{}}
+              ],'stopOnError':True}}})
+              emit('INVERSE_DELETE',inverse)
+              if not ok(inverse): raise RuntimeError('inverse element_delete failed')
+              deleted=find(inverse,'deleted')
+              if not isinstance(deleted,list) or 'mcp_adobe_live_probe' not in deleted:
+                  raise RuntimeError(f'deleted effect missing expected id: {deleted}')
+
+              restored=c.call_tool('illustrator_execute_script',{'params':{'script':read,'read_only':True}})
+              emit('READ_AFTER_INVERSE',restored)
+              n2=find(restored,'items')
+              if n2 != n0: raise RuntimeError(f'inverse rollback verification failed: expected={n0} actual={n2}')
+              print(f'ILLUSTRATOR_LOGICAL_UNDO_VERIFY=PASS before={n0} restored={n2}',flush=True)
+
+              if created_doc:
+                  close=c.call_tool('illustrator_document',{'params':{'action':'close','save_before_close':False}})
+                  emit('DOCUMENT_CLOSE',close)
+                  if not ok(close): raise RuntimeError('temporary document close failed')
+
+              print('ILLUSTRATOR_CEP_LIVE_INTERACTION_E2E=PASS',flush=True)
+          '@ | Set-Content -Path illustrator_inverse_e2e.py -Encoding UTF8
+          uv run python illustrator_inverse_e2e.py
+
+      - name: Cleanup evidence
+        if: always()
+        shell: powershell
+        run: |
+          $listeners=@(Get-NetTCPConnection -State Listen -LocalPort 8081 -ErrorAction SilentlyContinue)
+          if($listeners.Count -eq 0){ Write-Host 'PORT_8081_AFTER_JOB=FREE' }
+          else { $listeners | Select-Object LocalAddress,LocalPort,OwningProcess | Format-Table -AutoSize }
