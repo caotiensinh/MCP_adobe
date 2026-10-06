@@ -20,16 +20,36 @@ class ToolBinding:
     risk: RiskClass
 
 
+# Curated bounded interaction surface. Prefer these object/path/text operations
+# for conversational editing instead of monolithic generated scripts.
 _BINDINGS: dict[str, ToolBinding] = {
     "creative.health": ToolBinding("list_fonts", RiskClass.READ),
     "creative.document.info": ToolBinding("get_document_info", RiskClass.READ),
     "creative.document.structure": ToolBinding("get_document_structure", RiskClass.READ),
     "creative.selection.get": ToolBinding("get_selection", RiskClass.READ),
+    "creative.artboard.list": ToolBinding("get_artboards", RiskClass.READ),
+    "creative.layer.list": ToolBinding("get_layers", RiskClass.READ),
+    "creative.path.list": ToolBinding("get_path_items", RiskClass.READ),
+    "creative.group.list": ToolBinding("get_groups", RiskClass.READ),
+    "creative.text.list": ToolBinding("list_text_frames", RiskClass.READ),
+    "creative.object.find": ToolBinding("find_objects", RiskClass.READ),
     "creative.document.create": ToolBinding("create_document", RiskClass.WRITE_REVERSIBLE),
     "creative.document.open": ToolBinding("open_document", RiskClass.WRITE_REVERSIBLE),
     "creative.document.save": ToolBinding("save_document", RiskClass.FILE_WRITE),
     "creative.document.export": ToolBinding("export", RiskClass.FILE_WRITE),
     "creative.document.export_pdf": ToolBinding("export_pdf", RiskClass.FILE_WRITE),
+    "creative.shape.rectangle": ToolBinding("create_rectangle", RiskClass.WRITE_REVERSIBLE),
+    "creative.shape.ellipse": ToolBinding("create_ellipse", RiskClass.WRITE_REVERSIBLE),
+    "creative.path.create": ToolBinding("create_path", RiskClass.WRITE_REVERSIBLE),
+    "creative.text.create": ToolBinding("create_text_frame", RiskClass.WRITE_REVERSIBLE),
+    "creative.object.update": ToolBinding("modify_object", RiskClass.WRITE_REVERSIBLE),
+    "creative.object.select": ToolBinding("select_objects", RiskClass.WRITE_REVERSIBLE),
+    "creative.object.group": ToolBinding("group_objects", RiskClass.WRITE_REVERSIBLE),
+    "creative.object.ungroup": ToolBinding("ungroup_objects", RiskClass.WRITE_REVERSIBLE),
+    "creative.object.z_order": ToolBinding("set_z_order", RiskClass.WRITE_REVERSIBLE),
+    "creative.object.move_to_layer": ToolBinding("move_to_layer", RiskClass.WRITE_REVERSIBLE),
+    "creative.gradient.create": ToolBinding("create_gradient", RiskClass.WRITE_REVERSIBLE),
+    "creative.object.delete": ToolBinding("delete_objects", RiskClass.DESTRUCTIVE),
     "creative.undo": ToolBinding("undo", RiskClass.WRITE_REVERSIBLE),
 }
 
