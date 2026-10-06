@@ -15,6 +15,13 @@ $UpstreamSha = "5d7a3edc8ebc89a0fc56b059e1311d3b2bfca815"
 $ExpectedPackageVersion = "3.0.0"
 $ExtensionId = "com.illustrator.mcp.panel"
 
+function Refresh-ProcessPath {
+    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $parts = @($machinePath, $userPath, $env:Path) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $env:Path = ($parts -join ";")
+}
+
 function Resolve-CommandPath([string]$Name) {
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
     if ($null -eq $cmd) { return $null }
@@ -32,6 +39,12 @@ function Invoke-Checked([string]$Program, [string[]]$Arguments, [string]$Label) 
 function Get-ExistingItem([string]$Path) {
     return Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
 }
+
+# A child PowerShell (for example from GitHub Actions or the main installer)
+# can inherit a stale PATH even when Node/Git were installed system-wide.
+# Refresh before resolving any external executable so this script is robust
+# when invoked directly as well as through install_windows.ps1.
+Refresh-ProcessPath
 
 if ([string]::IsNullOrWhiteSpace($InstallRoot)) {
     if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
