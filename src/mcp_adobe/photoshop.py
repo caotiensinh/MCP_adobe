@@ -14,8 +14,6 @@ READINESS_TTL_SECONDS = 30.0
 
 
 class UpstreamToolClient(Protocol):
-    """Minimal transport-neutral client for a downstream MCP server."""
-
     @property
     def connected(self) -> bool:
         ...
@@ -25,8 +23,6 @@ class UpstreamToolClient(Protocol):
 
 
 class OperationUnknownError(RuntimeError):
-    """A mutating call timed out and may still have completed inside Photoshop."""
-
     def __init__(self, capability: str, upstream_tool: str) -> None:
         super().__init__(
             f"operation outcome is unknown after timeout: {capability} via {upstream_tool}; "
@@ -42,12 +38,10 @@ class ToolBinding:
     risk: RiskClass
 
 
-# Curated bounded interaction surface. Keep arbitrary script execution as an
-# explicitly privileged escape hatch; normal conversational editing should use
-# the semantic capabilities below.
 _BINDINGS: dict[str, ToolBinding] = {
     "creative.health": ToolBinding("photoshop_ping", RiskClass.READ),
     "creative.capabilities": ToolBinding("photoshop_get_capabilities", RiskClass.READ),
+    "creative.context.get": ToolBinding("photoshop_get_state", RiskClass.READ),
     "creative.document.info": ToolBinding("photoshop_get_state", RiskClass.READ),
     "creative.document.preview": ToolBinding("photoshop_get_preview", RiskClass.READ),
     "creative.selection.get": ToolBinding("photoshop_get_state", RiskClass.READ),
@@ -80,8 +74,6 @@ _BINDINGS: dict[str, ToolBinding] = {
 
 
 class PhotoshopAdapter:
-    """Adapter over the pinned alisaitteke/photoshop-mcp tool surface."""
-
     def __init__(
         self,
         client: UpstreamToolClient,
@@ -116,7 +108,6 @@ class PhotoshopAdapter:
     def _translate_arguments(capability: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         args = dict(arguments)
         args.pop("overwrite", None)
-
         if capability == "creative.document.open":
             path = args.pop("path", None)
             if path is not None:
@@ -140,32 +131,15 @@ class PhotoshopAdapter:
     def probe_ready(self) -> Mapping[str, Any]:
         now = time.monotonic()
         if self._ready_until > now:
-            return {
-                "ready": True,
-                "application": "photoshop",
-                "source": "photoshop_ping",
-                "cached": True,
-            }
+            return {"ready": True, "application": "photoshop", "source": "photoshop_ping", "cached": True}
         try:
             result = self._client.call_tool("photoshop_ping", {})
         except Exception:
             self._ready_until = 0.0
-            return {
-                "ready": False,
-                "application": "photoshop",
-                "source": "photoshop_ping",
-                "cached": False,
-                "reason": "photoshop_ping_failed",
-            }
+            return {"ready": False, "application": "photoshop", "source": "photoshop_ping", "cached": False, "reason": "photoshop_ping_failed"}
         ready = self._ping_ready(result)
         self._ready_until = now + READINESS_TTL_SECONDS if ready else 0.0
-        return {
-            "ready": ready,
-            "application": "photoshop",
-            "source": "photoshop_ping",
-            "cached": False,
-            "reason": None if ready else "photoshop_ping_not_connected",
-        }
+        return {"ready": ready, "application": "photoshop", "source": "photoshop_ping", "cached": False, "reason": None if ready else "photoshop_ping_not_connected"}
 
     def execute(self, capability: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         try:
@@ -173,11 +147,7 @@ class PhotoshopAdapter:
         except KeyError as exc:
             raise LookupError(f"unsupported Photoshop capability: {capability}") from exc
 
-        file_snapshot = (
-            capture_file_snapshot(arguments)
-            if binding.risk is RiskClass.FILE_WRITE
-            else None
-        )
+        file_snapshot = capture_file_snapshot(arguments) if binding.risk is RiskClass.FILE_WRITE else None
         upstream_args = self._translate_arguments(capability, arguments)
         try:
             result = self._client.call_tool(binding.upstream_tool, upstream_args)
@@ -188,9 +158,7 @@ class PhotoshopAdapter:
             raise
 
         if capability == "creative.health":
-            self._ready_until = (
-                time.monotonic() + READINESS_TTL_SECONDS if self._ping_ready(result) else 0.0
-            )
+            self._ready_until = time.monotonic() + READINESS_TTL_SECONDS if self._ping_ready(result) else 0.0
 
         payload: dict[str, Any] = {
             "ok": True,
@@ -199,6 +167,8 @@ class PhotoshopAdapter:
             "upstream_tool": binding.upstream_tool,
             "result": result,
         }
+        if capability == "creative.context.get":
+            payload["context_source"] = "live-photoshop-state"
         if binding.risk is RiskClass.READ:
             payload["outcome"] = "read"
             payload["verification"] = {"status": "not_applicable"}
