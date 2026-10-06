@@ -134,14 +134,11 @@ jobs:
                       return node[key]
               return None
 
-          def query_items(value):
-              for node in walk(value):
-                  if not isinstance(node, Mapping):
-                      continue
-                  artifacts=node.get('artifacts')
-                  if isinstance(artifacts, Mapping) and isinstance(artifacts.get('items'), list):
-                      return artifacts['items']
-              raise RuntimeError('query response did not expose artifacts.items')
+          def query_count(value):
+              count=find_key(value, 'itemsProcessed')
+              if not isinstance(count, (int, float)) or isinstance(count, bool):
+                  raise RuntimeError('query response did not expose stats.itemsProcessed')
+              return int(count)
 
           client=McpSubprocessToolClient(illustrator_stdio_config())
           adapter=IllustratorAdapter(client, writes_enabled=True)
@@ -181,9 +178,9 @@ jobs:
 
               baseline=registry.execute('illustrator','creative.object.find',{'name':PROBE_NAME})
               dump('GATEWAY_FIND_BASELINE', baseline)
-              baseline_items=query_items(baseline)
-              if len(baseline_items) != 0:
-                  raise RuntimeError(f'probe name unexpectedly exists before create: {len(baseline_items)}')
+              baseline_count=query_count(baseline)
+              if baseline_count != 0:
+                  raise RuntimeError(f'probe name unexpectedly exists before create: {baseline_count}')
 
               create=registry.execute(
                   'illustrator','creative.shape.rectangle',
@@ -201,10 +198,47 @@ jobs:
 
               found=registry.execute('illustrator','creative.object.find',{'name':PROBE_NAME})
               dump('GATEWAY_FIND_AFTER_CREATE', found)
-              found_items=query_items(found)
-              if len(found_items) != 1:
-                  raise RuntimeError(f'live readback expected one probe item, got {len(found_items)}')
+              found_count=query_count(found)
+              if found_count != 1:
+                  raise RuntimeError(f'live readback expected one probe item, got {found_count}')
               print('GATEWAY_BOUNDED_CREATE_READBACK=PASS', flush=True)
+
+              select_script=(
+                  "var d=app.activeDocument;d.selection=null;var hit=null;"
+                  "for(var i=0;i<d.pageItems.length;i++){if(d.pageItems[i].name==='mcp_adobe_gateway_probe'){hit=d.pageItems[i];break;}}"
+                  "if(!hit){throw new Error('probe item not found');}hit.selected=true;"
+                  "JSON.stringify({selected:d.selection.length,name:hit.name});"
+              )
+              setup_selection=client._call_tool_raw(
+                  'illustrator_execute_script',
+                  {'params': {'script':select_script,'read_only':False,'description':'Select gateway probe for official selection test'}},
+              )
+              dump('GATEWAY_SELECTION_SETUP', setup_selection)
+
+              selection=registry.execute('illustrator','creative.selection.get',{})
+              dump('GATEWAY_SELECTION_GET', selection)
+              selection_count=find_key(selection,'selectionCount')
+              if selection_count != 1:
+                  raise RuntimeError(f'official selection read expected one item, got {selection_count}')
+              selected_uuid=find_key(selection,'uuid')
+              if not isinstance(selected_uuid,str) or not selected_uuid:
+                  raise RuntimeError(f'official selection read did not expose target token: {selected_uuid}')
+              print('GATEWAY_SELECTION_READ=PASS token='+selected_uuid, flush=True)
+
+              updated=registry.execute(
+                  'illustrator','creative.selection.update',
+                  {'properties':{'opacity':61}},
+              )
+              dump('GATEWAY_SELECTION_UPDATE', updated)
+              opacity_read=client._call_tool_raw(
+                  'illustrator_execute_script',
+                  {'params': {'script':'JSON.stringify({opacity:app.activeDocument.selection[0].opacity});','read_only':True}},
+              )
+              dump('GATEWAY_SELECTION_UPDATE_READBACK', opacity_read)
+              opacity=find_key(opacity_read,'opacity')
+              if not isinstance(opacity,(int,float)) or abs(float(opacity)-61.0) > 0.01:
+                  raise RuntimeError(f'official selection update opacity mismatch: {opacity}')
+              print('GATEWAY_SELECTION_UPDATE_READBACK=PASS', flush=True)
 
               deleted=registry.execute(
                   'illustrator','creative.object.delete',
@@ -218,9 +252,9 @@ jobs:
 
               after=registry.execute('illustrator','creative.object.find',{'name':PROBE_NAME})
               dump('GATEWAY_FIND_AFTER_DELETE', after)
-              after_items=query_items(after)
-              if len(after_items) != 0:
-                  raise RuntimeError(f'inverse delete readback expected zero items, got {len(after_items)}')
+              after_count=query_count(after)
+              if after_count != 0:
+                  raise RuntimeError(f'inverse delete readback expected zero items, got {after_count}')
               print('GATEWAY_LOGICAL_ROLLBACK_READBACK=PASS', flush=True)
               print('MCP_ADOBE_ILLUSTRATOR_CEP_GATEWAY_E2E=PASS', flush=True)
           finally:
