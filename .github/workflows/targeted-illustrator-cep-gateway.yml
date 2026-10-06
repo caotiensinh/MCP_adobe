@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: illustrator-cep-gateway-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   illustrator-cep-gateway:
     runs-on: [self-hosted, Windows, X64]

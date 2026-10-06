@@ -13,6 +13,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: illustrator-cep-installer-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   illustrator-cep-installer:
     runs-on: [self-hosted, Windows, X64]
