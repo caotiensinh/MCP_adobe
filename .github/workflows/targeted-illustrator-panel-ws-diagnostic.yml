@@ -1,0 +1,96 @@
+name: Targeted Illustrator MCP Control websocket diagnostic
+
+on:
+  push:
+    branches: [diag/illustrator-panel-ws]
+    paths:
+      - ".github/workflows/targeted-illustrator-panel-ws-diagnostic.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  illustrator-panel-ws:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Inspect live Illustrator panel transport
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Host "RUNNER=$env:RUNNER_NAME MACHINE=$env:COMPUTERNAME USER=$([Environment]::UserName)"
+          Write-Host '--- Illustrator processes ---'
+          Get-Process -Name Illustrator,CEPHtmlEngine,AIRobin,node -ErrorAction SilentlyContinue |
+            Select-Object ProcessName,Id,SessionId,MainWindowHandle,MainWindowTitle,Path |
+            Format-Table -AutoSize
+
+          Write-Host '--- TCP 8081 ---'
+          try {
+            Get-NetTCPConnection -LocalPort 8081 -ErrorAction Stop |
+              Select-Object State,LocalAddress,LocalPort,RemoteAddress,RemotePort,OwningProcess |
+              Format-Table -AutoSize
+          } catch {
+            Write-Host 'NO_GETNETTCP_8081'
+          }
+          cmd /c "netstat -ano | findstr :8081" 2>$null
+          if($LASTEXITCODE -ne 0){ Write-Host 'NETSTAT_8081=NO_MATCH' }
+
+          Write-Host '--- candidate CEP extension roots ---'
+          $roots = @(
+            (Join-Path $env:APPDATA 'Adobe\CEP\extensions'),
+            (Join-Path $env:LOCALAPPDATA 'Adobe\CEP\extensions'),
+            "$env:ProgramFiles\Common Files\Adobe\CEP\extensions",
+            "${env:ProgramFiles(x86)}\Common Files\Adobe\CEP\extensions"
+          ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+          foreach($root in $roots){ Write-Host "CEP_ROOT=$root" }
+
+          $matches = New-Object System.Collections.Generic.List[string]
+          foreach($root in $roots){
+            Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.Extension -in '.js','.html','.json','.xml','.jsx','.txt' } |
+              ForEach-Object {
+                $path=$_.FullName
+                try {
+                  $hit = Select-String -LiteralPath $path -Pattern 'MCP Control','127\.0\.0\.1:8081','ws://127\.0\.0\.1:8081','WebSocket transport','v1\.0\.2' -ErrorAction Stop
+                  if($hit){
+                    $matches.Add($path)
+                    Write-Host "MATCH_FILE=$path"
+                    $hit | Select-Object -First 12 | ForEach-Object {
+                      $text=$_.Line
+                      if($text.Length -gt 300){ $text=$text.Substring(0,300) }
+                      Write-Host ("MATCH line={0} text={1}" -f $_.LineNumber,$text)
+                    }
+                  }
+                } catch {}
+              }
+          }
+
+          Write-Host '--- manifests near matched files ---'
+          foreach($file in ($matches | Select-Object -Unique)){
+            $dir=Split-Path -Parent $file
+            for($i=0;$i -lt 5 -and $dir;$i++){
+              foreach($name in @('manifest.xml','manifest.json','CSXS\manifest.xml')){
+                $candidate=Join-Path $dir $name
+                if(Test-Path $candidate){
+                  Write-Host "MANIFEST=$candidate"
+                  Get-Content -LiteralPath $candidate -TotalCount 120 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+                }
+              }
+              $next=Split-Path -Parent $dir
+              if($next -eq $dir){ break }
+              $dir=$next
+            }
+          }
+
+          Write-Host '--- process command lines relevant to Illustrator bridge ---'
+          Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match 'Illustrator|CEPHtmlEngine|node|AIRobin' } |
+            Select-Object Name,ProcessId,ParentProcessId,CommandLine |
+            Format-List
+
+          if(($matches | Select-Object -Unique).Count -eq 0){
+            Write-Warning 'No installed CEP source containing MCP Control/8081 was found in standard roots.'
+          }
