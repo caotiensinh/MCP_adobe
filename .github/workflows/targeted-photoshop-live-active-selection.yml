@@ -1,5 +1,6 @@
 name: Targeted Photoshop live active selection
 
+# Retriggered after confirming the MRCAO self-hosted runner is online.
 on:
   push:
     branches: [test/photoshop-live-active-selection]
