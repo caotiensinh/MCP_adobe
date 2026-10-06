@@ -7,7 +7,7 @@ import time
 import unittest
 from typing import Any, Mapping
 
-from mcp_adobe import CapabilityRegistry, ExecutionPolicy, OperationUnknownError, XdAdapter
+from mcp_adobe import CapabilityRegistry, OperationUnknownError, XdAdapter
 from mcp_adobe.xd_bridge import XdWebSocketBridgeClient
 
 
@@ -26,11 +26,7 @@ class FakeXdClient:
         if self.fail_timeout:
             raise TimeoutError(name)
         if name.startswith("xd.queue.") and name != "xd.queue.status":
-            return {
-                "status": "queued",
-                "approval_required": True,
-                "operation_id": "xd-test-1",
-            }
+            return {"status": "queued", "approval_required": True, "operation_id": "xd-test-1"}
         return {"status": "ok", "method": name}
 
 
@@ -38,30 +34,28 @@ class XdAdapterTests(unittest.TestCase):
     def test_metadata_models_xd_approval_boundary(self) -> None:
         adapter = XdAdapter(FakeXdClient())
         info = adapter.info()
-
         self.assertTrue(info.connected)
         self.assertEqual(info.application, "xd")
         self.assertEqual(info.transport, "uxp-websocket-approval")
         self.assertFalse(info.undo_supported)
-        self.assertIn("creative.document.info", info.common_capabilities)
+        self.assertIn("creative.context.get", info.common_capabilities)
         self.assertIn("xd.queue.rectangle_create", info.native_capabilities)
-        self.assertNotIn("xd.queue.rectangle_create", info.common_capabilities)
+
+    def test_live_context_reads_document_and_current_selection(self) -> None:
+        client = FakeXdClient()
+        adapter = XdAdapter(client)
+        result = adapter.execute("creative.context.get", {})
+        self.assertEqual(client.calls, [("xd.document.info", {}), ("xd.selection.get", {})])
+        self.assertEqual(result["context_source"], "live-document+selection")
+        self.assertEqual(result["result"]["document"]["method"], "xd.document.info")
+        self.assertEqual(result["result"]["selection"]["method"], "xd.selection.get")
 
     def test_queue_rectangle_maps_to_exact_bridge_method(self) -> None:
         client = FakeXdClient()
         registry = CapabilityRegistry()
         registry.register(XdAdapter(client))
-
-        result = registry.execute(
-            "xd",
-            "xd.queue.rectangle_create",
-            {"width": 320, "height": 180, "fill": "#112233"},
-        )
-
-        self.assertEqual(
-            [name for name, _ in client.calls],
-            ["xd.health", "xd.queue.rectangle_create"],
-        )
+        result = registry.execute("xd", "xd.queue.rectangle_create", {"width": 320, "height": 180, "fill": "#112233"})
+        self.assertEqual([name for name, _ in client.calls], ["xd.health", "xd.queue.rectangle_create"])
         self.assertEqual(client.calls[1][1]["width"], 320)
         self.assertTrue(result["result"]["approval_required"])
 
@@ -69,7 +63,6 @@ class XdAdapterTests(unittest.TestCase):
         client = FakeXdClient()
         registry = CapabilityRegistry()
         registry.register(XdAdapter(client, writes_enabled=False))
-
         with self.assertRaises(PermissionError):
             registry.execute("xd", "xd.queue.text_create", {"text": "hello"})
         self.assertEqual(client.calls, [])
@@ -78,9 +71,7 @@ class XdAdapterTests(unittest.TestCase):
         client = FakeXdClient()
         registry = CapabilityRegistry()
         registry.register(XdAdapter(client, writes_enabled=False))
-
         result = registry.execute("xd", "creative.document.info")
-
         self.assertEqual(result["bridge_method"], "xd.document.info")
 
     def test_mutating_timeout_is_unknown_outcome(self) -> None:
@@ -105,32 +96,16 @@ class XdBridgeTests(unittest.TestCase):
         from websockets.sync.client import connect
 
         port = self._free_port()
-        bridge = XdWebSocketBridgeClient(
-            port=port,
-            startup_timeout_seconds=3.0,
-            call_timeout_seconds=3.0,
-        )
+        bridge = XdWebSocketBridgeClient(port=port, startup_timeout_seconds=3.0, call_timeout_seconds=3.0)
         bridge.start()
-
         try:
             with connect(bridge.url) as websocket:
-                websocket.send(
-                    json.dumps(
-                        {
-                            "type": "hello",
-                            "application": "xd",
-                            "version": "57.1.12.2",
-                            "protocol": 1,
-                        }
-                    )
-                )
-
+                websocket.send(json.dumps({"type": "hello", "application": "xd", "version": "57.1.12.2", "protocol": 1}))
                 deadline = time.monotonic() + 2.0
                 while not bridge.connected and time.monotonic() < deadline:
                     time.sleep(0.01)
                 self.assertTrue(bridge.connected)
                 self.assertEqual(bridge.plugin_info["version"], "57.1.12.2")
-
                 holder: dict[str, Any] = {}
 
                 def invoke() -> None:
@@ -138,19 +113,10 @@ class XdBridgeTests(unittest.TestCase):
 
                 worker = threading.Thread(target=invoke)
                 worker.start()
-
                 request = json.loads(websocket.recv(timeout=2.0))
                 self.assertEqual(request["method"], "xd.health")
                 self.assertEqual(request["params"], {"probe": True})
-                websocket.send(
-                    json.dumps(
-                        {
-                            "id": request["id"],
-                            "ok": True,
-                            "result": {"application": "xd", "bridge": "connected"},
-                        }
-                    )
-                )
+                websocket.send(json.dumps({"id": request["id"], "ok": True, "result": {"application": "xd", "bridge": "connected"}}))
                 worker.join(timeout=2.0)
                 self.assertFalse(worker.is_alive())
                 self.assertEqual(holder["result"]["application"], "xd")
