@@ -32,6 +32,16 @@ class IllustratorAdapterTests(unittest.TestCase):
         self.assertEqual(info.upstream_repository, "ie3jp/illustrator-mcp-server")
         self.assertEqual(info.upstream_snapshot, "57c5c101a5192c61535493f39b653e6f92b8eb29")
         self.assertTrue(info.undo_supported)
+        self.assertIn("creative.context.get", info.common_capabilities)
+
+    def test_live_context_reads_document_and_current_selection(self) -> None:
+        client = FakeClient()
+        adapter = IllustratorAdapter(client)
+        result = adapter.execute("creative.context.get", {})
+        self.assertEqual(client.calls, [("get_document_info", {}), ("get_selection", {})])
+        self.assertEqual(result["context_source"], "live-document+selection")
+        self.assertEqual(result["result"]["document"]["tool"], "get_document_info")
+        self.assertEqual(result["result"]["selection"]["tool"], "get_selection")
 
     def test_bounded_interaction_surface_maps_to_upstream_tools(self) -> None:
         client = FakeClient()
@@ -72,50 +82,23 @@ class IllustratorAdapterTests(unittest.TestCase):
     def test_export_path_translates_to_output_path(self) -> None:
         client = FakeClient()
         adapter = IllustratorAdapter(client)
-        adapter.execute(
-            "creative.document.export",
-            {"path": "C:/out/design.png", "format": "png", "target": "artboard:0"},
-        )
-        self.assertEqual(
-            client.calls[-1],
-            ("export", {
-                "output_path": "C:/out/design.png",
-                "format": "png",
-                "target": "artboard:0",
-            }),
-        )
+        adapter.execute("creative.document.export", {"path": "C:/out/design.png", "format": "png", "target": "artboard:0"})
+        self.assertEqual(client.calls[-1], ("export", {"output_path": "C:/out/design.png", "format": "png", "target": "artboard:0"}))
 
     def test_save_keeps_path_and_overwrite_for_upstream_guard(self) -> None:
         client = FakeClient()
         adapter = IllustratorAdapter(client)
-        adapter.execute(
-            "creative.document.save",
-            {"mode": "save_as", "path": "C:/out/design.ai", "overwrite": False},
-        )
-        self.assertEqual(
-            client.calls[-1],
-            ("save_document", {
-                "mode": "save_as",
-                "path": "C:/out/design.ai",
-                "overwrite": False,
-            }),
-        )
+        adapter.execute("creative.document.save", {"mode": "save_as", "path": "C:/out/design.ai", "overwrite": False})
+        self.assertEqual(client.calls[-1], ("save_document", {"mode": "save_as", "path": "C:/out/design.ai", "overwrite": False}))
 
     def test_registry_allows_bounded_object_update_after_readiness_probe(self) -> None:
         client = FakeClient()
         registry = CapabilityRegistry()
         registry.register(IllustratorAdapter(client))
-        result = registry.execute(
-            "illustrator",
-            "creative.object.update",
-            {"uuid": "object-1", "x": 120, "y": 80},
-        )
+        result = registry.execute("illustrator", "creative.object.update", {"uuid": "object-1", "x": 120, "y": 80})
         self.assertTrue(result["ok"])
         self.assertEqual(client.calls[0], ("list_fonts", {"limit": 1}))
-        self.assertEqual(
-            client.calls[-1],
-            ("modify_object", {"uuid": "object-1", "x": 120, "y": 80}),
-        )
+        self.assertEqual(client.calls[-1], ("modify_object", {"uuid": "object-1", "x": 120, "y": 80}))
 
     def test_registry_blocks_object_delete_without_explicit_authorization(self) -> None:
         client = FakeClient()
@@ -124,13 +107,7 @@ class IllustratorAdapterTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             registry.execute("illustrator", "creative.object.delete", {"uuids": ["object-1"]})
         self.assertEqual(client.calls, [])
-
-        result = registry.execute(
-            "illustrator",
-            "creative.object.delete",
-            {"uuids": ["object-1"]},
-            policy=ExecutionPolicy(allow_destructive=True),
-        )
+        result = registry.execute("illustrator", "creative.object.delete", {"uuids": ["object-1"]}, policy=ExecutionPolicy(allow_destructive=True))
         self.assertTrue(result["ok"])
         self.assertEqual(client.calls[0], ("list_fonts", {"limit": 1}))
         self.assertEqual(client.calls[-1][0], "delete_objects")
