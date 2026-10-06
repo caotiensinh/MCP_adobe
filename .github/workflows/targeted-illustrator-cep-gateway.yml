@@ -134,11 +134,20 @@ jobs:
                       return node[key]
               return None
 
-          def query_count(value):
-              count=find_key(value, 'itemsProcessed')
-              if not isinstance(count, (int, float)) or isinstance(count, bool):
-                  raise RuntimeError('query response did not expose stats.itemsProcessed')
-              return int(count)
+          def query_items(value):
+              for node in walk(value):
+                  if not isinstance(node, Mapping):
+                      continue
+                  artifacts=node.get('artifacts')
+                  if isinstance(artifacts, Mapping) and isinstance(artifacts.get('items'), list):
+                      return artifacts['items']
+              processed=find_key(value, 'itemsProcessed')
+              if processed == 0:
+                  return []
+              raise RuntimeError(
+                  'query response omitted artifacts.items for a nonzero query; '
+                  f'itemsProcessed={processed}'
+              )
 
           client=McpSubprocessToolClient(illustrator_stdio_config())
           adapter=IllustratorAdapter(client, writes_enabled=True)
@@ -178,9 +187,9 @@ jobs:
 
               baseline=registry.execute('illustrator','creative.object.find',{'name':PROBE_NAME})
               dump('GATEWAY_FIND_BASELINE', baseline)
-              baseline_count=query_count(baseline)
-              if baseline_count != 0:
-                  raise RuntimeError(f'probe name unexpectedly exists before create: {baseline_count}')
+              baseline_items=query_items(baseline)
+              if len(baseline_items) != 0:
+                  raise RuntimeError(f'probe name unexpectedly exists before create: {len(baseline_items)}')
 
               create=registry.execute(
                   'illustrator','creative.shape.rectangle',
@@ -198,9 +207,9 @@ jobs:
 
               found=registry.execute('illustrator','creative.object.find',{'name':PROBE_NAME})
               dump('GATEWAY_FIND_AFTER_CREATE', found)
-              found_count=query_count(found)
-              if found_count != 1:
-                  raise RuntimeError(f'live readback expected one probe item, got {found_count}')
+              found_items=query_items(found)
+              if len(found_items) != 1:
+                  raise RuntimeError(f'live readback expected one probe item, got {len(found_items)}')
               print('GATEWAY_BOUNDED_CREATE_READBACK=PASS', flush=True)
 
               select_script=(
@@ -252,9 +261,9 @@ jobs:
 
               after=registry.execute('illustrator','creative.object.find',{'name':PROBE_NAME})
               dump('GATEWAY_FIND_AFTER_DELETE', after)
-              after_count=query_count(after)
-              if after_count != 0:
-                  raise RuntimeError(f'inverse delete readback expected zero items, got {after_count}')
+              after_items=query_items(after)
+              if len(after_items) != 0:
+                  raise RuntimeError(f'inverse delete readback expected zero items, got {len(after_items)}')
               print('GATEWAY_LOGICAL_ROLLBACK_READBACK=PASS', flush=True)
               print('MCP_ADOBE_ILLUSTRATOR_CEP_GATEWAY_E2E=PASS', flush=True)
           finally:
