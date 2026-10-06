@@ -26,7 +26,6 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           ./scripts/adobe_inventory.ps1 -GitHubOutput
-          if([string]::IsNullOrWhiteSpace('${{ steps.adobe.outputs.illustrator }}')){ throw 'Illustrator executable not discovered' }
 
       - name: Bootstrap runtime
         shell: powershell
@@ -55,6 +54,7 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           $aiPath='${{ steps.adobe.outputs.illustrator }}'
+          if([string]::IsNullOrWhiteSpace($aiPath)){ throw 'Illustrator executable not discovered' }
           $existing=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
           if($existing.Count -eq 0){
             $launched=Start-Process -FilePath $aiPath -PassThru
