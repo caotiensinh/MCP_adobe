@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
@@ -45,6 +46,8 @@ _BINDINGS: dict[str, ToolBinding] = {
     "creative.document.info": ToolBinding("photoshop_get_state", RiskClass.READ),
     "creative.document.preview": ToolBinding("photoshop_get_preview", RiskClass.READ),
     "creative.selection.get": ToolBinding("photoshop_get_state", RiskClass.READ),
+    "creative.selection.move": ToolBinding("photoshop_move_layer", RiskClass.WRITE_REVERSIBLE),
+    "creative.selection.update": ToolBinding("photoshop_get_state", RiskClass.WRITE_REVERSIBLE),
     "creative.layer.list": ToolBinding("photoshop_get_layers", RiskClass.READ),
     "creative.document.create": ToolBinding("photoshop_create_document", RiskClass.WRITE_REVERSIBLE),
     "creative.document.open": ToolBinding("photoshop_open_image", RiskClass.WRITE_REVERSIBLE),
@@ -128,6 +131,189 @@ class PhotoshopAdapter:
                 return True
         return False
 
+    @classmethod
+    def _state_payload(cls, value: Any) -> Mapping[str, Any]:
+        if isinstance(value, Mapping):
+            if "activeLayer" in value or "hasDocument" in value or "document" in value:
+                return value
+            nested = value.get("result")
+            if nested is not None:
+                decoded = cls._state_payload(nested)
+                if decoded:
+                    return decoded
+            text = value.get("text")
+            if isinstance(text, str):
+                try:
+                    parsed = json.loads(text)
+                except json.JSONDecodeError:
+                    parsed = None
+                if parsed is not None:
+                    decoded = cls._state_payload(parsed)
+                    if decoded:
+                        return decoded
+            content = value.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    decoded = cls._state_payload(block)
+                    if decoded:
+                        return decoded
+        elif isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return {}
+            return cls._state_payload(parsed)
+        return {}
+
+    def _read_live_active_layer(self) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+        raw = self._client.call_tool("photoshop_get_state", {})
+        state = self._state_payload(raw)
+        if state.get("hasDocument") is False:
+            raise RuntimeError("Photoshop has no active document")
+        layer = state.get("activeLayer")
+        if not isinstance(layer, Mapping):
+            raise RuntimeError("Photoshop has no active layer to target")
+        return state, layer
+
+    @staticmethod
+    def _selection_update_call(arguments: Mapping[str, Any]) -> tuple[str, dict[str, Any], str, Any]:
+        properties = arguments.get("properties")
+        if not isinstance(properties, Mapping) or len(properties) != 1:
+            raise ValueError(
+                "creative.selection.update requires exactly one property so a partial multi-edit cannot be misreported"
+            )
+        key, value = next(iter(properties.items()))
+        if key == "opacity":
+            return "photoshop_set_layer_opacity", {"opacity": value}, key, value
+        if key == "blendMode":
+            return "photoshop_set_layer_blend_mode", {"blendMode": value}, key, value
+        if key == "name":
+            return "photoshop_rename_layer", {"name": value}, key, value
+        if key == "visible":
+            return "photoshop_set_layer_visibility", {"visible": value}, key, value
+        if key == "locked":
+            return "photoshop_set_layer_locked", {"locked": value}, key, value
+        raise ValueError(f"unsupported Photoshop active-layer property: {key}")
+
+    @staticmethod
+    def _normalized_blend_mode(value: Any) -> str:
+        text = str(value).upper()
+        if text.startswith("BLENDMODE."):
+            text = text.split(".", 1)[1]
+        if text == "COLORBLEND":
+            return "COLOR"
+        return text
+
+    @classmethod
+    def _verify_selection_mutation(
+        cls,
+        capability: str,
+        before_layer: Mapping[str, Any],
+        after_layer: Mapping[str, Any],
+        arguments: Mapping[str, Any],
+        update_key: str | None,
+        update_value: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        if capability == "creative.selection.move":
+            before = before_layer.get("bounds")
+            after = after_layer.get("bounds")
+            if isinstance(before, Mapping) and isinstance(after, Mapping):
+                try:
+                    dx = float(arguments["deltaX"])
+                    dy = float(arguments["deltaY"])
+                    observed_dx = float(after["left"]) - float(before["left"])
+                    observed_dy = float(after["top"]) - float(before["top"])
+                except (KeyError, TypeError, ValueError):
+                    pass
+                else:
+                    if abs(observed_dx - dx) <= 0.5 and abs(observed_dy - dy) <= 0.5:
+                        return "verified", {
+                            "status": "verified",
+                            "kind": "photoshop-state",
+                            "evidence": "active-layer-bounds-changed-by-requested-delta",
+                            "deltaX": observed_dx,
+                            "deltaY": observed_dy,
+                        }
+            return unverified_mutation("active-layer-bounds-not-verifiable")
+
+        if capability == "creative.selection.update" and update_key is not None:
+            state_key = {
+                "opacity": "opacity",
+                "blendMode": "blendMode",
+                "name": "name",
+                "visible": "visible",
+                "locked": "locked",
+            }[update_key]
+            actual = after_layer.get(state_key)
+            matched = False
+            if update_key == "blendMode":
+                matched = cls._normalized_blend_mode(actual) == cls._normalized_blend_mode(update_value)
+            elif update_key == "opacity":
+                try:
+                    matched = abs(float(actual) - float(update_value)) <= 0.01
+                except (TypeError, ValueError):
+                    matched = False
+            else:
+                matched = actual == update_value
+            if matched:
+                return "verified", {
+                    "status": "verified",
+                    "kind": "photoshop-state",
+                    "evidence": f"active-layer-{state_key}-matches-request",
+                    "value": actual,
+                }
+            return unverified_mutation(f"active-layer-{state_key}-did-not-read-back-requested-value")
+
+        return unverified_mutation()
+
+    def _execute_live_selection(
+        self,
+        capability: str,
+        arguments: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        _, before_layer = self._read_live_active_layer()
+        selected_name = before_layer.get("name")
+        update_key: str | None = None
+        update_value: Any = None
+
+        if capability == "creative.selection.move":
+            upstream_tool = "photoshop_move_layer"
+            upstream_args = dict(arguments)
+        else:
+            upstream_tool, upstream_args, update_key, update_value = self._selection_update_call(arguments)
+
+        try:
+            result = self._client.call_tool(upstream_tool, upstream_args)
+        except TimeoutError as exc:
+            self._ready_until = 0.0
+            raise OperationUnknownError(capability, upstream_tool) from exc
+
+        try:
+            _, after_layer = self._read_live_active_layer()
+        except Exception:
+            outcome, verification = unverified_mutation("post-mutation-photoshop-state-unavailable")
+        else:
+            outcome, verification = self._verify_selection_mutation(
+                capability,
+                before_layer,
+                after_layer,
+                arguments,
+                update_key,
+                update_value,
+            )
+
+        return {
+            "ok": True,
+            "application": "photoshop",
+            "capability": capability,
+            "upstream_tool": upstream_tool,
+            "result": result,
+            "selection_source": "live-photoshop-active-layer",
+            "selected_layer_name": selected_name,
+            "outcome": outcome,
+            "verification": verification,
+        }
+
     def probe_ready(self) -> Mapping[str, Any]:
         now = time.monotonic()
         if self._ready_until > now:
@@ -146,6 +332,9 @@ class PhotoshopAdapter:
             binding = _BINDINGS[capability]
         except KeyError as exc:
             raise LookupError(f"unsupported Photoshop capability: {capability}") from exc
+
+        if capability in {"creative.selection.move", "creative.selection.update"}:
+            return self._execute_live_selection(capability, arguments)
 
         file_snapshot = capture_file_snapshot(arguments) if binding.risk is RiskClass.FILE_WRITE else None
         upstream_args = self._translate_arguments(capability, arguments)
