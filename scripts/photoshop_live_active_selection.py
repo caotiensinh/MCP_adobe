@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -54,8 +55,9 @@ def _require_restored(actual: Mapping[str, float], expected: Mapping[str, float]
 def main() -> None:
     evidence: dict[str, Any] = {}
     undo_debt = 0
+    config = replace(photoshop_stdio_config(), startup_timeout_seconds=180.0)
 
-    with McpSubprocessToolClient(photoshop_stdio_config()) as client:
+    with McpSubprocessToolClient(config) as client:
         registry = CapabilityRegistry()
         registry.register(PhotoshopAdapter(client, writes_enabled=True))
 
