@@ -157,7 +157,7 @@ function Write-ClientConfigs([string]$UvExe) {
         "Use: $claudePath",
         "",
         "Codex:",
-        "CLI: codex mcp add adobe-creative --url " + $localMcpUrl,
+        ("CLI: codex mcp add adobe-creative --url " + $localMcpUrl),
         "Or merge the following file into your Codex config:",
         $codexPath,
         "",

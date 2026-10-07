@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -34,6 +36,23 @@ class PersistentLocalHostContractTests(unittest.TestCase):
         self.assertIn('Write-Host "local_host=install"', self.windows)
         self.assertIn("install_local_host.ps1", self.windows)
         self.assertIn("if (-not $SkipPersistentHost)", self.windows)
+
+    @unittest.skipUnless(os.name == "nt", "PowerShell parser validation requires Windows")
+    def test_persistent_host_script_parses_as_powershell(self) -> None:
+        script_path = Path(__file__).resolve().parents[1] / "scripts" / "install_local_host.ps1"
+        command = (
+            "$tokens=$null;$errors=$null;"
+            f"[System.Management.Automation.Language.Parser]::ParseFile('{script_path}',[ref]$tokens,[ref]$errors)|Out-Null;"
+            "if($errors.Count){$errors|ForEach-Object{Write-Error $_.Message};exit 1}"
+        )
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", command],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
 
 
 if __name__ == "__main__":

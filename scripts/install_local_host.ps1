@@ -36,18 +36,18 @@ function Get-Listener([int]$Port) {
     return @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
 }
 
-function Stop-OwnedProcess([int]$Pid, [string]$Reason) {
-    $process = Get-CimInstance Win32_Process -Filter "ProcessId=$Pid" -ErrorAction SilentlyContinue
+function Stop-OwnedProcess([int]$ProcessId, [string]$Reason) {
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction SilentlyContinue
     if ($null -eq $process) { return }
     $exe = [string]$process.ExecutablePath
     $cmd = [string]$process.CommandLine
     $ownedGateway = -not [string]::IsNullOrWhiteSpace($exe) -and $exe.StartsWith($InstallRoot, [StringComparison]::OrdinalIgnoreCase)
     $ownedIllustratorBackend = $cmd -match "illustrator_mcp\.server"
     if (-not $ownedGateway -and -not $ownedIllustratorBackend) {
-        throw "Refusing to stop unrelated process on MCP Adobe port: PID=$Pid EXE=$exe CMD=$cmd"
+        throw "Refusing to stop unrelated process on MCP Adobe port: PID=$ProcessId EXE=$exe CMD=$cmd"
     }
-    Write-Host "local_host_stop PID=$Pid reason=$Reason exe=$exe"
-    Stop-Process -Id $Pid -Force -ErrorAction Stop
+    Write-Host "local_host_stop PID=$ProcessId reason=$Reason exe=$exe"
+    Stop-Process -Id $ProcessId -Force -ErrorAction Stop
 }
 
 function Stop-ExistingHost {
@@ -166,8 +166,8 @@ finally {
 
     if (-not $SkipStartupRegistration) {
         New-Item -ItemType Directory -Path (Split-Path -Parent $StartupEntry) -Force | Out-Null
-        $startupContent = "@echo off" + [Environment]::NewLine +
-            "start \"\" /min powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"$runner\"" +
+        $startupContent = '@echo off' + [Environment]::NewLine +
+            ('start "" /min powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $runner + '"') +
             [Environment]::NewLine
         Set-Content -LiteralPath $StartupEntry -Value $startupContent -Encoding ASCII
         Write-Host "local_host_startup=$StartupEntry"
