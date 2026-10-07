@@ -60,6 +60,15 @@ class IllustratorAdapterTests(unittest.TestCase):
         self.assertIn("creative.selection.update", info.common_capabilities)
         self.assertIn("creative.selection.move", info.common_capabilities)
 
+    def test_health_preserves_probe_and_timeout_arguments(self) -> None:
+        client = FakeClient()
+        adapter = IllustratorAdapter(client)
+        adapter.execute("creative.health", {"probe": True, "timeout": 7.5})
+        self.assertEqual(
+            client.calls[-1],
+            ("list_fonts", {"limit": 1, "probe": True, "timeout": 7.5}),
+        )
+
     def test_live_context_reads_document_and_current_selection(self) -> None:
         client = FakeClient()
         adapter = IllustratorAdapter(client)

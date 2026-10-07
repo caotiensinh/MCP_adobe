@@ -93,7 +93,12 @@ class IllustratorAdapter:
     @staticmethod
     def _translate_arguments(capability: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         if capability == "creative.health":
-            return {"limit": 1}
+            translated: dict[str, Any] = {"limit": 1}
+            if "probe" in arguments:
+                translated["probe"] = arguments["probe"]
+            if "timeout" in arguments:
+                translated["timeout"] = arguments["timeout"]
+            return translated
         args = dict(arguments)
         if capability in {"creative.document.export", "creative.document.export_pdf"}:
             path = args.pop("path", None)
