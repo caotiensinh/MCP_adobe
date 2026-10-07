@@ -159,13 +159,20 @@ jobs:
 
             $title=[string]$ai.MainWindowTitle
             Write-Host "ILLUSTRATOR_ORPHAN_RECOVERY_TITLE=$title"
-            if($title -and $title -notmatch '^Adobe Illustrator(?: 2023)?$'){
-              throw "Refusing automatic Illustrator restart because a document/window appears active: $title"
+            $isHome=(-not $title) -or ($title -match '^Adobe Illustrator(?: 2023)?$')
+            $isOwnedProbe=$title -match '^(?:MCP Adobe Interactive Selection Probe|ChatGPT MCP Direct Interaction)\*? @'
+            if(-not $isHome -and -not $isOwnedProbe){
+              throw "Refusing automatic Illustrator restart because a non-test document/window appears active: $title"
             }
 
-            Write-Host "ILLUSTRATOR_ORPHAN_RECOVERY=START PID=$($ai.Id)"
-            if(-not $ai.CloseMainWindow()){
-              throw 'Illustrator refused graceful CloseMainWindow; not forcing termination'
+            Write-Host "ILLUSTRATOR_ORPHAN_RECOVERY=START PID=$($ai.Id) OWNED_TEST_DOC=$isOwnedProbe"
+            if($isOwnedProbe){
+              Write-Host 'ILLUSTRATOR_ORPHAN_RECOVERY_FORCE=TEST_OWNED_DOCUMENT_ONLY'
+              Stop-Process -Id $ai.Id -Force -ErrorAction Stop
+            } else {
+              if(-not $ai.CloseMainWindow()){
+                throw 'Illustrator refused graceful CloseMainWindow; not forcing termination'
+              }
             }
             $deadline=(Get-Date).AddSeconds(20)
             do {
@@ -173,7 +180,7 @@ jobs:
               $remaining=Get-Process -Id $ai.Id -ErrorAction SilentlyContinue
             } until(-not $remaining -or (Get-Date) -gt $deadline)
             if($remaining){
-              throw 'Illustrator did not exit gracefully; possible save/modal dialog. Not forcing termination.'
+              throw 'Illustrator did not exit after bounded orphan recovery'
             }
 
             $aiPath='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
