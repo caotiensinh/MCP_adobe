@@ -5,6 +5,10 @@ on:
     branches: [feat/illustrator-cep-backend]
     paths:
       - ".github/workflows/targeted-illustrator-live-interaction.yml"
+      - "src/mcp_adobe/illustrator.py"
+      - "src/mcp_adobe/illustrator_cep.py"
+      - "src/mcp_adobe/server.py"
+      - "scripts/install_local_host.ps1"
   workflow_dispatch:
 
 permissions:
