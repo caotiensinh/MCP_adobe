@@ -50,7 +50,26 @@ jobs:
             Write-Host "LIVE_EXISTING_PORT_$port=PASS PID=$ownerPid EXE=$($p.ExecutablePath) CMD=$($p.CommandLine)"
           }
           $visible=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1
-          if(-not $visible){ throw 'Illustrator interactive window is not open' }
+          if(-not $visible){
+            $aiPath='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
+            if(-not (Test-Path -LiteralPath $aiPath)){ throw "Illustrator executable missing: $aiPath" }
+            $oldTracking=$env:RUNNER_TRACKING_ID
+            try {
+              Remove-Item Env:RUNNER_TRACKING_ID -ErrorAction SilentlyContinue
+              $started=Start-Process -FilePath $aiPath -PassThru
+              Write-Host "LIVE_ILLUSTRATOR_LAUNCHED_PID=$($started.Id)"
+            } finally {
+              if($null -ne $oldTracking){ $env:RUNNER_TRACKING_ID=$oldTracking }
+            }
+            $deadline=(Get-Date).AddSeconds(90)
+            do {
+              Start-Sleep -Seconds 1
+              $visible=Get-Process -Name Illustrator -ErrorAction SilentlyContinue |
+                Where-Object {$_.MainWindowHandle -ne 0} |
+                Select-Object -First 1
+            } until($visible -or (Get-Date) -gt $deadline)
+            if(-not $visible){ throw 'Illustrator interactive window did not open within 90 seconds' }
+          }
           Write-Host "LIVE_ILLUSTRATOR_PROCESS=PASS PID=$($visible.Id) SESSION=$($visible.SessionId)"
 
       - name: Recover orphan panel request without forcing user data loss
@@ -185,8 +204,14 @@ jobs:
 
             $aiPath='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
             if(-not (Test-Path -LiteralPath $aiPath)){ throw "Illustrator executable missing: $aiPath" }
-            $started=Start-Process -FilePath $aiPath -PassThru
-            Write-Host "ILLUSTRATOR_ORPHAN_RECOVERY_RELAUNCHED_PID=$($started.Id)"
+            $oldTracking=$env:RUNNER_TRACKING_ID
+            try {
+              Remove-Item Env:RUNNER_TRACKING_ID -ErrorAction SilentlyContinue
+              $started=Start-Process -FilePath $aiPath -PassThru
+              Write-Host "ILLUSTRATOR_ORPHAN_RECOVERY_RELAUNCHED_PID=$($started.Id)"
+            } finally {
+              if($null -ne $oldTracking){ $env:RUNNER_TRACKING_ID=$oldTracking }
+            }
 
             $deadline=(Get-Date).AddSeconds(90)
             do {
