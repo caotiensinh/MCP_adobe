@@ -46,6 +46,82 @@ jobs:
           if(-not (Get-Command uv -ErrorAction SilentlyContinue)){ throw 'uv unavailable' }
           uv sync
 
+      - name: Inspect unresolved Illustrator job before any mutation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import asyncio
+          import json
+          from collections.abc import Mapping
+          from mcp import Client
+
+          URL = "http://127.0.0.1:8787/mcp"
+
+          def walk(value):
+              yield value
+              if isinstance(value, Mapping):
+                  for child in value.values():
+                      yield from walk(child)
+              elif isinstance(value, (list, tuple)):
+                  for child in value:
+                      yield from walk(child)
+
+          def find_connection(value):
+              for node in walk(value):
+                  if isinstance(node, Mapping) and "connection" in node:
+                      connection = node.get("connection")
+                      if isinstance(connection, Mapping):
+                          return connection
+              return None
+
+          async def main():
+              async with Client(URL) as client:
+                  result = await client.call_tool(
+                      "creative_read",
+                      {
+                          "application": "illustrator",
+                          "capability": "creative.health",
+                          "arguments": {"probe": False, "timeout": 5.0},
+                      },
+                  )
+                  if result.is_error:
+                      raise RuntimeError(f"creative.health local inspection failed: {result}")
+                  payload = result.structured_content
+                  connection = find_connection(payload)
+                  print(
+                      "ILLUSTRATOR_LOCAL_STATE=" +
+                      json.dumps(connection, ensure_ascii=False, default=str),
+                      flush=True,
+                  )
+                  if not isinstance(connection, Mapping):
+                      raise RuntimeError("creative.health did not expose connection state")
+                  execution = connection.get("execution")
+                  unresolved = (
+                      execution.get("unresolvedJobs", [])
+                      if isinstance(execution, Mapping)
+                      else []
+                  )
+                  blocking = connection.get("blocking")
+                  if unresolved:
+                      print(
+                          "ILLUSTRATOR_UNRESOLVED_JOB=BLOCKED " +
+                          json.dumps(
+                              {"unresolvedJobs": unresolved, "blocking": blocking},
+                              ensure_ascii=False,
+                              default=str,
+                          ),
+                          flush=True,
+                      )
+                      raise RuntimeError(
+                          "BLOCKED_UNRESOLVED_JOB: inspect retained evidence before any mutation"
+                      )
+                  print("ILLUSTRATOR_UNRESOLVED_JOB=NONE", flush=True)
+
+          asyncio.run(main())
+          '@ | Set-Content -Path illustrator_local_state_probe.py -Encoding UTF8
+          uv run python illustrator_local_state_probe.py
+
       - name: Install fallback MCP transport into auto-start CEP bootstrap
         shell: powershell
         run: |
