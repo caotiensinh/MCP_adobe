@@ -95,19 +95,17 @@ def _query_artifacts(response: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return []
 
 
-def _active_artboard_rect(raw: RawToolCaller) -> tuple[float, float, float, float] | None:
-    script = (
-        "var d=app.activeDocument;"
-        "var i=d.artboards.getActiveArtboardIndex();"
-        "var r=d.artboards[i].artboardRect;"
-        "JSON.stringify({artboardRect:[r[0],r[1],r[2],r[3]]});"
-    )
-    result = _call(
-        raw,
-        "illustrator_execute_script",
-        {"script": script, "read_only": True, "description": "Read active artboard coordinates"},
-    )
-    rect = _find_key(result, "artboardRect")
+def _artboard_rect_from_response(
+    response: Mapping[str, Any],
+) -> tuple[float, float, float, float] | None:
+    """Read active-artboard context already attached to an upstream response.
+
+    query_items carries documentIntent/context/artboardRect.  Reusing that
+    evidence avoids a second raw ExtendScript request, which can race the CEP
+    job queue and turn an otherwise successful selection read into E999
+    unresolved.
+    """
+    rect = _find_key(response, "artboardRect")
     if not isinstance(rect, list) or len(rect) != 4:
         return None
     if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in rect):
@@ -199,7 +197,7 @@ def _query(raw: RawToolCaller, targets: Mapping[str, Any]) -> Mapping[str, Any]:
 def _selection(raw: RawToolCaller) -> Mapping[str, Any]:
     response = _query(raw, {"type": "selection"})
     artifacts = _query_artifacts(response)
-    artboard = _active_artboard_rect(raw) if artifacts else None
+    artboard = _artboard_rect_from_response(response) if artifacts else None
     normalized: list[dict[str, Any]] = []
     for item in artifacts:
         token = _token_from_query_item(item)

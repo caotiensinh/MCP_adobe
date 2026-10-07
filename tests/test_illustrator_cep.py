@@ -84,6 +84,11 @@ class IllustratorCepCompatibilityTests(unittest.TestCase):
                 "illustrator_query_items": {
                     "data": {
                         "report": {
+                            "documentIntent": {
+                                "observed": {
+                                    "context": {"artboardRect": [0, 420, 640, 0]}
+                                }
+                            },
                             "artifacts": {
                                 "items": [
                                     {
@@ -106,9 +111,6 @@ class IllustratorCepCompatibilityTests(unittest.TestCase):
                         }
                     }
                 },
-                "illustrator_execute_script": {
-                    "data": {"artboardRect": [0, 420, 640, 0]}
-                },
             }
         )
 
@@ -124,8 +126,7 @@ class IllustratorCepCompatibilityTests(unittest.TestCase):
         self.assertEqual(raw.calls[0][0], "illustrator_query_items")
         self.assertEqual(raw.calls[0][1]["params"]["targets"], {"type": "selection"})
         self.assertTrue(raw.calls[0][1]["params"]["include_handles"])
-        self.assertEqual(raw.calls[1][0], "illustrator_execute_script")
-        self.assertTrue(raw.calls[1][1]["params"]["read_only"])
+        self.assertEqual(len(raw.calls), 1)
 
     def test_selection_prefers_persistent_id_over_ephemeral_handle(self) -> None:
         raw = RawCaller(
