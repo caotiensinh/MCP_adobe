@@ -41,7 +41,10 @@ function Stop-OwnedProcess([int]$ProcessId, [string]$Reason) {
     if ($null -eq $process) { return }
     $exe = [string]$process.ExecutablePath
     $cmd = [string]$process.CommandLine
-    $ownedGateway = -not [string]::IsNullOrWhiteSpace($exe) -and $exe.StartsWith($InstallRoot, [StringComparison]::OrdinalIgnoreCase)
+    $gatewayExe = Join-Path $InstallRoot "venv\Scripts\mcp-adobe.exe"
+    $ownedGatewayExe = -not [string]::IsNullOrWhiteSpace($exe) -and $exe.StartsWith($InstallRoot, [StringComparison]::OrdinalIgnoreCase)
+    $ownedGatewayCommand = -not [string]::IsNullOrWhiteSpace($cmd) -and $cmd.IndexOf($gatewayExe, [StringComparison]::OrdinalIgnoreCase) -ge 0
+    $ownedGateway = $ownedGatewayExe -or $ownedGatewayCommand
     $ownedIllustratorBackend = $cmd -match "illustrator_mcp\.server"
     if (-not $ownedGateway -and -not $ownedIllustratorBackend) {
         throw "Refusing to stop unrelated process on MCP Adobe port: PID=$ProcessId EXE=$exe CMD=$cmd"

@@ -30,6 +30,8 @@ class PersistentLocalHostContractTests(unittest.TestCase):
     def test_installer_refuses_to_kill_unrelated_port_owner(self) -> None:
         self.assertIn("Refusing to stop unrelated process on MCP Adobe port", self.script)
         self.assertIn("illustrator_mcp\\.server", self.script)
+        self.assertIn('venv\\Scripts\\mcp-adobe.exe', self.script)
+        self.assertIn("ownedGatewayCommand", self.script)
 
     def test_main_windows_installer_enables_persistent_host_by_default(self) -> None:
         self.assertIn("[switch]$SkipPersistentHost", self.windows)
