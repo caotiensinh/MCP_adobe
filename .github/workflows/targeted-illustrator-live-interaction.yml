@@ -69,10 +69,14 @@ jobs:
 
           def find_connection(value):
               for node in walk(value):
-                  if isinstance(node, Mapping) and "connection" in node:
-                      connection = node.get("connection")
-                      if isinstance(connection, Mapping):
-                          return connection
+                  if not isinstance(node, Mapping):
+                      continue
+                  if (
+                      isinstance(node.get("execution"), Mapping)
+                      and "unresolvedJobs" in node["execution"]
+                      and isinstance(node.get("layers"), Mapping)
+                  ):
+                      return node
               return None
 
           async def main():
@@ -104,15 +108,32 @@ jobs:
                   )
                   blocking = connection.get("blocking")
                   if unresolved:
+                      evidence = {"unresolvedJobs": unresolved, "blocking": blocking}
                       print(
                           "ILLUSTRATOR_UNRESOLVED_JOB=BLOCKED " +
-                          json.dumps(
-                              {"unresolvedJobs": unresolved, "blocking": blocking},
-                              ensure_ascii=False,
-                              default=str,
-                          ),
+                          json.dumps(evidence, ensure_ascii=False, default=str),
                           flush=True,
                       )
+                      job_id = str(unresolved[0])
+                      token = ""
+                      if isinstance(blocking, Mapping):
+                          token = str(blocking.get("requestToken") or "")
+                      from pathlib import Path
+                      log_path = Path.home() / "AppData" / "Local" / "MCPAdobe" / "gateway" / "logs" / "local-host.log"
+                      if log_path.exists():
+                          raw = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                          needles = [n for n in (job_id, token) if n]
+                          matches = [
+                              (i, line) for i, line in enumerate(raw)
+                              if any(n in line for n in needles)
+                          ]
+                          for i, _ in matches[-12:]:
+                              lo, hi = max(0, i - 3), min(len(raw), i + 4)
+                              print(
+                                  "ILLUSTRATOR_UNRESOLVED_LOG_CONTEXT=" +
+                                  json.dumps(raw[lo:hi], ensure_ascii=False),
+                                  flush=True,
+                              )
                       raise RuntimeError(
                           "BLOCKED_UNRESOLVED_JOB: inspect retained evidence before any mutation"
                       )
