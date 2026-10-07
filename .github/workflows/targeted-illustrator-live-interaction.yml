@@ -94,6 +94,39 @@ jobs:
           }
           exit 0
 
+      - name: Probe Illustrator backend WebSocket independently
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import asyncio
+          import json
+          import websockets
+
+          async def main():
+              async with websockets.connect(
+                  'ws://127.0.0.1:8081',
+                  open_timeout=4,
+                  close_timeout=2,
+                  ping_interval=None,
+              ) as ws:
+                  print('ILLUSTRATOR_BACKEND_WS_PROBE=OPEN', flush=True)
+                  await ws.send(json.dumps({
+                      'type': 'heartbeat',
+                      'busy': False,
+                      'activeRequestId': None,
+                      'uptimeMs': 0,
+                      'capabilities': ['payload-v1'],
+                  }))
+                  print('ILLUSTRATOR_BACKEND_WS_PROBE=HEARTBEAT_SENT', flush=True)
+                  await asyncio.sleep(0.5)
+              print('ILLUSTRATOR_BACKEND_WS_PROBE=PASS', flush=True)
+
+          asyncio.run(main())
+          '@ | Set-Content -Path illustrator_ws_probe.py -Encoding UTF8
+          uv run python illustrator_ws_probe.py
+          Start-Sleep -Seconds 1
+
       - name: Require existing persistent Illustrator connection
         shell: powershell
         run: |
