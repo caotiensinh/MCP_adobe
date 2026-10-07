@@ -6,7 +6,9 @@ on:
     paths:
       - "src/mcp_adobe/server.py"
       - "scripts/install_local_host.ps1"
+      - "scripts/install_illustrator_cep_backend.ps1"
       - "scripts/install_windows.ps1"
+      - "tests/test_illustrator_cep_installer_contract.py"
       - "tests/test_server.py"
       - "tests/test_install_windows.py"
       - "tests/test_persistent_local_host.py"
