@@ -849,7 +849,7 @@ jobs:
 
           uv run python illustrator_mcp_selection_interaction.py
 
-      - name: Update undo and reapply selected headlight opacity through MCP
+      - name: Update undo and reapply selected headlight name through MCP
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -860,8 +860,8 @@ jobs:
           from mcp import Client
 
           URL = "http://127.0.0.1:8787/mcp"
-          TARGET = "MCP Car Headlight"
-          FINAL_OPACITY = 55.0
+          ORIGINAL = "MCP Car Headlight"
+          EDITED = "MCP Car Headlight Edited"
 
           def walk(value):
               yield value
@@ -923,26 +923,22 @@ jobs:
               )
               return payload
 
-          async def read_target(client):
+          async def find(client, name):
               found = await call(
                   client,
                   "creative_read",
                   "creative.object.find",
-                  {"name": TARGET},
+                  {"name": name},
               )
-              item, token = find_named_item(found, TARGET)
-              if item is None or token is None:
-                  raise RuntimeError(f"target not found through MCP: {TARGET}")
-              opacity = find_key(item, "opacity")
-              if opacity is None:
-                  raise RuntimeError("target read-back did not expose opacity")
-              return item, token, float(opacity)
+              return find_named_item(found, name)
 
           async def main():
               async with Client(URL) as client:
-                  _, token, baseline = await read_target(client)
+                  item, token = await find(client, ORIGINAL)
+                  if item is None or token is None:
+                      raise RuntimeError(f"baseline target not found: {ORIGINAL}")
                   print(
-                      f"ILLUSTRATOR_MCP_OPACITY_BASELINE=PASS token={token} opacity={baseline}",
+                      f"ILLUSTRATOR_MCP_PROPERTY_BASELINE=PASS token={token} name={ORIGINAL}",
                       flush=True,
                   )
 
@@ -956,18 +952,21 @@ jobs:
                       client,
                       "creative_write",
                       "creative.selection.update",
-                      {"properties": {"opacity": FINAL_OPACITY}},
+                      {"properties": {"name": EDITED}},
                   )
-                  if find_key(updated, "selected_uuid") not in {None, token}:
-                      raise RuntimeError("selection.update targeted an unexpected object")
-
-                  _, after_token, changed = await read_target(client)
-                  if after_token != token or abs(changed - FINAL_OPACITY) > 0.01:
+                  selected_uuid = find_key(updated, "selected_uuid")
+                  if selected_uuid not in {None, token}:
                       raise RuntimeError(
-                          f"MCP opacity update mismatch: token={after_token} opacity={changed}"
+                          f"selection.update targeted unexpected token: {selected_uuid}"
+                      )
+
+                  edited_item, edited_token = await find(client, EDITED)
+                  if edited_item is None or edited_token != token:
+                      raise RuntimeError(
+                          f"MCP name update mismatch: expected token={token} got={edited_token}"
                       )
                   print(
-                      f"ILLUSTRATOR_MCP_SELECTION_OPACITY=PASS opacity={changed}",
+                      f"ILLUSTRATOR_MCP_SELECTION_NAME=PASS name={EDITED}",
                       flush=True,
                   )
 
@@ -977,13 +976,13 @@ jobs:
                       "creative.undo",
                       {"count": 1},
                   )
-                  _, undo_token, undone = await read_target(client)
-                  if undo_token != token or abs(undone - baseline) > 0.01:
+                  undo_item, undo_token = await find(client, ORIGINAL)
+                  if undo_item is None or undo_token != token:
                       raise RuntimeError(
-                          f"MCP opacity undo mismatch: baseline={baseline} undo={undone}"
+                          f"MCP name undo mismatch: expected token={token} got={undo_token}"
                       )
                   print(
-                      f"ILLUSTRATOR_MCP_SELECTION_OPACITY_UNDO=PASS opacity={undone}",
+                      f"ILLUSTRATOR_MCP_SELECTION_NAME_UNDO=PASS name={ORIGINAL}",
                       flush=True,
                   )
 
@@ -997,21 +996,20 @@ jobs:
                       client,
                       "creative_write",
                       "creative.selection.update",
-                      {"properties": {"opacity": FINAL_OPACITY}},
+                      {"properties": {"name": EDITED}},
                   )
-                  _, final_token, final_opacity = await read_target(client)
-                  if final_token != token or abs(final_opacity - FINAL_OPACITY) > 0.01:
+                  final_item, final_token = await find(client, EDITED)
+                  if final_item is None or final_token != token:
                       raise RuntimeError(
-                          f"final MCP opacity mismatch: token={final_token} opacity={final_opacity}"
+                          f"final MCP name update mismatch: expected token={token} got={final_token}"
                       )
                   print(
                       "ILLUSTRATOR_MCP_PROPERTY_EDIT=PASS " +
                       json.dumps(
                           {
-                              "target": TARGET,
                               "token": token,
-                              "baseline_opacity": baseline,
-                              "final_opacity": final_opacity,
+                              "before": ORIGINAL,
+                              "after": EDITED,
                           },
                           ensure_ascii=False,
                       ),
