@@ -1,15 +1,9 @@
 name: Targeted Illustrator CEP gateway
 
+# Legacy isolated diagnostic only.  Production Illustrator validation runs
+# through the persistent local-host workflow because port 8081 is intentionally
+# owned continuously by that host.
 on:
-  push:
-    branches: [feat/illustrator-cep-backend]
-    paths:
-      - "src/mcp_adobe/illustrator.py"
-      - "src/mcp_adobe/illustrator_cep.py"
-      - "src/mcp_adobe/mcp_stdio.py"
-      - "tests/test_illustrator.py"
-      - "tests/test_illustrator_cep.py"
-      - ".github/workflows/targeted-illustrator-cep-gateway.yml"
   workflow_dispatch:
 
 permissions:

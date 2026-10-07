@@ -127,6 +127,46 @@ class IllustratorCepCompatibilityTests(unittest.TestCase):
         self.assertEqual(raw.calls[1][0], "illustrator_execute_script")
         self.assertTrue(raw.calls[1][1]["params"]["read_only"])
 
+    def test_selection_prefers_persistent_id_over_ephemeral_handle(self) -> None:
+        raw = RawCaller(
+            {
+                "illustrator_query_items": {
+                    "data": {
+                        "report": {
+                            "artifacts": {
+                                "items": [
+                                    {
+                                        "itemRef": {
+                                            "identity": {"itemId": "probe-1"},
+                                            "itemType": "PathItem",
+                                        },
+                                        "handle": "h-123",
+                                        "name": "Probe",
+                                        "type": "PathItem",
+                                        "bounds": {
+                                            "left": 100,
+                                            "top": 300,
+                                            "width": 80,
+                                            "height": 40,
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+                "illustrator_execute_script": {
+                    "data": {"artboardRect": [0, 420, 640, 0]}
+                },
+            }
+        )
+
+        result = call_legacy_tool(raw, "get_selection", {})
+
+        self.assertEqual(result["selectionCount"], 1)
+        self.assertEqual(result["items"][0]["uuid"], "probe-1")
+        self.assertEqual(result["items"][0]["handle"], "h-123")
+
     def test_modify_object_translates_handle_and_position_to_element_modify(self) -> None:
         raw = RawCaller()
 

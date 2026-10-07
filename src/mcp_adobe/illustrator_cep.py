@@ -116,9 +116,10 @@ def _active_artboard_rect(raw: RawToolCaller) -> tuple[float, float, float, floa
 
 
 def _token_from_query_item(item: Mapping[str, Any]) -> str | None:
-    handle = item.get("handle")
-    if isinstance(handle, str) and handle:
-        return "handle:" + handle
+    # Persistent MCP identity is canonical when available.  Query responses may
+    # also include an ephemeral handle for the very same tagged item; preferring
+    # that handle makes a bounded select look like it targeted the wrong object
+    # during read-back even though Illustrator selected the correct artwork.
     item_ref = item.get("itemRef")
     if isinstance(item_ref, Mapping):
         identity = item_ref.get("identity")
@@ -126,6 +127,9 @@ def _token_from_query_item(item: Mapping[str, Any]) -> str | None:
             item_id = identity.get("itemId")
             if isinstance(item_id, str) and item_id:
                 return item_id
+    handle = item.get("handle")
+    if isinstance(handle, str) and handle:
+        return "handle:" + handle
     return None
 
 
