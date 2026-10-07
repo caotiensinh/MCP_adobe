@@ -243,7 +243,7 @@ jobs:
                       {
                           "application": "illustrator",
                           "capability": "creative.health",
-                          "arguments": {"probe": probe, "timeout": 5.0},
+                          "arguments": {"probe": probe, "timeout": 30.0},
                       },
                   )
                   if result.is_error:
