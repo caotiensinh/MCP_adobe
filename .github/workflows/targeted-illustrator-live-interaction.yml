@@ -314,7 +314,7 @@ jobs:
                       {
                           "application": "illustrator",
                           "capability": "creative.health",
-                          "arguments": {"probe": False, "timeout": 5.0},
+                          "arguments": {"probe": True, "timeout": 8.0},
                       },
                   )
                   if result.is_error:
