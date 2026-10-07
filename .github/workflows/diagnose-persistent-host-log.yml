@@ -35,7 +35,15 @@ jobs:
           $log=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\logs\local-host.log'
           if(-not (Test-Path -LiteralPath $log)){ throw "persistent host log missing: $log" }
           Write-Host '=== PERSISTENT HOST ERROR CONTEXT ==='
-          $bytes=[System.IO.File]::ReadAllBytes($log)
+          $stream=[System.IO.File]::Open($log,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::ReadWrite)
+          try {
+            $memory=New-Object System.IO.MemoryStream
+            $stream.CopyTo($memory)
+            $bytes=$memory.ToArray()
+            $memory.Dispose()
+          } finally {
+            $stream.Dispose()
+          }
           $text=[System.Text.Encoding]::Unicode.GetString($bytes)
           if($text -notmatch 'operation failed' -and $text -notmatch 'creative_write'){
             $text=[System.Text.Encoding]::UTF8.GetString($bytes)
