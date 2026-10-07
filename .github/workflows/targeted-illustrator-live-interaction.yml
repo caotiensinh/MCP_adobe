@@ -61,6 +61,35 @@ jobs:
           if(-not $visible){ throw 'Illustrator interactive window is not open' }
           Write-Host "LIVE_ILLUSTRATOR_PROCESS=PASS PID=$($visible.Id) SESSION=$($visible.SessionId)"
 
+          $established=@(Get-NetTCPConnection -State Established -LocalPort 8081 -ErrorAction SilentlyContinue)
+          if($established.Count -eq 0){
+            $manifest=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel\CSXS\manifest.xml'
+            if(-not (Test-Path -LiteralPath $manifest)){ throw "Illustrator CEP manifest missing: $manifest" }
+            $manifestText=[IO.File]::ReadAllText($manifest)
+            foreach($required in @(
+              '<StartOn>',
+              '<Event>applicationActivate</Event>',
+              '<Event>com.adobe.csxs.events.ApplicationActivate</Event>'
+            )){
+              if(-not $manifestText.Contains($required)){
+                throw "Production Illustrator CEP manifest is missing auto-start marker: $required"
+              }
+            }
+            $shell=New-Object -ComObject WScript.Shell
+            [void]$shell.AppActivate($visible.Id)
+            Write-Host 'ILLUSTRATOR_AUTOSTART_WAKE=APPLICATION_ACTIVATE'
+            $deadline=(Get-Date).AddSeconds(15)
+            do {
+              Start-Sleep -Milliseconds 500
+              $established=@(Get-NetTCPConnection -State Established -LocalPort 8081 -ErrorAction SilentlyContinue)
+              if($established.Count -gt 0){ break }
+            } until((Get-Date) -gt $deadline)
+            if($established.Count -eq 0){
+              throw 'Illustrator CEP auto-start did not establish the persistent 8081 WebSocket session'
+            }
+          }
+          Write-Host "ILLUSTRATOR_PANEL_SESSION=PASS connections=$($established.Count)"
+
           @'
           import asyncio
           import json
