@@ -295,49 +295,6 @@ jobs:
             if(-not $shell.AppActivate($ai.Id)){ throw "Could not activate Illustrator PID=$($ai.Id)" }
             Start-Sleep -Milliseconds 800
 
-            Add-Type -TypeDefinition @'
-          using System;
-          using System.Runtime.InteropServices;
-          using System.Text;
-          public static class IllustratorMenuNative {
-              [DllImport("user32.dll")] public static extern IntPtr GetMenu(IntPtr hWnd);
-              [DllImport("user32.dll")] public static extern int GetMenuItemCount(IntPtr hMenu);
-              [DllImport("user32.dll")] public static extern IntPtr GetSubMenu(IntPtr hMenu, int nPos);
-              [DllImport("user32.dll")] public static extern uint GetMenuItemID(IntPtr hMenu, int nPos);
-              [DllImport("user32.dll", CharSet=CharSet.Unicode)]
-              public static extern int GetMenuString(IntPtr hMenu, uint uIDItem, StringBuilder lpString, int cchMax, uint flags);
-              [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
-          }
-          '@
-
-            $MF_BYPOSITION=0x00000400
-            $WM_COMMAND=0x0111
-            $script:foundCommand=$null
-
-            function Visit-NativeMenu([IntPtr]$menu,[string]$path) {
-              if($menu -eq [IntPtr]::Zero){ return }
-              $count=[IllustratorMenuNative]::GetMenuItemCount($menu)
-              for($i=0;$i -lt $count;$i++){
-                $sb=New-Object System.Text.StringBuilder 512
-                [void][IllustratorMenuNative]::GetMenuString(
-                  $menu,[uint32]$i,$sb,$sb.Capacity,[uint32]$MF_BYPOSITION
-                )
-                $name=($sb.ToString() -replace '&','').Trim()
-                $next=if($path -and $name){"$path > $name"}elseif($name){$name}else{$path}
-                if($name){ Write-Host "ILLUSTRATOR_NATIVE_MENU=$next" }
-                $sub=[IllustratorMenuNative]::GetSubMenu($menu,$i)
-                $id=[IllustratorMenuNative]::GetMenuItemID($menu,$i)
-                if($name -eq 'MCP Control' -and $id -ne [uint32]::MaxValue){
-                  $script:foundCommand=$id
-                  return
-                }
-                if($sub -ne [IntPtr]::Zero){
-                  Visit-NativeMenu $sub $next
-                  if($null -ne $script:foundCommand){ return }
-                }
-              }
-            }
-
             function Test-PanelSocket {
               return @(Get-NetTCPConnection -State Established -LocalPort 8081 -ErrorAction SilentlyContinue).Count -gt 0
             }
@@ -345,48 +302,50 @@ jobs:
             if(Test-PanelSocket){
               Write-Host 'ILLUSTRATOR_MCP_CONTROL_OPEN=ALREADY_CONNECTED'
             } else {
-              $nativeMenu=[IllustratorMenuNative]::GetMenu([IntPtr]$ai.MainWindowHandle)
-              if($nativeMenu -ne [IntPtr]::Zero){
-                Visit-NativeMenu $nativeMenu ''
-                if($null -ne $script:foundCommand){
-                  Write-Host "ILLUSTRATOR_MCP_CONTROL_NATIVE_COMMAND=$script:foundCommand"
-                  [void][IllustratorMenuNative]::SendMessage(
-                    [IntPtr]$ai.MainWindowHandle,
-                    [uint32]$WM_COMMAND,
-                    [IntPtr][int]$script:foundCommand,
-                    [IntPtr]::Zero
-                  )
-                  Start-Sleep -Seconds 3
-                }
-              } else {
-                Write-Host 'ILLUSTRATOR_NATIVE_MENU=UNAVAILABLE'
-              }
+              $aiPath='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
+              if(-not (Test-Path -LiteralPath $aiPath)){ throw "Illustrator executable missing: $aiPath" }
 
-              if(-not (Test-PanelSocket)){
-                $attempts=@(
-                  @{name='extensions-first'; keys=@('%w','e','{RIGHT}','m','{ENTER}')},
-                  @{name='extensions-second'; keys=@('%w','e','e','{RIGHT}','m','{ENTER}')}
-                )
-                foreach($attempt in $attempts){
-                  if(Test-PanelSocket){ break }
-                  if(-not $shell.AppActivate($ai.Id)){ throw "Could not reactivate Illustrator PID=$($ai.Id)" }
+              $commands=@(
+                'Adobe CSXS Extension com.illustrator.mcp.panel',
+                'Adobe CSXS Extension com.illustrator.mcp.panelMCP Control',
+                'Adobe CSXS Extension com.illustrator.mcp.panel MCP Control'
+              )
+              $attempt=0
+              foreach($command in $commands){
+                if(Test-PanelSocket){ break }
+                $attempt++
+                $jsx=Join-Path $env:TEMP ("mcp-adobe-open-panel-{0}.jsx" -f $attempt)
+                $escaped=$command.Replace('\\','\\\\').Replace('"','\\"')
+                $jsxBody=@(
+                  '#target illustrator',
+                  'app.preferences.setBooleanPreference("ShowExternalJSXWarning", false);',
+                  ('app.executeMenuCommand("' + $escaped + '");')
+                ) -join [Environment]::NewLine
+                Set-Content -LiteralPath $jsx -Value $jsxBody -Encoding ASCII
+                Write-Host "ILLUSTRATOR_MCP_CONTROL_JSX_ATTEMPT=$attempt COMMAND=$command"
+
+                $oldTracking=$env:RUNNER_TRACKING_ID
+                try {
+                  Remove-Item Env:RUNNER_TRACKING_ID -ErrorAction SilentlyContinue
+                  $launcher=Start-Process -FilePath $aiPath -ArgumentList @($jsx) -PassThru
+                  Write-Host "ILLUSTRATOR_MCP_CONTROL_JSX_LAUNCHER_PID=$($launcher.Id)"
+                } finally {
+                  if($null -ne $oldTracking){ $env:RUNNER_TRACKING_ID=$oldTracking }
+                }
+
+                $deadline=(Get-Date).AddSeconds(8)
+                do {
                   Start-Sleep -Milliseconds 500
-                  Write-Host "ILLUSTRATOR_MCP_CONTROL_KEYBOARD_ATTEMPT=$($attempt.name)"
-                  foreach($key in $attempt.keys){
-                    $shell.SendKeys($key)
-                    Start-Sleep -Milliseconds 500
-                  }
-                  Start-Sleep -Seconds 3
-                  if(Test-PanelSocket){
-                    Write-Host "ILLUSTRATOR_MCP_CONTROL_KEYBOARD=PASS attempt=$($attempt.name)"
-                    break
-                  }
-                  $shell.SendKeys('{ESC}')
+                  $connected=Test-PanelSocket
+                } until($connected -or (Get-Date) -gt $deadline)
+                if($connected){
+                  Write-Host "ILLUSTRATOR_MCP_CONTROL_JSX=PASS attempt=$attempt"
+                  break
                 }
               }
 
               if(-not (Test-PanelSocket)){
-                throw 'MCP Control panel could not be opened through native menu or bounded keyboard navigation'
+                throw 'MCP Control panel could not be opened through Illustrator executeMenuCommand candidates'
               }
               Write-Host 'ILLUSTRATOR_MCP_CONTROL_OPEN=REQUESTED'
             }
