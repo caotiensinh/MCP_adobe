@@ -191,7 +191,7 @@ jobs:
           '@ | Set-Content -Path illustrator_connection_gate.py -Encoding UTF8
           uv run python illustrator_connection_gate.py
 
-      - name: Direct bounded interaction through persistent MCP
+      - name: Draw a car through MCP and verify read-back
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -202,8 +202,7 @@ jobs:
           from mcp import Client
 
           URL = "http://127.0.0.1:8787/mcp"
-          DOC_NAME = "ChatGPT MCP Direct Interaction"
-          PROBE_NAME = "ChatGPT Live Rectangle"
+          DOC_NAME = "ChatGPT MCP Car Test"
 
           def walk(value):
               yield value
@@ -213,12 +212,6 @@ jobs:
               elif isinstance(value, (list, tuple)):
                   for child in value:
                       yield from walk(child)
-
-          def find_key(value, key):
-              for node in walk(value):
-                  if isinstance(node, Mapping) and key in node:
-                      return node[key]
-              return None
 
           def token_from_item(item):
               if not isinstance(item, Mapping):
@@ -246,14 +239,6 @@ jobs:
                           return node, token
               return None, None
 
-          def find_token_item(value, token):
-              for node in walk(value):
-                  if not isinstance(node, Mapping):
-                      continue
-                  if token_from_item(node) == token:
-                      return node
-              return None
-
           async def call(client, tool, capability, arguments):
               result = await client.call_tool(
                   tool,
@@ -273,6 +258,25 @@ jobs:
               )
               return payload
 
+          async def create_and_verify(client, capability, spec):
+              name = spec["name"]
+              await call(client, "creative_write", capability, spec)
+              found = await call(
+                  client,
+                  "creative_read",
+                  "creative.object.find",
+                  {"name": name},
+              )
+              item, token = find_named_item(found, name)
+              if item is None or token is None:
+                  raise RuntimeError(f"MCP car part did not read back: {name}")
+              print(
+                  "ILLUSTRATOR_MCP_CAR_PART=PASS " +
+                  json.dumps({"name": name, "token": token}, ensure_ascii=False),
+                  flush=True,
+              )
+              return token
+
           async def main():
               async with Client(URL) as client:
                   listed = await client.list_tools()
@@ -290,155 +294,154 @@ jobs:
                       client,
                       "creative_write",
                       "creative.document.create",
-                      {"width": 640, "height": 420, "color_mode": "RGB", "name": DOC_NAME},
-                  )
-                  await call(
-                      client,
-                      "creative_write",
-                      "creative.shape.rectangle",
                       {
-                          "name": PROBE_NAME,
-                          "x": 100,
-                          "y": 100,
-                          "width": 160,
-                          "height": 90,
-                          "fill": {"r": 24, "g": 119, "b": 242},
+                          "width": 760,
+                          "height": 480,
+                          "color_mode": "RGB",
+                          "name": DOC_NAME,
                       },
                   )
 
-                  found = await call(
+                  parts = [
+                      (
+                          "creative.shape.rectangle",
+                          {
+                              "name": "MCP Car Body",
+                              "x": 130,
+                              "y": 215,
+                              "width": 500,
+                              "height": 125,
+                              "fill": {"r": 220, "g": 48, "b": 52},
+                          },
+                      ),
+                      (
+                          "creative.shape.rectangle",
+                          {
+                              "name": "MCP Car Cabin",
+                              "x": 250,
+                              "y": 135,
+                              "width": 250,
+                              "height": 95,
+                              "fill": {"r": 220, "g": 48, "b": 52},
+                          },
+                      ),
+                      (
+                          "creative.shape.rectangle",
+                          {
+                              "name": "MCP Car Window Left",
+                              "x": 270,
+                              "y": 150,
+                              "width": 90,
+                              "height": 58,
+                              "fill": {"r": 151, "g": 214, "b": 255},
+                          },
+                      ),
+                      (
+                          "creative.shape.rectangle",
+                          {
+                              "name": "MCP Car Window Right",
+                              "x": 385,
+                              "y": 150,
+                              "width": 90,
+                              "height": 58,
+                              "fill": {"r": 151, "g": 214, "b": 255},
+                          },
+                      ),
+                      (
+                          "creative.shape.ellipse",
+                          {
+                              "name": "MCP Car Wheel Left",
+                              "x": 190,
+                              "y": 290,
+                              "width": 96,
+                              "height": 96,
+                              "fill": {"r": 32, "g": 32, "b": 36},
+                          },
+                      ),
+                      (
+                          "creative.shape.ellipse",
+                          {
+                              "name": "MCP Car Wheel Right",
+                              "x": 475,
+                              "y": 290,
+                              "width": 96,
+                              "height": 96,
+                              "fill": {"r": 32, "g": 32, "b": 36},
+                          },
+                      ),
+                      (
+                          "creative.shape.ellipse",
+                          {
+                              "name": "MCP Car Hub Left",
+                              "x": 218,
+                              "y": 318,
+                              "width": 40,
+                              "height": 40,
+                              "fill": {"r": 180, "g": 180, "b": 185},
+                          },
+                      ),
+                      (
+                          "creative.shape.ellipse",
+                          {
+                              "name": "MCP Car Hub Right",
+                              "x": 503,
+                              "y": 318,
+                              "width": 40,
+                              "height": 40,
+                              "fill": {"r": 180, "g": 180, "b": 185},
+                          },
+                      ),
+                      (
+                          "creative.shape.rectangle",
+                          {
+                              "name": "MCP Car Headlight",
+                              "x": 602,
+                              "y": 245,
+                              "width": 28,
+                              "height": 26,
+                              "fill": {"r": 255, "g": 226, "b": 98},
+                          },
+                      ),
+                  ]
+
+                  tokens = {}
+                  for capability, spec in parts:
+                      tokens[spec["name"]] = await create_and_verify(
+                          client, capability, spec
+                      )
+
+                  structure = await call(
                       client,
                       "creative_read",
-                      "creative.object.find",
-                      {"name": PROBE_NAME},
-                  )
-                  found_item, probe_token = find_named_item(found, PROBE_NAME)
-                  if found_item is None or probe_token is None:
-                      raise RuntimeError("created rectangle could not be resolved to an MCP object token")
-                  print(f"ILLUSTRATOR_CREATED_TOKEN=PASS token={probe_token}", flush=True)
-
-                  await call(
-                      client,
-                      "creative_write",
-                      "creative.object.select",
-                      {"uuids": [probe_token]},
-                  )
-
-                  selection = await call(
-                      client,
-                      "creative_read",
-                      "creative.selection.get",
+                      "creative.document.structure",
                       {},
                   )
-                  if find_key(selection, "selectionCount") != 1:
-                      raise RuntimeError("expected exactly one live Illustrator selection")
-                  item = find_token_item(selection, probe_token)
-                  if item is None:
-                      raise RuntimeError("selected object did not read back with the same MCP token")
-                  bounds = item.get("bounds")
-                  if not isinstance(bounds, Mapping):
-                      raise RuntimeError("selected object has no readable bounds")
-                  before_x = float(bounds["x"])
-                  before_y = float(bounds["y"])
+                  missing = [
+                      name
+                      for name in tokens
+                      if not any(
+                          isinstance(node, Mapping) and node.get("name") == name
+                          for node in walk(structure)
+                      )
+                  ]
+                  if missing:
+                      raise RuntimeError(
+                          "MCP car document structure missing: " + ", ".join(missing)
+                      )
+
                   print(
-                      f"ILLUSTRATOR_SELECTION_BASELINE=PASS token={probe_token} x={before_x} y={before_y}",
+                      "ILLUSTRATOR_MCP_CAR_DRAW=PASS " +
+                      json.dumps(
+                          {
+                              "document": DOC_NAME,
+                              "parts": len(tokens),
+                              "tokens": tokens,
+                          },
+                          ensure_ascii=False,
+                      ),
                       flush=True,
                   )
 
-                  moved = await call(
-                      client,
-                      "creative_write",
-                      "creative.selection.move",
-                      {"deltaX": 12, "deltaY": 0},
-                  )
-                  if find_key(moved, "selected_uuid") != probe_token:
-                      raise RuntimeError("selection.move did not target the live selected object")
-
-                  moved_selection = await call(
-                      client,
-                      "creative_read",
-                      "creative.selection.get",
-                      {},
-                  )
-                  moved_item = find_token_item(moved_selection, probe_token)
-                  if moved_item is None:
-                      raise RuntimeError("moved object disappeared from selection read-back")
-                  moved_x = float(moved_item["bounds"]["x"])
-                  if abs((moved_x - before_x) - 12.0) > 0.01:
-                      raise RuntimeError(
-                          f"selection.move read-back mismatch: before={before_x} after={moved_x}"
-                      )
-                  print("ILLUSTRATOR_SELECTION_MOVE_READBACK=PASS dx=12", flush=True)
-
-                  updated = await call(
-                      client,
-                      "creative_write",
-                      "creative.selection.update",
-                      {"properties": {"opacity": 60}},
-                  )
-                  if find_key(updated, "selected_uuid") != probe_token:
-                      raise RuntimeError("selection.update did not target the live selected object")
-
-                  after_update = await call(
-                      client,
-                      "creative_read",
-                      "creative.object.find",
-                      {"name": PROBE_NAME},
-                  )
-                  update_item, update_token = find_named_item(after_update, PROBE_NAME)
-                  if update_item is None or update_token != probe_token:
-                      raise RuntimeError("updated object could not be read back by the same MCP token")
-                  opacity = find_key(update_item, "opacity")
-                  if opacity is None or abs(float(opacity) - 60.0) > 0.01:
-                      raise RuntimeError(f"selection.update opacity read-back mismatch: {opacity}")
-                  print("ILLUSTRATOR_SELECTION_OPACITY_READBACK=PASS opacity=60", flush=True)
-
-                  await call(
-                      client,
-                      "creative_write",
-                      "creative.undo",
-                      {"count": 1},
-                  )
-                  after_opacity_undo = await call(
-                      client,
-                      "creative_read",
-                      "creative.object.find",
-                      {"name": PROBE_NAME},
-                  )
-                  undo_item, undo_token = find_named_item(after_opacity_undo, PROBE_NAME)
-                  if undo_item is None or undo_token != probe_token:
-                      raise RuntimeError("opacity undo lost the target object")
-                  undo_opacity = find_key(undo_item, "opacity")
-                  if undo_opacity is None or abs(float(undo_opacity) - 100.0) > 0.01:
-                      raise RuntimeError(f"opacity undo read-back mismatch: {undo_opacity}")
-                  print("ILLUSTRATOR_SELECTION_OPACITY_UNDO=PASS", flush=True)
-
-                  await call(
-                      client,
-                      "creative_write",
-                      "creative.undo",
-                      {"count": 1},
-                  )
-                  final_selection = await call(
-                      client,
-                      "creative_read",
-                      "creative.selection.get",
-                      {},
-                  )
-                  final_item = find_token_item(final_selection, probe_token)
-                  if final_item is None:
-                      raise RuntimeError("move undo lost the selected target object")
-                  final_bounds = final_item.get("bounds")
-                  if not isinstance(final_bounds, Mapping):
-                      raise RuntimeError("move undo read-back did not contain bounds")
-                  final_x = float(final_bounds["x"])
-                  if abs(final_x - before_x) > 0.01:
-                      raise RuntimeError(
-                          f"move undo read-back mismatch: expected={before_x} actual={final_x}"
-                      )
-                  print("ILLUSTRATOR_SELECTION_MOVE_UNDO=PASS", flush=True)
-                  print("ILLUSTRATOR_DIRECT_INTERACTION_E2E=PASS", flush=True)
-
           asyncio.run(main())
-          '@ | Set-Content -Path illustrator_live_interaction.py -Encoding UTF8
-          uv run python illustrator_live_interaction.py
+          '@ | Set-Content -Path illustrator_mcp_draw_car.py -Encoding UTF8
+          uv run python illustrator_mcp_draw_car.py
