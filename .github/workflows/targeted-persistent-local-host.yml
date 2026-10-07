@@ -148,7 +148,22 @@ jobs:
 
           URL = "http://127.0.0.1:8787/mcp"
 
-          async def probe(label: str) -> None:
+          def walk(value):
+              yield value
+              if isinstance(value, dict):
+                  for child in value.values():
+                      yield from walk(child)
+              elif isinstance(value, (list, tuple)):
+                  for child in value:
+                      yield from walk(child)
+
+          def find_key(value, key):
+              for node in walk(value):
+                  if isinstance(node, dict) and key in node:
+                      return node[key]
+              return None
+
+          async def health(label: str, *, probe: bool):
               async with Client(URL) as client:
                   listed = await client.list_tools()
                   names = {tool.name for tool in listed.tools}
@@ -165,25 +180,78 @@ jobs:
                       {
                           "application": "illustrator",
                           "capability": "creative.health",
-                          "arguments": {},
+                          "arguments": {"probe": probe, "timeout": 5.0},
                       },
                   )
                   if result.is_error:
-                      raise RuntimeError(f"Illustrator health failed: {result}")
-                  print(label + "=" + json.dumps(result.structured_content, ensure_ascii=False, default=str), flush=True)
+                      raise RuntimeError(f"Illustrator health tool failed: {result}")
+                  payload = result.structured_content
+                  print(
+                      label + "=" +
+                      json.dumps(payload, ensure_ascii=False, default=str),
+                      flush=True,
+                  )
+                  return payload
 
-          for attempt in range(1, 31):
-              try:
-                  asyncio.run(probe("PERSISTENT_HTTP_ILLUSTRATOR_HEALTH_1"))
-                  break
-              except Exception as exc:
-                  print(f"PERSISTENT_HEALTH_WAIT attempt={attempt} error={type(exc).__name__}:{exc}", flush=True)
-                  if attempt == 30:
-                      raise
-                  time.sleep(2)
+          def require_panel_idle(payload):
+              layers = find_key(payload, "layers")
+              if not isinstance(layers, dict):
+                  raise RuntimeError("Illustrator health omitted layers")
+              panel = layers.get("panel")
+              if not isinstance(panel, dict):
+                  raise RuntimeError("Illustrator health omitted panel layer")
+              status = panel.get("status")
+              if status not in {"ok", "degraded"}:
+                  raise RuntimeError(
+                      "Illustrator panel is not connected: " +
+                      json.dumps(panel, ensure_ascii=False, default=str)
+                  )
+              execution = find_key(payload, "execution")
+              unresolved = execution.get("unresolvedJobs", []) if isinstance(execution, dict) else []
+              if panel.get("busy") or panel.get("activeRequestId") is not None or unresolved:
+                  raise RuntimeError(
+                      "Illustrator panel/job is busy or unresolved; do not retry blindly: " +
+                      json.dumps(
+                          {
+                              "panel": panel,
+                              "execution": execution,
+                              "blockedAt": find_key(payload, "blockedAt"),
+                              "blocking": find_key(payload, "blocking"),
+                          },
+                          ensure_ascii=False,
+                          default=str,
+                      )
+                  )
+
+          def require_live_probe(payload):
+              require_panel_idle(payload)
+              layers = find_key(payload, "layers")
+              illustrator = layers.get("illustrator") if isinstance(layers, dict) else None
+              if not isinstance(illustrator, dict) or illustrator.get("status") != "ok":
+                  raise RuntimeError(
+                      "Illustrator probe did not confirm the host: " +
+                      json.dumps(payload, ensure_ascii=False, default=str)
+                  )
+
+          local = asyncio.run(
+              health("PERSISTENT_HTTP_ILLUSTRATOR_LOCAL_1", probe=False)
+          )
+          require_panel_idle(local)
+          probed = asyncio.run(
+              health("PERSISTENT_HTTP_ILLUSTRATOR_HEALTH_1", probe=True)
+          )
+          require_live_probe(probed)
 
           time.sleep(8)
-          asyncio.run(probe("PERSISTENT_HTTP_ILLUSTRATOR_HEALTH_2"))
+
+          local2 = asyncio.run(
+              health("PERSISTENT_HTTP_ILLUSTRATOR_LOCAL_2", probe=False)
+          )
+          require_panel_idle(local2)
+          probed2 = asyncio.run(
+              health("PERSISTENT_HTTP_ILLUSTRATOR_HEALTH_2", probe=True)
+          )
+          require_live_probe(probed2)
           print("PERSISTENT_MCP_ADOBE_HOST_E2E=PASS", flush=True)
           '@ | Set-Content -Path persistent_host_probe.py -Encoding UTF8
           uv run python persistent_host_probe.py

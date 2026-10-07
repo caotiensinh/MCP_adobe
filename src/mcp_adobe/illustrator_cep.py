@@ -356,10 +356,28 @@ def call_legacy_tool(raw: RawToolCaller, name: str, arguments: Mapping[str, Any]
     args = dict(arguments)
 
     if name == "list_fonts":
-        status = _call(raw, "illustrator_connection_status", {"probe": True, "timeout": 5.0})
-        if not _connection_ready(status):
-            raise RuntimeError("Illustrator CEP chain is not ready")
-        return {"count": 1, "fonts": ["Illustrator CEP bridge"], "connection": status}
+        # creative.health is a diagnostic surface, not a readiness assertion.
+        # Upstream intentionally returns a structured connection report even
+        # while the panel is busy/down or an unresolved job blocks dispatch.
+        # Preserve that report instead of turning "not ready" into a generic
+        # tool exception that hides panelBusy/activeRequestId/recovery details.
+        probe = args.get("probe", False)
+        if not isinstance(probe, bool):
+            raise ValueError("creative.health probe must be boolean")
+        timeout = args.get("timeout", 5.0)
+        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
+            raise ValueError("creative.health timeout must be a positive number")
+        status = _call(
+            raw,
+            "illustrator_connection_status",
+            {"probe": probe, "timeout": float(timeout)},
+        )
+        return {
+            "count": 1,
+            "fonts": ["Illustrator CEP bridge"],
+            "ready": bool(_find_key(status, "ready")),
+            "connection": status,
+        }
 
     if name == "get_document_info":
         return _call(raw, "illustrator_get_document", {"scope": "both", "max_items": 1, "max_layers": 50})

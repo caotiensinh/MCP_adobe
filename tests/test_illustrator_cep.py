@@ -53,30 +53,81 @@ class IllustratorCepCompatibilityTests(unittest.TestCase):
             [
                 (
                     "illustrator_connection_status",
-                    {"params": {"probe": True, "timeout": 5.0}},
+                    {"params": {"probe": False, "timeout": 5.0}},
                 )
             ],
         )
         self.assertEqual(result["count"], 1)
         self.assertIn("connection", result)
 
-    def test_health_rejects_transport_without_panel(self) -> None:
+    def test_health_reports_not_ready_without_throwing(self) -> None:
         raw = RawCaller(
             {
                 "illustrator_connection_status": {
                     "data": {
+                        "ready": False,
+                        "blockedAt": "panel",
                         "layers": {
                             "server": {"status": "ok"},
-                            "panel": {"status": "down"},
+                            "panel": {
+                                "status": "down",
+                                "busy": False,
+                                "activeRequestId": None,
+                            },
                             "illustrator": {"status": "unknown"},
-                        }
+                        },
                     }
                 }
             }
         )
 
-        with self.assertRaisesRegex(RuntimeError, "CEP chain is not ready"):
-            call_legacy_tool(raw, "list_fonts", {})
+        result = call_legacy_tool(raw, "list_fonts", {})
+
+        self.assertFalse(result["ready"])
+        self.assertEqual(
+            result["connection"]["data"]["blockedAt"],
+            "panel",
+        )
+        self.assertEqual(
+            raw.calls,
+            [
+                (
+                    "illustrator_connection_status",
+                    {"params": {"probe": False, "timeout": 5.0}},
+                )
+            ],
+        )
+
+    def test_health_can_request_one_explicit_probe(self) -> None:
+        raw = RawCaller(
+            {
+                "illustrator_connection_status": {
+                    "data": {
+                        "ready": True,
+                        "blockedAt": None,
+                        "layers": {
+                            "server": {"status": "ok"},
+                            "panel": {"status": "ok", "busy": False},
+                            "illustrator": {"status": "ok"},
+                            "document": {"status": "ok"},
+                        },
+                    }
+                }
+            }
+        )
+
+        result = call_legacy_tool(raw, "list_fonts", {"probe": True, "timeout": 3})
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(
+            raw.calls,
+            [
+                (
+                    "illustrator_connection_status",
+                    {"params": {"probe": True, "timeout": 3.0}},
+                )
+            ],
+        )
 
     def test_selection_uses_ephemeral_handle_and_converts_native_bounds(self) -> None:
         raw = RawCaller(
