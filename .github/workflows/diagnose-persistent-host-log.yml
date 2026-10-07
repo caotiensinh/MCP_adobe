@@ -34,6 +34,27 @@ jobs:
           }
           $log=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\logs\local-host.log'
           if(-not (Test-Path -LiteralPath $log)){ throw "persistent host log missing: $log" }
-          Write-Host '=== PERSISTENT HOST LOG TAIL ==='
-          Get-Content -LiteralPath $log -Tail 600
-          Write-Host '=== END LOG TAIL ==='
+          Write-Host '=== PERSISTENT HOST ERROR CONTEXT ==='
+          $bytes=[System.IO.File]::ReadAllBytes($log)
+          $text=[System.Text.Encoding]::Unicode.GetString($bytes)
+          if($text -notmatch 'operation failed' -and $text -notmatch 'creative_write'){
+            $text=[System.Text.Encoding]::UTF8.GetString($bytes)
+          }
+          $lines=$text -split "\r?\n"
+          $hits=@()
+          for($i=0;$i -lt $lines.Count;$i++){
+            if($lines[$i] -match 'operation failed|select_objects|illustrator_execute_script|creative_write|UnexpectedToolError|Traceback'){
+              $hits += $i
+            }
+          }
+          if($hits.Count -eq 0){
+            Write-Host 'DIAG_NO_ERROR_HITS'
+            $start=[Math]::Max(0,$lines.Count-300)
+            for($i=$start;$i -lt $lines.Count;$i++){ Write-Host $lines[$i] }
+          } else {
+            $last=$hits[$hits.Count-1]
+            $start=[Math]::Max(0,$last-140)
+            $end=[Math]::Min($lines.Count-1,$last+100)
+            for($i=$start;$i -le $end;$i++){ Write-Host $lines[$i] }
+          }
+          Write-Host '=== END PERSISTENT HOST ERROR CONTEXT ==='
