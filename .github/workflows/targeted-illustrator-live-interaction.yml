@@ -109,9 +109,21 @@ jobs:
             }
           }
 
-          $root=[System.Windows.Automation.AutomationElement]::FromHandle($visible.MainWindowHandle)
-          $windowItem=Find-MenuItem $root 'Window'
-          if(-not (Invoke-MenuItem $windowItem 'Window')){
+          $windowItem=$null
+          try {
+            $visible=Get-Process -Id $visible.Id -ErrorAction Stop
+            if($visible.MainWindowHandle -eq 0){ throw 'Illustrator MainWindowHandle is zero' }
+            $root=[System.Windows.Automation.AutomationElement]::FromHandle($visible.MainWindowHandle)
+            $windowItem=Find-MenuItem $root 'Window'
+          } catch {
+            Write-Host "ILLUSTRATOR_UIA_ROOT_UNAVAILABLE=$($_.Exception.Message)"
+          }
+
+          if($null -eq $windowItem -or -not (Invoke-MenuItem $windowItem 'Window')){
+            if(-not $shell.AppActivate($visible.Id)){
+              throw "Could not activate Illustrator PID=$($visible.Id) for menu fallback"
+            }
+            Start-Sleep -Milliseconds 300
             [System.Windows.Forms.SendKeys]::SendWait('%w')
             Write-Host 'ILLUSTRATOR_UIA_FALLBACK=ALT_W'
           }
