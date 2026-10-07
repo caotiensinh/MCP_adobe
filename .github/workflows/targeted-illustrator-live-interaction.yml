@@ -444,12 +444,42 @@ jobs:
           async def create_and_verify(client, capability, spec):
               name = spec["name"]
               await call(client, "creative_write", capability, spec)
-              found = await call(
-                  client,
-                  "creative_read",
-                  "creative.object.find",
-                  {"name": name},
-              )
+              try:
+                  found = await call(
+                      client,
+                      "creative_read",
+                      "creative.object.find",
+                      {"name": name},
+                  )
+              except RuntimeError as exc:
+                  print(
+                      "ILLUSTRATOR_MCP_READBACK_RECOVERY=START " +
+                      json.dumps({"name": name, "error": str(exc)}, ensure_ascii=False),
+                      flush=True,
+                  )
+                  health = await call(
+                      client,
+                      "creative_read",
+                      "creative.health",
+                      {"probe": True, "timeout": 8.0},
+                  )
+                  print(
+                      "ILLUSTRATOR_MCP_READBACK_RECOVERY=HEALTH_PASS " +
+                      json.dumps(health, ensure_ascii=False, default=str),
+                      flush=True,
+                  )
+                  await asyncio.sleep(0.5)
+                  found = await call(
+                      client,
+                      "creative_read",
+                      "creative.object.find",
+                      {"name": name},
+                  )
+                  print(
+                      "ILLUSTRATOR_MCP_READBACK_RECOVERY=PASS " +
+                      json.dumps({"name": name}, ensure_ascii=False),
+                      flush=True,
+                  )
               item, token = find_named_item(found, name)
               if item is None or token is None:
                   raise RuntimeError(f"MCP car part did not read back: {name}")
