@@ -181,9 +181,11 @@ $newPanelInstalled = $false
 try {
     New-Item -ItemType Directory -Path $stagingRoot -Force | Out-Null
 
-    Invoke-Checked $git @("clone", "--no-checkout", $UpstreamRepo, $source) "Illustrator upstream clone"
-    Invoke-Checked $git @("-C", $source, "fetch", "--depth=1", "origin", $UpstreamSha) "Illustrator upstream fetch"
-    Invoke-Checked $git @("-C", $source, "checkout", "--detach", $UpstreamSha) "Illustrator upstream checkout"
+    New-Item -ItemType Directory -Path $source -Force | Out-Null
+    Invoke-Checked $git @("-C", $source, "init") "Illustrator upstream init"
+    Invoke-Checked $git @("-C", $source, "remote", "add", "origin", $UpstreamRepo) "Illustrator upstream remote"
+    Invoke-Checked $git @("-C", $source, "-c", "protocol.version=2", "fetch", "--no-tags", "--depth=1", "origin", $UpstreamSha) "Illustrator upstream exact-SHA fetch"
+    Invoke-Checked $git @("-C", $source, "checkout", "--detach", "FETCH_HEAD") "Illustrator upstream checkout"
     $actualSha = (& $git -C $source rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0 -or $actualSha -ne $UpstreamSha) {
         throw "Illustrator upstream SHA mismatch: expected=$UpstreamSha actual=$actualSha"

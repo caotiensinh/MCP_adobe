@@ -20,6 +20,11 @@ class IllustratorCepInstallerContractTests(unittest.TestCase):
         self.assertIn('$ExpectedPackageVersion = "3.0.0"', self.backend_installer)
         self.assertIn('$ExtensionId = "com.illustrator.mcp.panel"', self.backend_installer)
 
+    def test_backend_installer_fetches_only_the_pinned_commit(self) -> None:
+        self.assertIn('"fetch", "--no-tags", "--depth=1", "origin", $UpstreamSha', self.backend_installer)
+        self.assertIn('"checkout", "--detach", "FETCH_HEAD"', self.backend_installer)
+        self.assertNotIn('"clone", "--no-checkout"', self.backend_installer)
+
     def test_backend_installer_matches_runtime_default_path(self) -> None:
         self.assertIn('"MCPAdobe\\illustrator-mcp"', self.backend_installer)
         self.assertIn('"venv\\Scripts\\python.exe"', self.backend_installer)
