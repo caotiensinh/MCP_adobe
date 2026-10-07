@@ -1,0 +1,314 @@
+name: Live Illustrator direct interaction
+
+on:
+  push:
+    branches: [feat/illustrator-cep-backend]
+    paths:
+      - ".github/workflows/targeted-illustrator-live-interaction.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: illustrator-live-interaction-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-interaction:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    env:
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare local MCP client runtime
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+            $uvDir=Join-Path $HOME '.local\bin'
+            if(Test-Path (Join-Path $uvDir 'uv.exe')) { $env:Path="$uvDir;$env:Path" }
+          }
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){ throw 'uv unavailable' }
+          uv sync
+
+      - name: Verify persistent host without restarting it
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          foreach($port in @(8787,8081)){
+            $listeners=@(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
+            if($listeners.Count -ne 1){ throw "expected one existing listener on $port, got $($listeners.Count)" }
+            $ownerPid=$listeners[0].OwningProcess
+            $p=Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid"
+            Write-Host "LIVE_EXISTING_PORT_$port=PASS PID=$ownerPid EXE=$($p.ExecutablePath) CMD=$($p.CommandLine)"
+          }
+          $visible=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1
+          if(-not $visible){ throw 'Illustrator interactive window is not open' }
+          Write-Host "LIVE_ILLUSTRATOR_PROCESS=PASS PID=$($visible.Id) SESSION=$($visible.SessionId)"
+
+      - name: Direct bounded interaction through persistent MCP
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import asyncio
+          import json
+          from collections.abc import Mapping
+          from mcp import Client
+
+          URL = "http://127.0.0.1:8787/mcp"
+          DOC_NAME = "ChatGPT MCP Direct Interaction"
+          PROBE_ID = "chatgpt_live_rectangle"
+          PROBE_NAME = "ChatGPT Live Rectangle"
+
+          def walk(value):
+              yield value
+              if isinstance(value, Mapping):
+                  for child in value.values():
+                      yield from walk(child)
+              elif isinstance(value, (list, tuple)):
+                  for child in value:
+                      yield from walk(child)
+
+          def find_key(value, key):
+              for node in walk(value):
+                  if isinstance(node, Mapping) and key in node:
+                      return node[key]
+              return None
+
+          def find_item(value, token):
+              for node in walk(value):
+                  if not isinstance(node, Mapping):
+                      continue
+                  if node.get("uuid") == token:
+                      return node
+                  ref = node.get("itemRef")
+                  if isinstance(ref, Mapping):
+                      ident = ref.get("identity")
+                      if isinstance(ident, Mapping) and ident.get("itemId") == token:
+                          return node
+              return None
+
+          async def call(client, tool, capability, arguments):
+              result = await client.call_tool(
+                  tool,
+                  {
+                      "application": "illustrator",
+                      "capability": capability,
+                      "arguments": arguments,
+                  },
+              )
+              if result.is_error:
+                  raise RuntimeError(f"{tool}/{capability} failed: {result}")
+              payload = result.structured_content
+              print(
+                  f"LIVE_{capability}=" +
+                  json.dumps(payload, ensure_ascii=False, default=str),
+                  flush=True,
+              )
+              return payload
+
+          async def wait_panel_idle(client):
+              last = None
+              for attempt in range(1, 31):
+                  payload = await call(
+                      client,
+                      "creative_read",
+                      "creative.health",
+                      {"probe": False, "timeout": 5.0},
+                  )
+                  layers = find_key(payload, "layers")
+                  panel = layers.get("panel") if isinstance(layers, Mapping) else None
+                  execution = find_key(payload, "execution")
+                  unresolved = (
+                      execution.get("unresolvedJobs", [])
+                      if isinstance(execution, Mapping)
+                      else []
+                  )
+                  last = {
+                      "panel": panel,
+                      "execution": execution,
+                      "blockedAt": find_key(payload, "blockedAt"),
+                  }
+                  if (
+                      isinstance(panel, Mapping)
+                      and panel.get("status") in {"ok", "degraded"}
+                      and not panel.get("heartbeatStale")
+                      and not panel.get("busy")
+                      and panel.get("activeRequestId") is None
+                      and not unresolved
+                  ):
+                      print(f"ILLUSTRATOR_PANEL_IDLE=PASS attempt={attempt}", flush=True)
+                      return
+                  print(
+                      "ILLUSTRATOR_PANEL_IDLE_WAIT=" +
+                      json.dumps({"attempt": attempt, **last}, ensure_ascii=False, default=str),
+                      flush=True,
+                  )
+                  await asyncio.sleep(1)
+              raise RuntimeError(
+                  "Illustrator panel did not become safely idle; no mutation was attempted: " +
+                  json.dumps(last, ensure_ascii=False, default=str)
+              )
+
+          async def main():
+              async with Client(URL) as client:
+                  listed = await client.list_tools()
+                  names = {tool.name for tool in listed.tools}
+                  required = {
+                      "creative_discover",
+                      "creative_read",
+                      "creative_write",
+                      "creative_authorized_write",
+                  }
+                  if names != required:
+                      raise RuntimeError(f"unexpected MCP tools: {sorted(names)}")
+
+                  await wait_panel_idle(client)
+
+                  await call(
+                      client,
+                      "creative_write",
+                      "creative.document.create",
+                      {"width": 640, "height": 420, "color_mode": "RGB", "name": DOC_NAME},
+                  )
+                  await call(
+                      client,
+                      "creative_write",
+                      "creative.shape.rectangle",
+                      {
+                          "id": PROBE_ID,
+                          "name": PROBE_NAME,
+                          "x": 100,
+                          "y": 100,
+                          "width": 160,
+                          "height": 90,
+                          "fill": {"r": 24, "g": 119, "b": 242},
+                      },
+                  )
+                  await call(
+                      client,
+                      "creative_write",
+                      "creative.object.select",
+                      {"uuids": [PROBE_ID]},
+                  )
+
+                  selection = await call(
+                      client,
+                      "creative_read",
+                      "creative.selection.get",
+                      {},
+                  )
+                  if find_key(selection, "selectionCount") != 1:
+                      raise RuntimeError("expected exactly one live Illustrator selection")
+                  item = find_item(selection, PROBE_ID)
+                  if item is None:
+                      raise RuntimeError("selected object did not read back with the requested MCP ID")
+                  bounds = item.get("bounds")
+                  if not isinstance(bounds, Mapping):
+                      raise RuntimeError("selected object has no readable bounds")
+                  before_x = float(bounds["x"])
+                  before_y = float(bounds["y"])
+                  print(
+                      f"ILLUSTRATOR_SELECTION_BASELINE=PASS id={PROBE_ID} x={before_x} y={before_y}",
+                      flush=True,
+                  )
+
+                  moved = await call(
+                      client,
+                      "creative_write",
+                      "creative.selection.move",
+                      {"deltaX": 12, "deltaY": 0},
+                  )
+                  if find_key(moved, "selected_uuid") != PROBE_ID:
+                      raise RuntimeError("selection.move did not target the live selected object")
+                  moved_selection = await call(
+                      client,
+                      "creative_read",
+                      "creative.selection.get",
+                      {},
+                  )
+                  moved_item = find_item(moved_selection, PROBE_ID)
+                  if moved_item is None:
+                      raise RuntimeError("moved object disappeared from selection readback")
+                  moved_x = float(moved_item["bounds"]["x"])
+                  if abs((moved_x - before_x) - 12.0) > 0.01:
+                      raise RuntimeError(
+                          f"selection.move readback mismatch: before={before_x} after={moved_x}"
+                      )
+                  print("ILLUSTRATOR_SELECTION_MOVE_READBACK=PASS dx=12", flush=True)
+
+                  updated = await call(
+                      client,
+                      "creative_write",
+                      "creative.selection.update",
+                      {"properties": {"opacity": 61}},
+                  )
+                  if find_key(updated, "selected_uuid") != PROBE_ID:
+                      raise RuntimeError("selection.update did not target the live selected object")
+                  found = await call(
+                      client,
+                      "creative_read",
+                      "creative.object.find",
+                      {"name": PROBE_NAME},
+                  )
+                  found_item = find_item(found, PROBE_ID)
+                  opacity = find_key(found_item, "opacity") if found_item else None
+                  if opacity is None or abs(float(opacity) - 61.0) > 0.01:
+                      raise RuntimeError(f"selection.update opacity readback mismatch: {opacity}")
+                  print("ILLUSTRATOR_SELECTION_OPACITY_READBACK=PASS opacity=61", flush=True)
+
+                  await call(
+                      client,
+                      "creative_write",
+                      "creative.undo",
+                      {"count": 1},
+                  )
+                  after_opacity_undo = await call(
+                      client,
+                      "creative_read",
+                      "creative.object.find",
+                      {"name": PROBE_NAME},
+                  )
+                  undo_item = find_item(after_opacity_undo, PROBE_ID)
+                  undo_opacity = find_key(undo_item, "opacity") if undo_item else None
+                  if undo_opacity is None or abs(float(undo_opacity) - 100.0) > 0.01:
+                      raise RuntimeError(f"opacity undo readback mismatch: {undo_opacity}")
+                  print("ILLUSTRATOR_SELECTION_OPACITY_UNDO=PASS", flush=True)
+
+                  await call(
+                      client,
+                      "creative_write",
+                      "creative.undo",
+                      {"count": 1},
+                  )
+                  after_move_undo = await call(
+                      client,
+                      "creative_read",
+                      "creative.object.find",
+                      {"name": PROBE_NAME},
+                  )
+                  final_item = find_item(after_move_undo, PROBE_ID)
+                  final_bounds = find_key(final_item, "bounds") if final_item else None
+                  if not isinstance(final_bounds, Mapping):
+                      raise RuntimeError("move undo readback did not contain bounds")
+                  final_x = final_bounds.get("x")
+                  if final_x is None:
+                      final_x = final_bounds.get("left")
+                  if final_x is None or abs(float(final_x) - before_x) > 0.01:
+                      raise RuntimeError(
+                          f"move undo readback mismatch: expected={before_x} actual={final_x}"
+                      )
+                  print("ILLUSTRATOR_SELECTION_MOVE_UNDO=PASS", flush=True)
+                  print("ILLUSTRATOR_DIRECT_INTERACTION_E2E=PASS", flush=True)
+
+          asyncio.run(main())
+          '@ | Set-Content -Path illustrator_live_interaction.py -Encoding UTF8
+          uv run python illustrator_live_interaction.py
