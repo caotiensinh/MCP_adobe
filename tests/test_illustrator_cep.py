@@ -178,8 +178,48 @@ class IllustratorCepCompatibilityTests(unittest.TestCase):
             ],
         )
 
+    def test_select_objects_uses_bounded_identity_script_and_readback(self) -> None:
+        raw = RawCaller(
+            {
+                "illustrator_execute_script": {"data": {"selectedCount": 1}},
+                "illustrator_query_items": {
+                    "data": {
+                        "report": {
+                            "artifacts": {
+                                "items": [
+                                    {
+                                        "itemRef": {
+                                            "identity": {"itemId": "probe-1"},
+                                            "itemType": "PathItem",
+                                        },
+                                        "name": "Probe",
+                                        "type": "PathItem",
+                                        "bounds": {"left": 100, "top": 300, "width": 80, "height": 40},
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+            }
+        )
+
+        result = call_legacy_tool(raw, "select_objects", {"uuids": ["probe-1"]})
+
+        self.assertEqual(result["selectedCount"], 1)
+        self.assertEqual(result["tokens"], ["probe-1"])
+        self.assertEqual(raw.calls[0][0], "illustrator_execute_script")
+        params = raw.calls[0][1]["params"]
+        self.assertEqual(params["params"], {"tokens": ["probe-1"]})
+        self.assertEqual(params["includes"], ["mcp_id", "handles"])
+        self.assertFalse(params["read_only"])
+        self.assertEqual(params["auto_assign_ids"], "off")
+        self.assertIn("findItemsByMcpId", params["script"])
+        self.assertIn("mcpResolveHandle", params["script"])
+        self.assertEqual(raw.calls[1][0], "illustrator_query_items")
+
     def test_unproven_legacy_tools_are_not_exposed(self) -> None:
-        for name in ("export_pdf", "select_objects", "create_gradient"):
+        for name in ("export_pdf", "create_gradient"):
             self.assertNotIn(name, SUPPORTED_LEGACY_TOOLS)
             with self.assertRaises(LookupError):
                 call_legacy_tool(RawCaller(), name, {})
@@ -195,7 +235,7 @@ class IllustratorCepCompatibilityTests(unittest.TestCase):
         self.assertIn("creative.shape.rectangle", info.common_capabilities)
         self.assertIn("creative.undo", info.common_capabilities)
         self.assertNotIn("creative.document.export_pdf", info.common_capabilities)
-        self.assertNotIn("creative.object.select", info.common_capabilities)
+        self.assertIn("creative.object.select", info.common_capabilities)
         self.assertNotIn("creative.gradient.create", info.common_capabilities)
 
     def test_config_uses_dedicated_upstream_python_and_fixed_panel_endpoint(self) -> None:

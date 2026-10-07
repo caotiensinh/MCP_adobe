@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
@@ -31,6 +32,7 @@ SUPPORTED_LEGACY_TOOLS = frozenset(
         "create_path",
         "create_text_frame",
         "modify_object",
+        "select_objects",
         "group_objects",
         "ungroup_objects",
         "set_z_order",
@@ -244,6 +246,82 @@ def _create_element(raw: RawToolCaller, element_type: str, arguments: Mapping[st
     return _task(raw, "element_create", params)
 
 
+def _select_objects(raw: RawToolCaller, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    tokens = _tokens_from_arguments(arguments)
+    if not tokens:
+        raise ValueError("select_objects requires at least one uuid/id target")
+    if len(set(tokens)) != len(tokens):
+        raise ValueError("select_objects does not accept duplicate targets")
+
+    script = r"""
+var doc = app.activeDocument;
+var tokens = __PARAMS__.tokens;
+doc.selection = null;
+var selected = [];
+for (var i = 0; i < tokens.length; i++) {
+    var token = tokens[i];
+    var item = null;
+    if (token.indexOf("handle:") === 0) {
+        var resolved = mcpResolveHandle(token.substring(7), doc);
+        if (!resolved || !resolved.ok || !resolved.item) {
+            throw new Error("Cannot resolve Illustrator handle target: " + token);
+        }
+        item = resolved.item;
+    } else {
+        var found = findItemsByMcpId(doc, token, {limit: 100000});
+        if (found.truncated) {
+            throw new Error("Illustrator ID scan truncated for target: " + token);
+        }
+        if (!found.items || found.items.length !== 1) {
+            throw new Error(
+                "Illustrator target must resolve exactly once: " + token +
+                " (matches=" + (found.items ? found.items.length : 0) + ")"
+            );
+        }
+        item = found.items[0];
+    }
+    item.selected = true;
+    selected.push(token);
+}
+var selectionCount = doc.selection ? doc.selection.length : 0;
+if (selectionCount !== selected.length) {
+    throw new Error(
+        "Illustrator selection verification failed: expected " +
+        selected.length + ", got " + selectionCount
+    );
+}
+JSON.stringify({selectedCount: selectionCount, tokens: selected});
+"""
+    mutation = _call(
+        raw,
+        "illustrator_execute_script",
+        {
+            "script": script,
+            "params": {"tokens": tokens},
+            "includes": ["mcp_id", "handles"],
+            "read_only": False,
+            "auto_assign_ids": "off",
+            "description": "Select exact Illustrator objects by MCP identity",
+        },
+    )
+    selection = _selection(raw)
+    actual = [
+        item.get("uuid")
+        for item in selection.get("items", [])
+        if isinstance(item, Mapping) and isinstance(item.get("uuid"), str)
+    ]
+    if len(actual) != len(tokens) or set(actual) != set(tokens):
+        raise RuntimeError(
+            f"Illustrator selection read-back mismatch: requested={tokens!r}, actual={actual!r}"
+        )
+    return {
+        "selectedCount": len(actual),
+        "tokens": actual,
+        "selection": selection,
+        "mutation": mutation,
+    }
+
+
 def _modify_params(arguments: Mapping[str, Any]) -> dict[str, Any]:
     params: dict[str, Any] = {}
     properties = arguments.get("properties")
@@ -368,6 +446,8 @@ def call_legacy_tool(raw: RawToolCaller, name: str, arguments: Mapping[str, Any]
         if len(tokens) != 1:
             raise ValueError("modify_object requires exactly one uuid/id target")
         return _task(raw, "element_modify", _modify_params(args), targets=_target_selector(tokens[0]))
+    if name == "select_objects":
+        return _select_objects(raw, args)
     if name == "group_objects":
         tokens = _tokens_from_arguments(args)
         params = {"name": args["name"]} if isinstance(args.get("name"), str) else {}
