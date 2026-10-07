@@ -201,6 +201,206 @@ jobs:
             Write-Host 'ILLUSTRATOR_ORPHAN_RECOVERY=NOT_NEEDED'
           }
 
+      - name: Reopen MCP Control panel after safe Illustrator recovery
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import asyncio
+          from collections.abc import Mapping
+          from pathlib import Path
+          from mcp import Client
+
+          URL = "http://127.0.0.1:8787/mcp"
+          FLAG = Path("illustrator_panel_reopen.flag")
+
+          def walk(value):
+              yield value
+              if isinstance(value, Mapping):
+                  for child in value.values():
+                      yield from walk(child)
+              elif isinstance(value, (list, tuple)):
+                  for child in value:
+                      yield from walk(child)
+
+          def find_layers(value):
+              for node in walk(value):
+                  if isinstance(node, Mapping):
+                      layers = node.get("layers")
+                      if isinstance(layers, Mapping) and "panel" in layers:
+                          return layers
+              return None
+
+          async def main():
+              if FLAG.exists():
+                  FLAG.unlink()
+              async with Client(URL) as client:
+                  result = await client.call_tool(
+                      "creative_read",
+                      {
+                          "application": "illustrator",
+                          "capability": "creative.health",
+                          "arguments": {"probe": False, "timeout": 5.0},
+                      },
+                  )
+                  if result.is_error:
+                      raise RuntimeError(f"creative.health failed: {result}")
+                  layers = find_layers(result.structured_content)
+                  panel = layers.get("panel") if isinstance(layers, Mapping) else None
+                  connected = (
+                      isinstance(panel, Mapping)
+                      and panel.get("status") in {"ok", "degraded"}
+                      and not panel.get("heartbeatStale")
+                  )
+                  print(f"ILLUSTRATOR_PANEL_PREOPEN_CONNECTED={connected}", flush=True)
+                  if not connected:
+                      FLAG.write_text("1", encoding="ascii")
+
+          asyncio.run(main())
+          '@ | Set-Content -Path illustrator_panel_probe.py -Encoding UTF8
+          uv run python illustrator_panel_probe.py
+
+          if(Test-Path -LiteralPath 'illustrator_panel_reopen.flag'){
+            $ai=Get-Process -Name Illustrator -ErrorAction SilentlyContinue |
+              Where-Object {$_.MainWindowHandle -ne 0} |
+              Select-Object -First 1
+            if(-not $ai){ throw 'Illustrator interactive window missing while reopening MCP Control panel' }
+
+            $shell=New-Object -ComObject WScript.Shell
+            if(-not $shell.AppActivate($ai.Id)){ throw "Could not activate Illustrator PID=$($ai.Id)" }
+            Start-Sleep -Milliseconds 800
+
+            Add-Type -AssemblyName UIAutomationClient
+            Add-Type -AssemblyName UIAutomationTypes
+            $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+            $menuType=[System.Windows.Automation.ControlType]::MenuItem
+
+            function Get-VisibleMenuItems {
+              $cond=New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                $menuType
+              )
+              return @($desktop.FindAll([System.Windows.Automation.TreeScope]::Descendants,$cond))
+            }
+
+            function Expand-MenuItem([System.Windows.Automation.AutomationElement]$item) {
+              $pattern=$null
+              if($item.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern,[ref]$pattern)){
+                $pattern.Expand()
+                return
+              }
+              if($item.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)){
+                $pattern.Invoke()
+                return
+              }
+              throw "Menu item '$($item.Current.Name)' exposes neither ExpandCollapse nor Invoke pattern"
+            }
+
+            function Invoke-MenuItem([System.Windows.Automation.AutomationElement]$item) {
+              $pattern=$null
+              if($item.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$pattern)){
+                $pattern.Invoke()
+                return
+              }
+              if($item.TryGetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern,[ref]$pattern)){
+                $pattern.Expand()
+                return
+              }
+              throw "Menu item '$($item.Current.Name)' exposes neither Invoke nor ExpandCollapse pattern"
+            }
+
+            $shell.SendKeys('%w')
+            Start-Sleep -Milliseconds 900
+            $items=Get-VisibleMenuItems
+            Write-Host ('ILLUSTRATOR_WINDOW_MENU_ITEMS=' + (($items | ForEach-Object {$_.Current.Name} | Where-Object {$_}) -join ' | '))
+
+            $extensions=$items | Where-Object {
+              $_.Current.Name -match '^Extensions(?: \(Legacy\))?$'
+            } | Select-Object -First 1
+            if(-not $extensions){
+              $shell.SendKeys('{ESC}')
+              throw 'Window menu opened but Extensions menu item was not exposed through UI Automation'
+            }
+            Expand-MenuItem $extensions
+            Start-Sleep -Milliseconds 900
+
+            $items=Get-VisibleMenuItems
+            Write-Host ('ILLUSTRATOR_EXTENSIONS_MENU_ITEMS=' + (($items | ForEach-Object {$_.Current.Name} | Where-Object {$_}) -join ' | '))
+            $mcp=$items | Where-Object {$_.Current.Name -eq 'MCP Control'} | Select-Object -First 1
+            if(-not $mcp){
+              $shell.SendKeys('{ESC}')
+              throw 'Extensions submenu opened but MCP Control menu item was not found'
+            }
+            Invoke-MenuItem $mcp
+            Start-Sleep -Seconds 2
+            Write-Host 'ILLUSTRATOR_MCP_CONTROL_OPEN=REQUESTED'
+          } else {
+            Write-Host 'ILLUSTRATOR_MCP_CONTROL_OPEN=NOT_NEEDED'
+          }
+
+          @'
+          import asyncio
+          import json
+          from collections.abc import Mapping
+          from mcp import Client
+
+          URL = "http://127.0.0.1:8787/mcp"
+
+          def walk(value):
+              yield value
+              if isinstance(value, Mapping):
+                  for child in value.values():
+                      yield from walk(child)
+              elif isinstance(value, (list, tuple)):
+                  for child in value:
+                      yield from walk(child)
+
+          def find_layers(value):
+              for node in walk(value):
+                  if isinstance(node, Mapping):
+                      layers = node.get("layers")
+                      if isinstance(layers, Mapping) and "panel" in layers:
+                          return layers
+              return None
+
+          async def main():
+              last = None
+              for attempt in range(1, 46):
+                  async with Client(URL) as client:
+                      result = await client.call_tool(
+                          "creative_read",
+                          {
+                              "application": "illustrator",
+                              "capability": "creative.health",
+                              "arguments": {"probe": False, "timeout": 5.0},
+                          },
+                      )
+                      if result.is_error:
+                          raise RuntimeError(f"creative.health failed: {result}")
+                      layers = find_layers(result.structured_content)
+                      panel = layers.get("panel") if isinstance(layers, Mapping) else None
+                      last = panel
+                      if (
+                          isinstance(panel, Mapping)
+                          and panel.get("status") in {"ok", "degraded"}
+                          and not panel.get("heartbeatStale")
+                      ):
+                          print(
+                              "ILLUSTRATOR_MCP_CONTROL_CONNECTED=PASS " +
+                              json.dumps(panel, ensure_ascii=False, default=str),
+                              flush=True,
+                          )
+                          return
+                  await asyncio.sleep(1)
+              raise RuntimeError(
+                  "MCP Control panel did not reconnect after reopen request: " +
+                  json.dumps(last, ensure_ascii=False, default=str)
+              )
+
+          asyncio.run(main())
+          '@ | Set-Content -Path illustrator_panel_reconnect_verify.py -Encoding UTF8
+          uv run python illustrator_panel_reconnect_verify.py
+
       - name: Direct bounded interaction through persistent MCP
         shell: powershell
         run: |
