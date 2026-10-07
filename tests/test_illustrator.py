@@ -144,7 +144,8 @@ class IllustratorAdapterTests(unittest.TestCase):
             "creative.undo": "undo",
         }
         for capability, tool in expected.items():
-            adapter.execute(capability, {})
+            arguments = {"jobId": "job_mapping_probe"} if capability == "creative.job.status" else {}
+            adapter.execute(capability, arguments)
             self.assertEqual(client.calls[-1][0], tool)
 
     def test_selection_update_rereads_live_selection_and_injects_uuid(self) -> None:
