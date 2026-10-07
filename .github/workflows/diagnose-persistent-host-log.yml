@@ -51,7 +51,7 @@ jobs:
           $lines=$text -split "\r?\n"
           $hits=@()
           for($i=0;$i -lt $lines.Count;$i++){
-            if($lines[$i] -match 'operation failed|select_objects|illustrator_execute_script|creative_write|UnexpectedToolError|Traceback'){
+            if($lines[$i] -match "Tool 'creative_read' raised|creative.selection.get|query_items|operation failed|UnexpectedToolError|Traceback"){
               $hits += $i
             }
           }
