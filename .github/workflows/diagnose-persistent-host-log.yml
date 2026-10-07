@@ -61,7 +61,7 @@ jobs:
           $lines=$text -split "\r?\n"
           $hits=@()
           for($i=0;$i -lt $lines.Count;$i++){
-            if($lines[$i] -match "20:46:|20:47:|connection_probe|Tool 'creative_read' raised|E999|unresolved|panel|heartbeat|UnexpectedToolError|Traceback"){
+            if($lines[$i] -match "connection_probe|Tool 'creative_read' raised|E999|unresolved|panel|heartbeat|activeRequestId|busy|UnexpectedToolError|Traceback|timeout|timed out"){
               $hits += $i
             }
           }
