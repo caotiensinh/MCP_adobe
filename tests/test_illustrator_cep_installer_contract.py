@@ -50,6 +50,15 @@ class IllustratorCepInstallerContractTests(unittest.TestCase):
         self.assertIn("Installed Illustrator CEP validation", self.backend_installer)
         self.assertIn('"CSXS\\manifest.xml"', self.backend_installer)
 
+    def test_installer_enables_panel_start_on_application_activate(self) -> None:
+        self.assertIn("Enable-CepPanelAutoStart", self.backend_installer)
+        self.assertIn("Test-CepPanelAutoStart", self.backend_installer)
+        self.assertIn("<StartOn>", self.backend_installer)
+        self.assertIn("<Event>applicationActivate</Event>", self.backend_installer)
+        self.assertIn("<Event>com.adobe.csxs.events.ApplicationActivate</Event>", self.backend_installer)
+        self.assertIn("Illustrator staged CEP auto-start", self.backend_installer)
+        self.assertIn("Installed Illustrator CEP auto-start", self.backend_installer)
+
     def test_installer_builds_missing_pinned_panel_dist(self) -> None:
         self.assertIn('"dist\\index.html"', self.backend_installer)
         self.assertIn('Invoke-Checked $npm @("ci", "--no-audit", "--no-fund")', self.backend_installer)

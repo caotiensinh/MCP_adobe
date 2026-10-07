@@ -100,6 +100,51 @@ function Invoke-CepPanelValidation([string]$Root, [string]$Label) {
     Test-CepPanelPayload $Root $Label
 }
 
+function Enable-CepPanelAutoStart([string]$Root) {
+    $manifest = Join-Path $Root "CSXS\manifest.xml"
+    if (-not (Test-Path -LiteralPath $manifest)) {
+        throw "Illustrator CEP manifest missing while enabling auto-start: $manifest"
+    }
+    $text = [IO.File]::ReadAllText($manifest)
+    $eventA = "<Event>applicationActivate</Event>"
+    $eventB = "<Event>com.adobe.csxs.events.ApplicationActivate</Event>"
+    if ($text.Contains($eventA) -and $text.Contains($eventB)) {
+        Write-Host "illustrator_cep_autostart=ALREADY_PRESENT"
+        return
+    }
+    $marker = "<AutoVisible>true</AutoVisible>"
+    if (-not $text.Contains($marker)) {
+        throw "Illustrator CEP manifest has no AutoVisible marker; refusing unsafe lifecycle patch"
+    }
+    $replacement = $marker + [Environment]::NewLine +
+        "                    <StartOn>" + [Environment]::NewLine +
+        "                        $eventA" + [Environment]::NewLine +
+        "                        $eventB" + [Environment]::NewLine +
+        "                    </StartOn>"
+    $text = $text.Replace($marker, $replacement)
+    [IO.File]::WriteAllText($manifest, $text, (New-Object Text.UTF8Encoding($false)))
+    Write-Host "illustrator_cep_autostart=PATCHED"
+}
+
+function Test-CepPanelAutoStart([string]$Root, [string]$Label) {
+    $manifest = Join-Path $Root "CSXS\manifest.xml"
+    if (-not (Test-Path -LiteralPath $manifest)) {
+        throw "$Label failed: manifest missing: $manifest"
+    }
+    $text = [IO.File]::ReadAllText($manifest)
+    foreach ($required in @(
+        "<AutoVisible>true</AutoVisible>",
+        "<StartOn>",
+        "<Event>applicationActivate</Event>",
+        "<Event>com.adobe.csxs.events.ApplicationActivate</Event>"
+    )) {
+        if (-not $text.Contains($required)) {
+            throw "$Label failed: missing lifecycle marker $required"
+        }
+    }
+    Write-Host "$Label=PASS"
+}
+
 # A child PowerShell (for example from GitHub Actions or the main installer)
 # can inherit a stale PATH even when Node/Git were installed system-wide.
 # Refresh before resolving any external executable so this script is robust
@@ -229,7 +274,9 @@ try {
     Invoke-CepPanelValidation $cepSource "Illustrator source CEP validation"
 
     Copy-Item -LiteralPath $cepSource -Destination $panelStage -Recurse -Force
+    Enable-CepPanelAutoStart $panelStage
     Invoke-CepPanelValidation $panelStage "Illustrator staged CEP validation"
+    Test-CepPanelAutoStart $panelStage "Illustrator staged CEP auto-start"
 
     $nodeModules = Join-Path $source "cep-extension\node_modules"
     if (Test-Path -LiteralPath $nodeModules) {
@@ -285,6 +332,7 @@ try {
         throw "Installed Illustrator package verification failed: $finalVersion"
     }
     Invoke-CepPanelValidation $PanelTarget "Installed Illustrator CEP validation"
+    Test-CepPanelAutoStart $PanelTarget "Installed Illustrator CEP auto-start"
     $manifest = Join-Path $PanelTarget "CSXS\manifest.xml"
     if (-not (Test-Path -LiteralPath $manifest)) {
         throw "Installed Illustrator CEP manifest missing: $manifest"
