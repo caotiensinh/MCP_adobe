@@ -1,0 +1,39 @@
+name: Diagnose persistent MCP Adobe host log
+
+on:
+  push:
+    branches: [feat/illustrator-cep-backend]
+    paths:
+      - ".github/workflows/diagnose-persistent-host-log.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diagnose-persistent-mcp-adobe-host-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - name: Read persistent host state only
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          foreach($port in @(8787,8081,8765)){
+            $listeners=@(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
+            Write-Host "DIAG_PORT_$port count=$($listeners.Count)"
+            foreach($listener in $listeners){
+              $ownerPid=$listener.OwningProcess
+              $p=Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction SilentlyContinue
+              Write-Host "DIAG_OWNER port=$port PID=$ownerPid EXE=$($p.ExecutablePath) CMD=$($p.CommandLine)"
+            }
+          }
+          $log=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\logs\local-host.log'
+          if(-not (Test-Path -LiteralPath $log)){ throw "persistent host log missing: $log" }
+          Write-Host '=== PERSISTENT HOST LOG TAIL ==='
+          Get-Content -LiteralPath $log -Tail 600
+          Write-Host '=== END LOG TAIL ==='
