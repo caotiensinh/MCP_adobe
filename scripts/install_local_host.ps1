@@ -74,7 +74,7 @@ function Stop-ExistingHost {
     do {
         $busy = @()
         foreach ($port in @($GatewayPort, $IllustratorPort, $XdPort)) {
-            if ((Get-Listener $port).Count -gt 0) { $busy += $port }
+            if (@(Get-Listener $port).Count -gt 0) { $busy += $port }
         }
         if ($busy.Count -eq 0) { return }
         Start-Sleep -Milliseconds 500
@@ -85,7 +85,7 @@ function Stop-ExistingHost {
 function Wait-ForPort([int]$Port, [int]$TimeoutSeconds = 90) {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
-        if ((Get-Listener $Port).Count -gt 0) { return }
+        if (@(Get-Listener $Port).Count -gt 0) { return }
         Start-Sleep -Milliseconds 500
     } until ((Get-Date) -gt $deadline)
     throw "Timed out waiting for MCP Adobe port $Port"
