@@ -143,10 +143,22 @@ jobs:
               } catch {}
             }
             Write-Host ('ILLUSTRATOR_VISIBLE_MENU_ITEMS=' + (($names | Select-Object -Unique) -join ' | '))
-            throw 'Could not locate MCP Control in the active Illustrator menu tree'
-          }
 
-          if(-not (Invoke-MenuItem $mcpItem 'MCP Control')){
+            if(-not $shell.AppActivate($visible.Id)){
+              throw "Could not reactivate Illustrator PID=$($visible.Id) for keyboard fallback"
+            }
+            Start-Sleep -Milliseconds 500
+            [System.Windows.Forms.SendKeys]::SendWait('%w')
+            Start-Sleep -Milliseconds 500
+            [System.Windows.Forms.SendKeys]::SendWait('e')
+            Start-Sleep -Milliseconds 500
+            [System.Windows.Forms.SendKeys]::SendWait('{RIGHT}')
+            Start-Sleep -Milliseconds 500
+            [System.Windows.Forms.SendKeys]::SendWait('m')
+            Start-Sleep -Milliseconds 500
+            [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+            Write-Host 'ILLUSTRATOR_PANEL_KEYBOARD_FALLBACK=ALT_W_E_RIGHT_M_ENTER'
+          } elseif(-not (Invoke-MenuItem $mcpItem 'MCP Control')){
             throw 'MCP Control menu item was found but could not be invoked'
           }
 
