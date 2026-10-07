@@ -82,6 +82,28 @@ jobs:
                       return node[key]
               return None
 
+          def find_execution_state(value):
+              for node in walk(value):
+                  if (
+                      isinstance(node, Mapping)
+                      and "activeJob" in node
+                      and "waiting" in node
+                      and "unresolvedJobs" in node
+                  ):
+                      return node
+              return None
+
+          def find_execution_state(value):
+              for node in walk(value):
+                  if (
+                      isinstance(node, Mapping)
+                      and "activeJob" in node
+                      and "waiting" in node
+                      and "unresolvedJobs" in node
+                  ):
+                      return node
+              return None
+
           async def main():
               if FLAG.exists():
                   FLAG.unlink()
@@ -99,7 +121,7 @@ jobs:
                   payload = result.structured_content
                   layers = find_key(payload, "layers")
                   panel = layers.get("panel") if isinstance(layers, Mapping) else None
-                  execution = find_key(payload, "execution")
+                  execution = find_execution_state(payload)
                   active_job = execution.get("activeJob") if isinstance(execution, Mapping) else None
                   waiting = execution.get("waiting") if isinstance(execution, Mapping) else None
                   unresolved = execution.get("unresolvedJobs", []) if isinstance(execution, Mapping) else []
@@ -245,7 +267,7 @@ jobs:
                   )
                   layers = find_key(payload, "layers")
                   panel = layers.get("panel") if isinstance(layers, Mapping) else None
-                  execution = find_key(payload, "execution")
+                  execution = find_execution_state(payload)
                   unresolved = (
                       execution.get("unresolvedJobs", [])
                       if isinstance(execution, Mapping)
