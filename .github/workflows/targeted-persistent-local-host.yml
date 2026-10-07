@@ -193,7 +193,7 @@ jobs:
                   )
                   return payload
 
-          def require_panel_idle(payload):
+          def require_panel_connected(payload):
               layers = find_key(payload, "layers")
               if not isinstance(layers, dict):
                   raise RuntimeError("Illustrator health omitted layers")
@@ -208,9 +208,9 @@ jobs:
                   )
               execution = find_key(payload, "execution")
               unresolved = execution.get("unresolvedJobs", []) if isinstance(execution, dict) else []
-              if panel.get("busy") or panel.get("activeRequestId") is not None or unresolved:
+              if unresolved:
                   raise RuntimeError(
-                      "Illustrator panel/job is busy or unresolved; do not retry blindly: " +
+                      "Illustrator has unresolved jobs; do not retry blindly: " +
                       json.dumps(
                           {
                               "panel": panel,
@@ -222,9 +222,12 @@ jobs:
                           default=str,
                       )
                   )
+              # panel.busy/activeRequestId are expected while this health request
+              # itself is being serviced. They are not a fault when no unresolved
+              # job exists and the panel heartbeat/status are healthy.
 
           def require_live_probe(payload):
-              require_panel_idle(payload)
+              require_panel_connected(payload)
               layers = find_key(payload, "layers")
               illustrator = layers.get("illustrator") if isinstance(layers, dict) else None
               if not isinstance(illustrator, dict) or illustrator.get("status") != "ok":
@@ -236,7 +239,7 @@ jobs:
           local = asyncio.run(
               health("PERSISTENT_HTTP_ILLUSTRATOR_LOCAL_1", probe=False)
           )
-          require_panel_idle(local)
+          require_panel_connected(local)
           probed = asyncio.run(
               health("PERSISTENT_HTTP_ILLUSTRATOR_HEALTH_1", probe=True)
           )
@@ -247,7 +250,7 @@ jobs:
           local2 = asyncio.run(
               health("PERSISTENT_HTTP_ILLUSTRATOR_LOCAL_2", probe=False)
           )
-          require_panel_idle(local2)
+          require_panel_connected(local2)
           probed2 = asyncio.run(
               health("PERSISTENT_HTTP_ILLUSTRATOR_HEALTH_2", probe=True)
           )
