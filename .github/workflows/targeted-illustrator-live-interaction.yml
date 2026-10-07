@@ -9,6 +9,8 @@ on:
       - "src/mcp_adobe/illustrator_cep.py"
       - "src/mcp_adobe/server.py"
       - "scripts/install_local_host.ps1"
+      - "scripts/ensure_illustrator_cep_bootstrap.ps1"
+      - "tests/test_illustrator_cep_bootstrap_contract.py"
   workflow_dispatch:
 
 permissions:
@@ -65,6 +67,11 @@ jobs:
           if($established.Count -eq 0){
             $manifest=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel\CSXS\manifest.xml'
             if(-not (Test-Path -LiteralPath $manifest)){ throw "Illustrator CEP manifest missing: $manifest" }
+            $manifestItem=Get-Item -LiteralPath $manifest
+            if($manifestItem.LastWriteTime -gt $visible.StartTime){
+              Write-Host "ILLUSTRATOR_BOOTSTRAP_RESTART_REQUIRED=YES PROCESS_START=$($visible.StartTime.ToString('o')) MANIFEST_TIME=$($manifestItem.LastWriteTime.ToString('o')) TITLE=$($visible.MainWindowTitle)"
+              throw 'BLOCKED_RESTART_ILLUSTRATOR_ONCE: CEP bootstrap was installed after the current Illustrator process started; save any unsaved work, restart Illustrator once, then run this exact-head gate again'
+            }
             $manifestText=[IO.File]::ReadAllText($manifest)
             foreach($required in @(
               '<StartOn>',
@@ -367,7 +374,7 @@ jobs:
                       client,
                       "creative_write",
                       "creative.selection.update",
-                      {"properties": {"opacity": 61}},
+                      {"properties": {"opacity": 60}},
                   )
                   if find_key(updated, "selected_uuid") != probe_token:
                       raise RuntimeError("selection.update did not target the live selected object")
@@ -382,9 +389,9 @@ jobs:
                   if update_item is None or update_token != probe_token:
                       raise RuntimeError("updated object could not be read back by the same MCP token")
                   opacity = find_key(update_item, "opacity")
-                  if opacity is None or abs(float(opacity) - 61.0) > 0.01:
+                  if opacity is None or abs(float(opacity) - 60.0) > 0.01:
                       raise RuntimeError(f"selection.update opacity read-back mismatch: {opacity}")
-                  print("ILLUSTRATOR_SELECTION_OPACITY_READBACK=PASS opacity=61", flush=True)
+                  print("ILLUSTRATOR_SELECTION_OPACITY_READBACK=PASS opacity=60", flush=True)
 
                   await call(
                       client,
