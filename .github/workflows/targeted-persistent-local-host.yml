@@ -130,11 +130,18 @@ jobs:
           if($visible -and -not (Test-PanelConnected)){
             $title=[string]$visible.MainWindowTitle
             $safeHome=(-not $title) -or ($title -match '^Adobe Illustrator(?: 2023)?$')
-            if(-not $safeHome){
-              throw "CEP auto-start requires one safe Illustrator restart, but a non-home document/window appears active: $title"
+            $ownedProbe=(
+              $title -match '^MCP Adobe Interactive Selection Probe(?: \[Recovered\])?\*? @' -or
+              $title -match '^ChatGPT MCP Direct Interaction(?: \[Recovered\])?\*? @'
+            )
+            if(-not $safeHome -and -not $ownedProbe){
+              throw "CEP auto-start requires one safe Illustrator restart, but a non-test document/window appears active: $title"
             }
-            Write-Host "ILLUSTRATOR_AUTOSTART_RESTART=START PID=$($visible.Id) TITLE=$title"
-            if(-not $visible.CloseMainWindow()){
+            Write-Host "ILLUSTRATOR_AUTOSTART_RESTART=START PID=$($visible.Id) TITLE=$title OWNED_PROBE=$ownedProbe"
+            if($ownedProbe){
+              Write-Host 'ILLUSTRATOR_AUTOSTART_RESTART_FORCE=TEST_OWNED_DOCUMENT_ONLY'
+              Stop-Process -Id $visible.Id -Force -ErrorAction Stop
+            } elseif(-not $visible.CloseMainWindow()){
               throw "Illustrator refused graceful restart required to load updated CEP manifest"
             }
             $deadline=(Get-Date).AddSeconds(25)
