@@ -846,4 +846,178 @@ jobs:
 
           asyncio.run(main())
           '@ | Set-Content -Path illustrator_mcp_selection_interaction.py -Encoding UTF8
+
           uv run python illustrator_mcp_selection_interaction.py
+
+      - name: Update undo and reapply selected headlight opacity through MCP
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import asyncio
+          import json
+          from collections.abc import Mapping
+          from mcp import Client
+
+          URL = "http://127.0.0.1:8787/mcp"
+          TARGET = "MCP Car Headlight"
+          FINAL_OPACITY = 55.0
+
+          def walk(value):
+              yield value
+              if isinstance(value, Mapping):
+                  for child in value.values():
+                      yield from walk(child)
+              elif isinstance(value, (list, tuple)):
+                  for child in value:
+                      yield from walk(child)
+
+          def token_from_item(item):
+              if not isinstance(item, Mapping):
+                  return None
+              uuid = item.get("uuid")
+              if isinstance(uuid, str) and uuid:
+                  return uuid
+              ref = item.get("itemRef")
+              if isinstance(ref, Mapping):
+                  ident = ref.get("identity")
+                  if isinstance(ident, Mapping):
+                      item_id = ident.get("itemId")
+                      if isinstance(item_id, str) and item_id:
+                          return item_id
+              handle = item.get("handle")
+              if isinstance(handle, str) and handle:
+                  return "handle:" + handle
+              return None
+
+          def find_named_item(value, name):
+              for node in walk(value):
+                  if isinstance(node, Mapping) and node.get("name") == name:
+                      token = token_from_item(node)
+                      if token:
+                          return node, token
+              return None, None
+
+          def find_key(value, key):
+              for node in walk(value):
+                  if isinstance(node, Mapping) and key in node:
+                      return node[key]
+              return None
+
+          async def call(client, tool, capability, arguments):
+              result = await client.call_tool(
+                  tool,
+                  {
+                      "application": "illustrator",
+                      "capability": capability,
+                      "arguments": arguments,
+                  },
+              )
+              if result.is_error:
+                  raise RuntimeError(f"{tool}/{capability} failed: {result}")
+              payload = result.structured_content
+              print(
+                  f"LIVE_{capability}=" +
+                  json.dumps(payload, ensure_ascii=False, default=str),
+                  flush=True,
+              )
+              return payload
+
+          async def read_target(client):
+              found = await call(
+                  client,
+                  "creative_read",
+                  "creative.object.find",
+                  {"name": TARGET},
+              )
+              item, token = find_named_item(found, TARGET)
+              if item is None or token is None:
+                  raise RuntimeError(f"target not found through MCP: {TARGET}")
+              opacity = find_key(item, "opacity")
+              if opacity is None:
+                  raise RuntimeError("target read-back did not expose opacity")
+              return item, token, float(opacity)
+
+          async def main():
+              async with Client(URL) as client:
+                  _, token, baseline = await read_target(client)
+                  print(
+                      f"ILLUSTRATOR_MCP_OPACITY_BASELINE=PASS token={token} opacity={baseline}",
+                      flush=True,
+                  )
+
+                  await call(
+                      client,
+                      "creative_write",
+                      "creative.object.select",
+                      {"uuids": [token]},
+                  )
+                  updated = await call(
+                      client,
+                      "creative_write",
+                      "creative.selection.update",
+                      {"properties": {"opacity": FINAL_OPACITY}},
+                  )
+                  if find_key(updated, "selected_uuid") not in {None, token}:
+                      raise RuntimeError("selection.update targeted an unexpected object")
+
+                  _, after_token, changed = await read_target(client)
+                  if after_token != token or abs(changed - FINAL_OPACITY) > 0.01:
+                      raise RuntimeError(
+                          f"MCP opacity update mismatch: token={after_token} opacity={changed}"
+                      )
+                  print(
+                      f"ILLUSTRATOR_MCP_SELECTION_OPACITY=PASS opacity={changed}",
+                      flush=True,
+                  )
+
+                  await call(
+                      client,
+                      "creative_write",
+                      "creative.undo",
+                      {"count": 1},
+                  )
+                  _, undo_token, undone = await read_target(client)
+                  if undo_token != token or abs(undone - baseline) > 0.01:
+                      raise RuntimeError(
+                          f"MCP opacity undo mismatch: baseline={baseline} undo={undone}"
+                      )
+                  print(
+                      f"ILLUSTRATOR_MCP_SELECTION_OPACITY_UNDO=PASS opacity={undone}",
+                      flush=True,
+                  )
+
+                  await call(
+                      client,
+                      "creative_write",
+                      "creative.object.select",
+                      {"uuids": [token]},
+                  )
+                  await call(
+                      client,
+                      "creative_write",
+                      "creative.selection.update",
+                      {"properties": {"opacity": FINAL_OPACITY}},
+                  )
+                  _, final_token, final_opacity = await read_target(client)
+                  if final_token != token or abs(final_opacity - FINAL_OPACITY) > 0.01:
+                      raise RuntimeError(
+                          f"final MCP opacity mismatch: token={final_token} opacity={final_opacity}"
+                      )
+                  print(
+                      "ILLUSTRATOR_MCP_PROPERTY_EDIT=PASS " +
+                      json.dumps(
+                          {
+                              "target": TARGET,
+                              "token": token,
+                              "baseline_opacity": baseline,
+                              "final_opacity": final_opacity,
+                          },
+                          ensure_ascii=False,
+                      ),
+                      flush=True,
+                  )
+
+          asyncio.run(main())
+          '@ | Set-Content -Path illustrator_mcp_property_edit.py -Encoding UTF8
+          uv run python illustrator_mcp_property_edit.py
