@@ -55,6 +55,15 @@ jobs:
           $bootstrap=Join-Path $panel 'bootstrap\index.html'
           $source=Join-Path $env:GITHUB_WORKSPACE 'scripts\illustrator_cep_fallback_transport.html'
           foreach($p in @($manifest,$source)){ if(-not (Test-Path -LiteralPath $p)){ throw "required file missing: $p" } }
+
+          $liveSession=@(Get-NetTCPConnection -State Established -LocalPort 8081 -ErrorAction SilentlyContinue)
+          $liveIllustrator=Get-Process -Name Illustrator -ErrorAction SilentlyContinue |
+            Where-Object {$_.MainWindowHandle -ne 0} |
+            Select-Object -First 1
+          if($liveSession.Count -gt 0 -and $liveIllustrator){
+            Write-Host "ILLUSTRATOR_CEP_FALLBACK_RELOAD=SKIP existing-live-session connections=$($liveSession.Count) PID=$($liveIllustrator.Id) TITLE=$($liveIllustrator.MainWindowTitle)"
+            exit 0
+          }
           $manifestText=[IO.File]::ReadAllText($manifest)
           $pattern='<MainPath>\./bootstrap/index\.html</MainPath>\s*<ScriptPath>\./jsx/host\.jsx</ScriptPath>'
           if($manifestText -notmatch $pattern){
@@ -618,4 +627,223 @@ jobs:
 
           asyncio.run(main())
           '@ | Set-Content -Path illustrator_mcp_draw_car.py -Encoding UTF8
+
           uv run python illustrator_mcp_draw_car.py
+
+      - name: Select move undo and reapply car headlight through MCP
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import asyncio
+          import json
+          from collections.abc import Mapping
+          from mcp import Client
+
+          URL = "http://127.0.0.1:8787/mcp"
+          TARGET = "MCP Car Headlight"
+          DX = 50.0
+
+          def walk(value):
+              yield value
+              if isinstance(value, Mapping):
+                  for child in value.values():
+                      yield from walk(child)
+              elif isinstance(value, (list, tuple)):
+                  for child in value:
+                      yield from walk(child)
+
+          def token_from_item(item):
+              if not isinstance(item, Mapping):
+                  return None
+              uuid = item.get("uuid")
+              if isinstance(uuid, str) and uuid:
+                  return uuid
+              ref = item.get("itemRef")
+              if isinstance(ref, Mapping):
+                  ident = ref.get("identity")
+                  if isinstance(ident, Mapping):
+                      item_id = ident.get("itemId")
+                      if isinstance(item_id, str) and item_id:
+                          return item_id
+              handle = item.get("handle")
+              if isinstance(handle, str) and handle:
+                  return "handle:" + handle
+              return None
+
+          def find_named_item(value, name):
+              for node in walk(value):
+                  if isinstance(node, Mapping) and node.get("name") == name:
+                      token = token_from_item(node)
+                      if token:
+                          return node, token
+              return None, None
+
+          def find_token_item(value, token):
+              for node in walk(value):
+                  if isinstance(node, Mapping) and token_from_item(node) == token:
+                      return node
+              return None
+
+          def read_x(item):
+              if not isinstance(item, Mapping):
+                  raise RuntimeError("selection item missing")
+              bounds = item.get("bounds")
+              if not isinstance(bounds, Mapping):
+                  raise RuntimeError("selection item has no bounds")
+              if "x" in bounds:
+                  return float(bounds["x"])
+              if "left" in bounds:
+                  return float(bounds["left"])
+              raise RuntimeError(f"selection bounds missing x/left: {bounds}")
+
+          async def call(client, tool, capability, arguments):
+              result = await client.call_tool(
+                  tool,
+                  {
+                      "application": "illustrator",
+                      "capability": capability,
+                      "arguments": arguments,
+                  },
+              )
+              if result.is_error:
+                  raise RuntimeError(f"{tool}/{capability} failed: {result}")
+              payload = result.structured_content
+              print(
+                  f"LIVE_{capability}=" +
+                  json.dumps(payload, ensure_ascii=False, default=str),
+                  flush=True,
+              )
+              return payload
+
+          async def main():
+              async with Client(URL) as client:
+                  found = await call(
+                      client,
+                      "creative_read",
+                      "creative.object.find",
+                      {"name": TARGET},
+                  )
+                  item, token = find_named_item(found, TARGET)
+                  if item is None or token is None:
+                      raise RuntimeError(f"target not found through MCP: {TARGET}")
+                  baseline_x = read_x(item)
+                  print(
+                      f"ILLUSTRATOR_MCP_SELECTION_BASELINE=PASS token={token} x={baseline_x}",
+                      flush=True,
+                  )
+
+                  await call(
+                      client,
+                      "creative_write",
+                      "creative.object.select",
+                      {"uuids": [token]},
+                  )
+                  selection = await call(
+                      client,
+                      "creative_read",
+                      "creative.selection.get",
+                      {},
+                  )
+                  selected = find_token_item(selection, token)
+                  if selected is None:
+                      raise RuntimeError("MCP-selected headlight did not read back in selection")
+                  selected_x = read_x(selected)
+                  if abs(selected_x - baseline_x) > 0.01:
+                      raise RuntimeError(
+                          f"selection baseline mismatch: find={baseline_x} selection={selected_x}"
+                      )
+                  print("ILLUSTRATOR_MCP_OBJECT_SELECT=PASS", flush=True)
+
+                  moved = await call(
+                      client,
+                      "creative_write",
+                      "creative.selection.move",
+                      {"deltaX": DX, "deltaY": 0},
+                  )
+                  moved_selection = await call(
+                      client,
+                      "creative_read",
+                      "creative.selection.get",
+                      {},
+                  )
+                  moved_item = find_token_item(moved_selection, token)
+                  moved_x = read_x(moved_item)
+                  if abs((moved_x - baseline_x) - DX) > 0.01:
+                      raise RuntimeError(
+                          f"MCP move mismatch: baseline={baseline_x} moved={moved_x}"
+                      )
+                  print(
+                      f"ILLUSTRATOR_MCP_SELECTION_MOVE=PASS dx={DX} x={moved_x}",
+                      flush=True,
+                  )
+
+                  await call(
+                      client,
+                      "creative_write",
+                      "creative.undo",
+                      {"count": 1},
+                  )
+                  after_undo = await call(
+                      client,
+                      "creative_read",
+                      "creative.object.find",
+                      {"name": TARGET},
+                  )
+                  undo_item, undo_token = find_named_item(after_undo, TARGET)
+                  if undo_item is None or undo_token != token:
+                      raise RuntimeError("MCP undo lost or replaced the headlight object")
+                  undo_x = read_x(undo_item)
+                  if abs(undo_x - baseline_x) > 0.01:
+                      raise RuntimeError(
+                          f"MCP undo mismatch: baseline={baseline_x} undo={undo_x}"
+                      )
+                  print(
+                      f"ILLUSTRATOR_MCP_SELECTION_UNDO=PASS x={undo_x}",
+                      flush=True,
+                  )
+
+                  await call(
+                      client,
+                      "creative_write",
+                      "creative.object.select",
+                      {"uuids": [token]},
+                  )
+                  await call(
+                      client,
+                      "creative_write",
+                      "creative.selection.move",
+                      {"deltaX": DX, "deltaY": 0},
+                  )
+                  final_found = await call(
+                      client,
+                      "creative_read",
+                      "creative.object.find",
+                      {"name": TARGET},
+                  )
+                  final_item, final_token = find_named_item(final_found, TARGET)
+                  if final_item is None or final_token != token:
+                      raise RuntimeError("final MCP move lost or replaced the headlight object")
+                  final_x = read_x(final_item)
+                  if abs((final_x - baseline_x) - DX) > 0.01:
+                      raise RuntimeError(
+                          f"final MCP move mismatch: baseline={baseline_x} final={final_x}"
+                      )
+                  print(
+                      "ILLUSTRATOR_MCP_INTERACTIVE_SELECTION=PASS " +
+                      json.dumps(
+                          {
+                              "target": TARGET,
+                              "token": token,
+                              "baseline_x": baseline_x,
+                              "final_x": final_x,
+                              "delta_x": DX,
+                          },
+                          ensure_ascii=False,
+                      ),
+                      flush=True,
+                  )
+
+          asyncio.run(main())
+          '@ | Set-Content -Path illustrator_mcp_selection_interaction.py -Encoding UTF8
+          uv run python illustrator_mcp_selection_interaction.py
