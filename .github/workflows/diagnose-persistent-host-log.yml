@@ -44,14 +44,24 @@ jobs:
           } finally {
             $stream.Dispose()
           }
-          $text=[System.Text.Encoding]::Unicode.GetString($bytes)
-          if($text -notmatch 'operation failed' -and $text -notmatch 'creative_write'){
-            $text=[System.Text.Encoding]::UTF8.GetString($bytes)
+          if($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE){
+            $text=[System.Text.Encoding]::Unicode.GetString($bytes,2,$bytes.Length-2)
+          } elseif($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF){
+            $text=[System.Text.Encoding]::UTF8.GetString($bytes,3,$bytes.Length-3)
+          } else {
+            $oddNulls=0
+            $sample=[Math]::Min($bytes.Length,4096)
+            for($n=1;$n -lt $sample;$n+=2){ if($bytes[$n] -eq 0){ $oddNulls++ } }
+            if($oddNulls -gt ($sample/8)){
+              $text=[System.Text.Encoding]::Unicode.GetString($bytes)
+            } else {
+              $text=[System.Text.Encoding]::UTF8.GetString($bytes)
+            }
           }
           $lines=$text -split "\r?\n"
           $hits=@()
           for($i=0;$i -lt $lines.Count;$i++){
-            if($lines[$i] -match "Tool 'creative_read' raised|creative.selection.get|query_items|operation failed|UnexpectedToolError|Traceback"){
+            if($lines[$i] -match "20:46:|20:47:|connection_probe|Tool 'creative_read' raised|E999|unresolved|panel|heartbeat|UnexpectedToolError|Traceback"){
               $hits += $i
             }
           }
