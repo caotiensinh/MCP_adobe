@@ -57,6 +57,8 @@ jobs:
           from mcp import Client
 
           URL = "http://127.0.0.1:8787/mcp"
+          RECOVERY_JOB = "job_c762a35f817c"
+          RECOVERY_TOKEN = "9043afd8d610439d9eab8614a4d60461"
 
           def walk(value):
               yield value
@@ -116,8 +118,39 @@ jobs:
                       )
                       job_id = str(unresolved[0])
                       token = ""
+                      panel_busy = None
                       if isinstance(blocking, Mapping):
                           token = str(blocking.get("requestToken") or "")
+                          panel_busy = blocking.get("panelBusy")
+                      if (
+                          len(unresolved) == 1
+                          and job_id == RECOVERY_JOB
+                          and token == RECOVERY_TOKEN
+                          and panel_busy is False
+                      ):
+                          from pathlib import Path
+                          Path("illustrator_readonly_recovery.json").write_text(
+                              json.dumps(
+                                  {
+                                      "jobId": job_id,
+                                      "requestToken": token,
+                                      "classification": "read_only_object_find",
+                                      "evidence": (
+                                          "job age places dispatch at 2026-10-07T21:00:12Z, "
+                                          "between successful shape create and timed-out creative.object.find"
+                                      ),
+                                  },
+                                  ensure_ascii=False,
+                              ),
+                              encoding="utf-8",
+                          )
+                          print(
+                              "ILLUSTRATOR_UNRESOLVED_READONLY_RECOVERY=AUTHORIZED " +
+                              json.dumps({"jobId": job_id, "requestToken": token}, ensure_ascii=False),
+                              flush=True,
+                          )
+                          return
+
                       from pathlib import Path
                       log_path = Path.home() / "AppData" / "Local" / "MCPAdobe" / "gateway" / "logs" / "local-host.log"
                       if log_path.exists():
@@ -135,13 +168,172 @@ jobs:
                                   flush=True,
                               )
                       raise RuntimeError(
-                          "BLOCKED_UNRESOLVED_JOB: inspect retained evidence before any mutation"
+                          "BLOCKED_UNRESOLVED_JOB: unresolved job is not an explicitly evidenced read-only recovery target"
                       )
                   print("ILLUSTRATOR_UNRESOLVED_JOB=NONE", flush=True)
 
           asyncio.run(main())
           '@ | Set-Content -Path illustrator_local_state_probe.py -Encoding UTF8
           uv run python illustrator_local_state_probe.py
+
+      - name: Reconcile evidenced read-only job through gateway refresh
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if(-not (Test-Path -LiteralPath 'illustrator_readonly_recovery.json')){
+            Write-Host 'ILLUSTRATOR_GATEWAY_RECOVERY=SKIP no-authorized-job'
+            exit 0
+          }
+
+          $evidence=Get-Content -LiteralPath 'illustrator_readonly_recovery.json' -Raw | ConvertFrom-Json
+          if($evidence.jobId -ne 'job_c762a35f817c' -or $evidence.requestToken -ne '9043afd8d610439d9eab8614a4d60461'){
+            throw 'read-only recovery evidence does not match the proven blocker'
+          }
+
+          $ai=Get-Process -Name Illustrator -ErrorAction SilentlyContinue |
+            Where-Object {$_.MainWindowHandle -ne 0} |
+            Select-Object -First 1
+          if(-not $ai){ throw 'Illustrator interactive process disappeared before gateway-only recovery' }
+          $aiPid=$ai.Id
+          $aiStart=$ai.StartTime
+          $aiTitle=[string]$ai.MainWindowTitle
+          Write-Host "ILLUSTRATOR_GATEWAY_RECOVERY_PRESERVE PID=$aiPid START=$($aiStart.ToString('o')) TITLE=$aiTitle"
+
+          & (Join-Path $env:GITHUB_WORKSPACE 'scripts\install_local_host.ps1') -SkipStartupRegistration
+          if($LASTEXITCODE -ne 0){ throw "gateway-only refresh failed rc=$LASTEXITCODE" }
+
+          $same=Get-Process -Id $aiPid -ErrorAction SilentlyContinue
+          if(-not $same){ throw 'Illustrator was terminated during gateway-only recovery' }
+          if($same.StartTime -ne $aiStart){ throw 'Illustrator PID was reused; process identity changed during recovery' }
+          Write-Host "ILLUSTRATOR_GATEWAY_RECOVERY_PROCESS=PASS PID=$aiPid TITLE=$($same.MainWindowTitle)"
+
+          $deadline=(Get-Date).AddSeconds(45)
+          do {
+            Start-Sleep -Milliseconds 500
+            $session=@(Get-NetTCPConnection -State Established -LocalPort 8081 -ErrorAction SilentlyContinue)
+          } until($session.Count -gt 0 -or (Get-Date) -gt $deadline)
+          if($session.Count -eq 0){ throw 'CEP did not reconnect to refreshed Illustrator backend' }
+          Write-Host "ILLUSTRATOR_GATEWAY_RECOVERY_WS=PASS connections=$($session.Count)"
+
+          @'
+          import asyncio
+          import json
+          from collections.abc import Mapping
+          from mcp import Client
+
+          URL = "http://127.0.0.1:8787/mcp"
+          JOB_ID = "job_c762a35f817c"
+
+          def walk(value):
+              yield value
+              if isinstance(value, Mapping):
+                  for child in value.values():
+                      yield from walk(child)
+              elif isinstance(value, (list, tuple)):
+                  for child in value:
+                      yield from walk(child)
+
+          def reconciliation_payload(value):
+              for node in walk(value):
+                  if (
+                      isinstance(node, Mapping)
+                      and isinstance(node.get("reconciliation"), Mapping)
+                      and isinstance(node.get("job"), Mapping)
+                  ):
+                      return node
+              return None
+
+          def connection_state(value):
+              for node in walk(value):
+                  if (
+                      isinstance(node, Mapping)
+                      and isinstance(node.get("execution"), Mapping)
+                      and "unresolvedJobs" in node["execution"]
+                      and isinstance(node.get("layers"), Mapping)
+                  ):
+                      return node
+              return None
+
+          async def main():
+              async with Client(URL) as client:
+                  status = await client.call_tool(
+                      "creative_read",
+                      {
+                          "application": "illustrator",
+                          "capability": "creative.job.status",
+                          "arguments": {"jobId": JOB_ID, "detail": "full"},
+                      },
+                  )
+                  if status.is_error:
+                      raise RuntimeError(f"creative.job.status failed: {status}")
+                  payload = status.structured_content
+                  print(
+                      "ILLUSTRATOR_JOB_STATUS=" +
+                      json.dumps(payload, ensure_ascii=False, default=str),
+                      flush=True,
+                  )
+                  reconciled = reconciliation_payload(payload)
+                  if reconciled is None:
+                      raise RuntimeError("job status did not expose reconciliation evidence")
+                  reconciliation = reconciled["reconciliation"]
+                  host = reconciled.get("host")
+                  host_record = host.get("record") if isinstance(host, Mapping) else None
+                  if reconciliation.get("status") != "reconciled":
+                      raise RuntimeError(
+                          "host ledger did not reconcile the retained job: " +
+                          json.dumps(reconciliation, ensure_ascii=False, default=str)
+                      )
+                  if not isinstance(host_record, Mapping) or host_record.get("completed") is not True:
+                      raise RuntimeError(
+                          "host ledger has no completed record for the blocked job"
+                      )
+                  print(
+                      "ILLUSTRATOR_READONLY_JOB_RECONCILED=PASS " +
+                      json.dumps(
+                          {
+                              "jobId": JOB_ID,
+                              "hostStatus": host_record.get("status"),
+                              "sessionEpoch": host_record.get("sessionEpoch"),
+                              "context": host_record.get("context"),
+                          },
+                          ensure_ascii=False,
+                          default=str,
+                      ),
+                      flush=True,
+                  )
+
+                  health = await client.call_tool(
+                      "creative_read",
+                      {
+                          "application": "illustrator",
+                          "capability": "creative.health",
+                          "arguments": {"probe": True, "timeout": 8.0},
+                      },
+                  )
+                  if health.is_error:
+                      raise RuntimeError(f"post-reconciliation health failed: {health}")
+                  state = connection_state(health.structured_content)
+                  if not isinstance(state, Mapping):
+                      raise RuntimeError("post-reconciliation health has no connection state")
+                  execution = state.get("execution")
+                  if isinstance(execution, Mapping) and execution.get("unresolvedJobs"):
+                      raise RuntimeError(
+                          "post-reconciliation gateway still has unresolved jobs: " +
+                          json.dumps(execution, ensure_ascii=False)
+                      )
+                  illustrator = state.get("layers", {}).get("illustrator")
+                  if not isinstance(illustrator, Mapping) or illustrator.get("status") != "ok":
+                      raise RuntimeError(
+                          "Illustrator did not answer after reconciliation: " +
+                          json.dumps(illustrator, ensure_ascii=False, default=str)
+                      )
+                  print("ILLUSTRATOR_GATEWAY_RECOVERY_HEALTH=PASS", flush=True)
+
+          asyncio.run(main())
+          '@ | Set-Content -Path illustrator_job_reconcile.py -Encoding UTF8
+          uv run python illustrator_job_reconcile.py
+          Remove-Item -LiteralPath 'illustrator_readonly_recovery.json' -Force
+          Write-Host 'ILLUSTRATOR_GATEWAY_RECOVERY=PASS'
 
       - name: Install fallback MCP transport into auto-start CEP bootstrap
         shell: powershell

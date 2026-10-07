@@ -36,6 +36,7 @@ _BINDINGS: dict[str, ToolBinding] = {
     "creative.group.list": ToolBinding("get_groups", RiskClass.READ),
     "creative.text.list": ToolBinding("list_text_frames", RiskClass.READ),
     "creative.object.find": ToolBinding("find_objects", RiskClass.READ),
+    "creative.job.status": ToolBinding("illustrator_job_status", RiskClass.READ),
     "creative.document.create": ToolBinding("create_document", RiskClass.WRITE_REVERSIBLE),
     "creative.document.open": ToolBinding("open_document", RiskClass.WRITE_REVERSIBLE),
     "creative.document.save": ToolBinding("save_document", RiskClass.FILE_WRITE),
@@ -99,6 +100,16 @@ class IllustratorAdapter:
             if "timeout" in arguments:
                 translated["timeout"] = arguments["timeout"]
             return translated
+        if capability == "creative.job.status":
+            if arguments.get("finalize_export") is True:
+                raise ValueError("creative.job.status is inspection-only; finalize_export is not allowed")
+            job_id = arguments.get("jobId", arguments.get("job_id"))
+            if not isinstance(job_id, str) or not job_id.strip():
+                raise ValueError("creative.job.status requires a non-empty jobId")
+            detail = arguments.get("detail", "full")
+            if detail not in {"summary", "full"}:
+                raise ValueError("creative.job.status detail must be 'summary' or 'full'")
+            return {"jobId": job_id.strip(), "detail": detail, "finalize_export": False}
         args = dict(arguments)
         if capability in {"creative.document.export", "creative.document.export_pdf"}:
             path = args.pop("path", None)

@@ -59,6 +59,7 @@ class IllustratorAdapterTests(unittest.TestCase):
         self.assertIn("creative.context.get", info.common_capabilities)
         self.assertIn("creative.selection.update", info.common_capabilities)
         self.assertIn("creative.selection.move", info.common_capabilities)
+        self.assertIn("creative.job.status", info.common_capabilities)
 
     def test_health_preserves_probe_and_timeout_arguments(self) -> None:
         client = FakeClient()
@@ -68,6 +69,37 @@ class IllustratorAdapterTests(unittest.TestCase):
             client.calls[-1],
             ("list_fonts", {"limit": 1, "probe": True, "timeout": 7.5}),
         )
+
+    def test_job_status_is_read_only_and_disables_export_finalization(self) -> None:
+        client = FakeClient()
+        adapter = IllustratorAdapter(client)
+        result = adapter.execute(
+            "creative.job.status",
+            {"jobId": "job_readonly_1", "detail": "summary"},
+        )
+        self.assertEqual(
+            client.calls[-1],
+            (
+                "illustrator_job_status",
+                {"jobId": "job_readonly_1", "detail": "summary", "finalize_export": False},
+            ),
+        )
+        self.assertEqual(result["outcome"], "read")
+
+        before = list(client.calls)
+        with self.assertRaisesRegex(ValueError, "finalize_export"):
+            adapter.execute(
+                "creative.job.status",
+                {"jobId": "job_readonly_1", "finalize_export": True},
+            )
+        self.assertEqual(client.calls, before)
+
+    def test_job_status_requires_job_id(self) -> None:
+        client = FakeClient()
+        adapter = IllustratorAdapter(client)
+        with self.assertRaisesRegex(ValueError, "jobId"):
+            adapter.execute("creative.job.status", {})
+        self.assertEqual(client.calls, [])
 
     def test_live_context_reads_document_and_current_selection(self) -> None:
         client = FakeClient()
@@ -91,6 +123,7 @@ class IllustratorAdapterTests(unittest.TestCase):
             "creative.group.list": "get_groups",
             "creative.text.list": "list_text_frames",
             "creative.object.find": "find_objects",
+            "creative.job.status": "illustrator_job_status",
             "creative.document.create": "create_document",
             "creative.document.open": "open_document",
             "creative.document.save": "save_document",
