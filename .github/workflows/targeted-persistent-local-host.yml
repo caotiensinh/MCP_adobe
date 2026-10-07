@@ -52,20 +52,43 @@ jobs:
           uv sync
           uv run python -m unittest tests.test_server tests.test_install_windows tests.test_persistent_local_host -v
 
-      - name: Install production Illustrator CEP backend
+      - name: Ensure production Illustrator CEP backend
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $uv=(Get-Command uv).Source
-          $node=(Get-Command node).Source
-          $npmCmd=Get-Command npm.cmd -ErrorAction SilentlyContinue
-          if($npmCmd){ $npm=$npmCmd.Source } else { $npm=(Get-Command npm -ErrorAction Stop).Source }
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_illustrator_cep_backend.ps1 `
-            -PythonVersion 3.12 `
-            -UvCommandPath $uv `
-            -NodeCommandPath $node `
-            -NpmCommandPath $npm
-          if($LASTEXITCODE -ne 0){ throw "production Illustrator backend install failed: $LASTEXITCODE" }
+          $root=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp'
+          $metaPath=Join-Path $root 'install-metadata.json'
+          $python=Join-Path $root 'venv\Scripts\python.exe'
+          $source=Join-Path $root 'source'
+          $panel=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel\CSXS\manifest.xml'
+          $expected='5d7a3edc8ebc89a0fc56b059e1311d3b2bfca815'
+          $reuse=$false
+          if((Test-Path $metaPath) -and (Test-Path $python) -and (Test-Path $panel) -and (Test-Path $source)){
+            try {
+              $meta=Get-Content -LiteralPath $metaPath -Raw | ConvertFrom-Json
+              $sha=(git -C $source rev-parse HEAD).Trim()
+              $version=(& $python -c "import importlib.metadata as m; print(m.version('illustrator-mcp'))").Trim()
+              if($meta.upstream_sha -eq $expected -and $sha -eq $expected -and $version -eq '3.0.0'){
+                $reuse=$true
+              }
+            } catch {
+              Write-Host "PRODUCTION_ILLUSTRATOR_BACKEND_REUSE=NO reason=$($_.Exception.Message)"
+            }
+          }
+          if($reuse){
+            Write-Host "PRODUCTION_ILLUSTRATOR_BACKEND_REUSE=PASS sha=$expected version=3.0.0"
+          } else {
+            $uv=(Get-Command uv).Source
+            $node=(Get-Command node).Source
+            $npmCmd=Get-Command npm.cmd -ErrorAction SilentlyContinue
+            if($npmCmd){ $npm=$npmCmd.Source } else { $npm=(Get-Command npm -ErrorAction Stop).Source }
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_illustrator_cep_backend.ps1 `
+              -PythonVersion 3.12 `
+              -UvCommandPath $uv `
+              -NodeCommandPath $node `
+              -NpmCommandPath $npm
+            if($LASTEXITCODE -ne 0){ throw "production Illustrator backend install failed: $LASTEXITCODE" }
+          }
 
       - name: Install and start persistent local host
         shell: powershell
@@ -104,9 +127,9 @@ jobs:
           foreach($port in @(8787,8081,8765)){
             $listeners=@(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
             if($listeners.Count -ne 1){ throw "expected one listener on $port, got $($listeners.Count)" }
-            $pid=$listeners[0].OwningProcess
-            $p=Get-CimInstance Win32_Process -Filter "ProcessId=$pid"
-            Write-Host "PERSISTENT_PORT_$port=PASS PID=$pid EXE=$($p.ExecutablePath) CMD=$($p.CommandLine)"
+            $ownerPid=$listeners[0].OwningProcess
+            $p=Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid"
+            Write-Host "PERSISTENT_PORT_$port=PASS PID=$ownerPid EXE=$($p.ExecutablePath) CMD=$($p.CommandLine)"
           }
 
       - name: Verify HTTP MCP to live Illustrator twice
