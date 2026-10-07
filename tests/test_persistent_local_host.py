@@ -27,6 +27,11 @@ class PersistentLocalHostContractTests(unittest.TestCase):
         self.assertIn("restart in 3s", self.script)
         self.assertIn("host-wrapper.pid", self.script)
 
+    def test_host_supports_controlled_stop_only_for_backend_upgrade(self) -> None:
+        self.assertIn("[switch]$StopOnly", self.script)
+        self.assertIn("if ($StopOnly)", self.script)
+        self.assertIn('Write-Host "local_host_stop_only=PASS"', self.script)
+
     def test_installer_refuses_to_kill_unrelated_port_owner(self) -> None:
         self.assertIn("Refusing to stop unrelated process on MCP Adobe port", self.script)
         self.assertIn("illustrator_mcp\\.server", self.script)

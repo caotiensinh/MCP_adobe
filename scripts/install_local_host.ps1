@@ -7,6 +7,7 @@ param(
     [int]$GatewayPort = 8787,
     [int]$IllustratorPort = 8081,
     [int]$XdPort = 8765,
+    [switch]$StopOnly,
     [switch]$SkipStartupRegistration,
     [switch]$SkipStart
 )
@@ -92,6 +93,12 @@ function Wait-ForPort([int]$Port, [int]$TimeoutSeconds = 90) {
         Start-Sleep -Milliseconds 500
     } until ((Get-Date) -gt $deadline)
     throw "Timed out waiting for MCP Adobe port $Port"
+}
+
+if ($StopOnly) {
+    Stop-ExistingHost
+    Write-Host "local_host_stop_only=PASS"
+    exit 0
 }
 
 $uv = $UvCommandPath

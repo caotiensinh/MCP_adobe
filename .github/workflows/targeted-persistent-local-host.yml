@@ -88,6 +88,10 @@ jobs:
           if($reuse){
             Write-Host "PRODUCTION_ILLUSTRATOR_BACKEND_REUSE=PASS sha=$expected version=3.0.0"
           } else {
+            Write-Host "PRODUCTION_ILLUSTRATOR_BACKEND_UPGRADE=CONTROLLED_STOP"
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_local_host.ps1 -StopOnly
+            if($LASTEXITCODE -ne 0){ throw "controlled persistent host stop failed: $LASTEXITCODE" }
+
             $uv=(Get-Command uv).Source
             $node=(Get-Command node).Source
             $npmCmd=Get-Command npm.cmd -ErrorAction SilentlyContinue
