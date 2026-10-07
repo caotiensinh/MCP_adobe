@@ -80,6 +80,18 @@ jobs:
                 ForEach-Object { Write-Host "CEP_RECENT_FILE PATH=$($_.FullName) MTIME=$($_.LastWriteTime.ToString('o')) SIZE=$($_.Length)" }
             }
           }
+          $panelLog=Join-Path $env:TEMP 'CEPHtmlEngine11-ILST-27.4.0-com.illustrator.mcp.panel.log'
+          $bootstrapLog=Join-Path $env:TEMP 'CEPHtmlEngine11-ILST-27.4.0-com.illustrator.mcp.bootstrap.log'
+          $hostLog=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\logs\local-host.log'
+          foreach($logPath in @($panelLog,$bootstrapLog,$hostLog)){
+            if(Test-Path -LiteralPath $logPath){
+              Write-Host "CEP_DIAG_LOG_BEGIN=$logPath"
+              Get-Content -LiteralPath $logPath -Tail 320 -ErrorAction SilentlyContinue
+              Write-Host "CEP_DIAG_LOG_END=$logPath"
+            } else {
+              Write-Host "CEP_DIAG_LOG_MISSING=$logPath"
+            }
+          }
           exit 0
 
       - name: Require existing persistent Illustrator connection
