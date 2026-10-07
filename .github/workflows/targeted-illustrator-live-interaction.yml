@@ -17,10 +17,11 @@ concurrency:
 jobs:
   live-interaction:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 12
+    timeout-minutes: 10
     env:
       PYTHONUTF8: "1"
       UV_LINK_MODE: copy
+
     steps:
       - uses: actions/checkout@v4
 
@@ -38,7 +39,7 @@ jobs:
           if(-not (Get-Command uv -ErrorAction SilentlyContinue)){ throw 'uv unavailable' }
           uv sync
 
-      - name: Verify persistent host without restarting it
+      - name: Require existing persistent Illustrator connection
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -49,42 +50,20 @@ jobs:
             $p=Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid"
             Write-Host "LIVE_EXISTING_PORT_$port=PASS PID=$ownerPid EXE=$($p.ExecutablePath) CMD=$($p.CommandLine)"
           }
-          $visible=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1
-          if(-not $visible){
-            $aiPath='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
-            if(-not (Test-Path -LiteralPath $aiPath)){ throw "Illustrator executable missing: $aiPath" }
-            $oldTracking=$env:RUNNER_TRACKING_ID
-            try {
-              Remove-Item Env:RUNNER_TRACKING_ID -ErrorAction SilentlyContinue
-              $started=Start-Process -FilePath $aiPath -PassThru
-              Write-Host "LIVE_ILLUSTRATOR_LAUNCHED_PID=$($started.Id)"
-            } finally {
-              if($null -ne $oldTracking){ $env:RUNNER_TRACKING_ID=$oldTracking }
-            }
-            $deadline=(Get-Date).AddSeconds(90)
-            do {
-              Start-Sleep -Seconds 1
-              $visible=Get-Process -Name Illustrator -ErrorAction SilentlyContinue |
-                Where-Object {$_.MainWindowHandle -ne 0} |
-                Select-Object -First 1
-            } until($visible -or (Get-Date) -gt $deadline)
-            if(-not $visible){ throw 'Illustrator interactive window did not open within 90 seconds' }
-          }
+
+          $visible=Get-Process -Name Illustrator -ErrorAction SilentlyContinue |
+            Where-Object {$_.MainWindowHandle -ne 0} |
+            Select-Object -First 1
+          if(-not $visible){ throw 'Illustrator interactive window is not open' }
           Write-Host "LIVE_ILLUSTRATOR_PROCESS=PASS PID=$($visible.Id) SESSION=$($visible.SessionId)"
 
-      - name: Recover orphan panel request without forcing user data loss
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
           @'
           import asyncio
           import json
           from collections.abc import Mapping
-          from pathlib import Path
           from mcp import Client
 
           URL = "http://127.0.0.1:8787/mcp"
-          FLAG = Path("illustrator_orphan_busy.flag")
 
           def walk(value):
               yield value
@@ -95,24 +74,15 @@ jobs:
                   for child in value:
                       yield from walk(child)
 
-          def find_key(value, key):
+          def find_layers(value):
               for node in walk(value):
-                  if isinstance(node, Mapping) and key in node:
-                      return node[key]
+                  if isinstance(node, Mapping):
+                      layers = node.get("layers")
+                      if isinstance(layers, Mapping) and "panel" in layers:
+                          return layers
               return None
 
-          def find_execution_state(value):
-              for node in walk(value):
-                  if (
-                      isinstance(node, Mapping)
-                      and "activeJob" in node
-                      and "waiting" in node
-                      and "unresolvedJobs" in node
-                  ):
-                      return node
-              return None
-
-          def find_execution_state(value):
+          def find_execution(value):
               for node in walk(value):
                   if (
                       isinstance(node, Mapping)
@@ -124,8 +94,6 @@ jobs:
               return None
 
           async def main():
-              if FLAG.exists():
-                  FLAG.unlink()
               async with Client(URL) as client:
                   result = await client.call_tool(
                       "creative_read",
@@ -138,283 +106,50 @@ jobs:
                   if result.is_error:
                       raise RuntimeError(f"creative.health failed: {result}")
                   payload = result.structured_content
-                  layers = find_key(payload, "layers")
+                  layers = find_layers(payload)
                   panel = layers.get("panel") if isinstance(layers, Mapping) else None
-                  execution = find_execution_state(payload)
-                  active_job = execution.get("activeJob") if isinstance(execution, Mapping) else None
-                  waiting = execution.get("waiting") if isinstance(execution, Mapping) else None
-                  unresolved = execution.get("unresolvedJobs", []) if isinstance(execution, Mapping) else []
-                  orphan = (
+                  illustrator = layers.get("illustrator") if isinstance(layers, Mapping) else None
+                  execution = find_execution(payload)
+                  if not (
                       isinstance(panel, Mapping)
                       and panel.get("status") in {"ok", "degraded"}
                       and not panel.get("heartbeatStale")
-                      and bool(panel.get("busy"))
-                      and panel.get("activeRequestId") is not None
-                      and active_job is None
-                      and waiting == 0
-                      and not unresolved
-                  )
+                      and not panel.get("busy")
+                      and panel.get("activeRequestId") is None
+                  ):
+                      raise RuntimeError(
+                          "Illustrator panel is not connected and idle; refusing mutation: " +
+                          json.dumps(panel, ensure_ascii=False, default=str)
+                      )
+                  if not (isinstance(illustrator, Mapping) and illustrator.get("status") == "ok"):
+                      raise RuntimeError(
+                          "Illustrator host is not ready: " +
+                          json.dumps(illustrator, ensure_ascii=False, default=str)
+                      )
+                  if isinstance(execution, Mapping):
+                      if execution.get("activeJob") is not None or execution.get("waiting") not in {0, None}:
+                          raise RuntimeError(
+                              "Illustrator backend has active work; refusing mutation: " +
+                              json.dumps(execution, ensure_ascii=False, default=str)
+                          )
+                      if execution.get("unresolvedJobs"):
+                          raise RuntimeError(
+                              "Illustrator backend has unresolved jobs; refusing mutation: " +
+                              json.dumps(execution, ensure_ascii=False, default=str)
+                          )
                   print(
-                      "ILLUSTRATOR_ORPHAN_BUSY_PROBE=" +
+                      "ILLUSTRATOR_LIVE_CONNECTION_GATE=PASS " +
                       json.dumps(
-                          {"orphan": orphan, "panel": panel, "execution": execution},
+                          {"panel": panel, "illustrator": illustrator, "execution": execution},
                           ensure_ascii=False,
                           default=str,
                       ),
                       flush=True,
                   )
-                  if orphan:
-                      FLAG.write_text("1", encoding="ascii")
 
           asyncio.run(main())
-          '@ | Set-Content -Path illustrator_orphan_probe.py -Encoding UTF8
-          uv run python illustrator_orphan_probe.py
-
-          if(Test-Path -LiteralPath 'illustrator_orphan_busy.flag'){
-            $ai=Get-Process -Name Illustrator -ErrorAction SilentlyContinue |
-              Where-Object {$_.MainWindowHandle -ne 0} |
-              Select-Object -First 1
-            if(-not $ai){ throw 'orphan panel detected but Illustrator interactive window is missing' }
-
-            $title=[string]$ai.MainWindowTitle
-            Write-Host "ILLUSTRATOR_ORPHAN_RECOVERY_TITLE=$title"
-            $isHome=(-not $title) -or ($title -match '^Adobe Illustrator(?: 2023)?$')
-            $isOwnedProbe=$title -match '^(?:MCP Adobe Interactive Selection Probe|ChatGPT MCP Direct Interaction)\*? @'
-            if(-not $isHome -and -not $isOwnedProbe){
-              throw "Refusing automatic Illustrator restart because a non-test document/window appears active: $title"
-            }
-
-            Write-Host "ILLUSTRATOR_ORPHAN_RECOVERY=START PID=$($ai.Id) OWNED_TEST_DOC=$isOwnedProbe"
-            if($isOwnedProbe){
-              Write-Host 'ILLUSTRATOR_ORPHAN_RECOVERY_FORCE=TEST_OWNED_DOCUMENT_ONLY'
-              Stop-Process -Id $ai.Id -Force -ErrorAction Stop
-            } else {
-              if(-not $ai.CloseMainWindow()){
-                throw 'Illustrator refused graceful CloseMainWindow; not forcing termination'
-              }
-            }
-            $deadline=(Get-Date).AddSeconds(20)
-            do {
-              Start-Sleep -Milliseconds 500
-              $remaining=Get-Process -Id $ai.Id -ErrorAction SilentlyContinue
-            } until(-not $remaining -or (Get-Date) -gt $deadline)
-            if($remaining){
-              throw 'Illustrator did not exit after bounded orphan recovery'
-            }
-
-            $aiPath='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
-            if(-not (Test-Path -LiteralPath $aiPath)){ throw "Illustrator executable missing: $aiPath" }
-            $oldTracking=$env:RUNNER_TRACKING_ID
-            try {
-              Remove-Item Env:RUNNER_TRACKING_ID -ErrorAction SilentlyContinue
-              $started=Start-Process -FilePath $aiPath -PassThru
-              Write-Host "ILLUSTRATOR_ORPHAN_RECOVERY_RELAUNCHED_PID=$($started.Id)"
-            } finally {
-              if($null -ne $oldTracking){ $env:RUNNER_TRACKING_ID=$oldTracking }
-            }
-
-            $deadline=(Get-Date).AddSeconds(90)
-            do {
-              Start-Sleep -Seconds 1
-              $visible=Get-Process -Name Illustrator -ErrorAction SilentlyContinue |
-                Where-Object {$_.MainWindowHandle -ne 0} |
-                Select-Object -First 1
-            } until($visible -or (Get-Date) -gt $deadline)
-            if(-not $visible){ throw 'Illustrator did not return to an interactive window after safe recovery' }
-            Write-Host "ILLUSTRATOR_ORPHAN_RECOVERY=PASS PID=$($visible.Id) SESSION=$($visible.SessionId)"
-          } else {
-            Write-Host 'ILLUSTRATOR_ORPHAN_RECOVERY=NOT_NEEDED'
-          }
-
-      - name: Reopen MCP Control panel after safe Illustrator recovery
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          @'
-          import asyncio
-          from collections.abc import Mapping
-          from pathlib import Path
-          from mcp import Client
-
-          URL = "http://127.0.0.1:8787/mcp"
-          FLAG = Path("illustrator_panel_reopen.flag")
-
-          def walk(value):
-              yield value
-              if isinstance(value, Mapping):
-                  for child in value.values():
-                      yield from walk(child)
-              elif isinstance(value, (list, tuple)):
-                  for child in value:
-                      yield from walk(child)
-
-          def find_layers(value):
-              for node in walk(value):
-                  if isinstance(node, Mapping):
-                      layers = node.get("layers")
-                      if isinstance(layers, Mapping) and "panel" in layers:
-                          return layers
-              return None
-
-          async def main():
-              if FLAG.exists():
-                  FLAG.unlink()
-              async with Client(URL) as client:
-                  result = await client.call_tool(
-                      "creative_read",
-                      {
-                          "application": "illustrator",
-                          "capability": "creative.health",
-                          "arguments": {"probe": False, "timeout": 5.0},
-                      },
-                  )
-                  if result.is_error:
-                      raise RuntimeError(f"creative.health failed: {result}")
-                  layers = find_layers(result.structured_content)
-                  panel = layers.get("panel") if isinstance(layers, Mapping) else None
-                  connected = (
-                      isinstance(panel, Mapping)
-                      and panel.get("status") in {"ok", "degraded"}
-                      and not panel.get("heartbeatStale")
-                  )
-                  print(f"ILLUSTRATOR_PANEL_PREOPEN_CONNECTED={connected}", flush=True)
-                  if not connected:
-                      FLAG.write_text("1", encoding="ascii")
-
-          asyncio.run(main())
-          '@ | Set-Content -Path illustrator_panel_probe.py -Encoding UTF8
-          uv run python illustrator_panel_probe.py
-
-          if(Test-Path -LiteralPath 'illustrator_panel_reopen.flag'){
-            $ai=Get-Process -Name Illustrator -ErrorAction SilentlyContinue |
-              Where-Object {$_.MainWindowHandle -ne 0} |
-              Select-Object -First 1
-            if(-not $ai){ throw 'Illustrator interactive window missing while reopening MCP Control panel' }
-
-            $shell=New-Object -ComObject WScript.Shell
-            if(-not $shell.AppActivate($ai.Id)){ throw "Could not activate Illustrator PID=$($ai.Id)" }
-            Start-Sleep -Milliseconds 800
-
-            function Test-PanelSocket {
-              return @(Get-NetTCPConnection -State Established -LocalPort 8081 -ErrorAction SilentlyContinue).Count -gt 0
-            }
-
-            if(Test-PanelSocket){
-              Write-Host 'ILLUSTRATOR_MCP_CONTROL_OPEN=ALREADY_CONNECTED'
-            } else {
-              $aiPath='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
-              if(-not (Test-Path -LiteralPath $aiPath)){ throw "Illustrator executable missing: $aiPath" }
-
-              $commands=@(
-                'Adobe CSXS Extension com.illustrator.mcp.panel',
-                'Adobe CSXS Extension com.illustrator.mcp.panelMCP Control',
-                'Adobe CSXS Extension com.illustrator.mcp.panel MCP Control'
-              )
-              $attempt=0
-              foreach($command in $commands){
-                if(Test-PanelSocket){ break }
-                $attempt++
-                $jsx=Join-Path $env:TEMP ("mcp-adobe-open-panel-{0}.jsx" -f $attempt)
-                $escaped=$command.Replace('\\','\\\\').Replace('"','\\"')
-                $jsxBody=@(
-                  '#target illustrator',
-                  'app.preferences.setBooleanPreference("ShowExternalJSXWarning", false);',
-                  ('app.executeMenuCommand("' + $escaped + '");')
-                ) -join [Environment]::NewLine
-                Set-Content -LiteralPath $jsx -Value $jsxBody -Encoding ASCII
-                Write-Host "ILLUSTRATOR_MCP_CONTROL_JSX_ATTEMPT=$attempt COMMAND=$command"
-
-                $oldTracking=$env:RUNNER_TRACKING_ID
-                try {
-                  Remove-Item Env:RUNNER_TRACKING_ID -ErrorAction SilentlyContinue
-                  $launcher=Start-Process -FilePath $aiPath -ArgumentList @($jsx) -PassThru
-                  Write-Host "ILLUSTRATOR_MCP_CONTROL_JSX_LAUNCHER_PID=$($launcher.Id)"
-                } finally {
-                  if($null -ne $oldTracking){ $env:RUNNER_TRACKING_ID=$oldTracking }
-                }
-
-                $deadline=(Get-Date).AddSeconds(8)
-                do {
-                  Start-Sleep -Milliseconds 500
-                  $connected=Test-PanelSocket
-                } until($connected -or (Get-Date) -gt $deadline)
-                if($connected){
-                  Write-Host "ILLUSTRATOR_MCP_CONTROL_JSX=PASS attempt=$attempt"
-                  break
-                }
-              }
-
-              if(-not (Test-PanelSocket)){
-                throw 'MCP Control panel could not be opened through Illustrator executeMenuCommand candidates'
-              }
-              Write-Host 'ILLUSTRATOR_MCP_CONTROL_OPEN=REQUESTED'
-            }
-          } else {
-            Write-Host 'ILLUSTRATOR_MCP_CONTROL_OPEN=NOT_NEEDED'
-          }
-
-          @'
-          import asyncio
-          import json
-          from collections.abc import Mapping
-          from mcp import Client
-
-          URL = "http://127.0.0.1:8787/mcp"
-
-          def walk(value):
-              yield value
-              if isinstance(value, Mapping):
-                  for child in value.values():
-                      yield from walk(child)
-              elif isinstance(value, (list, tuple)):
-                  for child in value:
-                      yield from walk(child)
-
-          def find_layers(value):
-              for node in walk(value):
-                  if isinstance(node, Mapping):
-                      layers = node.get("layers")
-                      if isinstance(layers, Mapping) and "panel" in layers:
-                          return layers
-              return None
-
-          async def main():
-              last = None
-              for attempt in range(1, 46):
-                  async with Client(URL) as client:
-                      result = await client.call_tool(
-                          "creative_read",
-                          {
-                              "application": "illustrator",
-                              "capability": "creative.health",
-                              "arguments": {"probe": False, "timeout": 5.0},
-                          },
-                      )
-                      if result.is_error:
-                          raise RuntimeError(f"creative.health failed: {result}")
-                      layers = find_layers(result.structured_content)
-                      panel = layers.get("panel") if isinstance(layers, Mapping) else None
-                      last = panel
-                      if (
-                          isinstance(panel, Mapping)
-                          and panel.get("status") in {"ok", "degraded"}
-                          and not panel.get("heartbeatStale")
-                      ):
-                          print(
-                              "ILLUSTRATOR_MCP_CONTROL_CONNECTED=PASS " +
-                              json.dumps(panel, ensure_ascii=False, default=str),
-                              flush=True,
-                          )
-                          return
-                  await asyncio.sleep(1)
-              raise RuntimeError(
-                  "MCP Control panel did not reconnect after reopen request: " +
-                  json.dumps(last, ensure_ascii=False, default=str)
-              )
-
-          asyncio.run(main())
-          '@ | Set-Content -Path illustrator_panel_reconnect_verify.py -Encoding UTF8
-          uv run python illustrator_panel_reconnect_verify.py
+          '@ | Set-Content -Path illustrator_connection_gate.py -Encoding UTF8
+          uv run python illustrator_connection_gate.py
 
       - name: Direct bounded interaction through persistent MCP
         shell: powershell
@@ -428,7 +163,6 @@ jobs:
 
           URL = "http://127.0.0.1:8787/mcp"
           DOC_NAME = "ChatGPT MCP Direct Interaction"
-          PROBE_ID = "chatgpt_live_rectangle"
           PROBE_NAME = "ChatGPT Live Rectangle"
 
           def walk(value):
@@ -446,17 +180,38 @@ jobs:
                       return node[key]
               return None
 
-          def find_item(value, token):
+          def token_from_item(item):
+              if not isinstance(item, Mapping):
+                  return None
+              uuid = item.get("uuid")
+              if isinstance(uuid, str) and uuid:
+                  return uuid
+              ref = item.get("itemRef")
+              if isinstance(ref, Mapping):
+                  ident = ref.get("identity")
+                  if isinstance(ident, Mapping):
+                      item_id = ident.get("itemId")
+                      if isinstance(item_id, str) and item_id:
+                          return item_id
+              handle = item.get("handle")
+              if isinstance(handle, str) and handle:
+                  return "handle:" + handle
+              return None
+
+          def find_named_item(value, name):
+              for node in walk(value):
+                  if isinstance(node, Mapping) and node.get("name") == name:
+                      token = token_from_item(node)
+                      if token:
+                          return node, token
+              return None, None
+
+          def find_token_item(value, token):
               for node in walk(value):
                   if not isinstance(node, Mapping):
                       continue
-                  if node.get("uuid") == token:
+                  if token_from_item(node) == token:
                       return node
-                  ref = node.get("itemRef")
-                  if isinstance(ref, Mapping):
-                      ident = ref.get("identity")
-                      if isinstance(ident, Mapping) and ident.get("itemId") == token:
-                          return node
               return None
 
           async def call(client, tool, capability, arguments):
@@ -478,49 +233,6 @@ jobs:
               )
               return payload
 
-          async def wait_panel_idle(client):
-              last = None
-              for attempt in range(1, 91):
-                  payload = await call(
-                      client,
-                      "creative_read",
-                      "creative.health",
-                      {"probe": False, "timeout": 5.0},
-                  )
-                  layers = find_key(payload, "layers")
-                  panel = layers.get("panel") if isinstance(layers, Mapping) else None
-                  execution = find_execution_state(payload)
-                  unresolved = (
-                      execution.get("unresolvedJobs", [])
-                      if isinstance(execution, Mapping)
-                      else []
-                  )
-                  last = {
-                      "panel": panel,
-                      "execution": execution,
-                      "blockedAt": find_key(payload, "blockedAt"),
-                  }
-                  if (
-                      isinstance(panel, Mapping)
-                      and panel.get("status") in {"ok", "degraded"}
-                      and not panel.get("heartbeatStale")
-                      and not panel.get("busy")
-                      and panel.get("activeRequestId") is None
-                      and not unresolved
-                  ):
-                      print(f"ILLUSTRATOR_PANEL_IDLE=PASS attempt={attempt}", flush=True)
-                      return
-                  print(
-                      "ILLUSTRATOR_PANEL_IDLE_WAIT=" +
-                      json.dumps({"attempt": attempt, **last}, ensure_ascii=False, default=str),
-                      flush=True,
-                  )
-                  await asyncio.sleep(1)
-              raise RuntimeError(
-                  "Illustrator panel did not become safely idle; no mutation was attempted: " +
-                  json.dumps(last, ensure_ascii=False, default=str)
-              )
-
           async def main():
               async with Client(URL) as client:
                   listed = await client.list_tools()
@@ -534,8 +246,6 @@ jobs:
                   if names != required:
                       raise RuntimeError(f"unexpected MCP tools: {sorted(names)}")
 
-                  await wait_panel_idle(client)
-
                   await call(
                       client,
                       "creative_write",
@@ -547,7 +257,6 @@ jobs:
                       "creative_write",
                       "creative.shape.rectangle",
                       {
-                          "id": PROBE_ID,
                           "name": PROBE_NAME,
                           "x": 100,
                           "y": 100,
@@ -556,11 +265,23 @@ jobs:
                           "fill": {"r": 24, "g": 119, "b": 242},
                       },
                   )
+
+                  found = await call(
+                      client,
+                      "creative_read",
+                      "creative.object.find",
+                      {"name": PROBE_NAME},
+                  )
+                  found_item, probe_token = find_named_item(found, PROBE_NAME)
+                  if found_item is None or probe_token is None:
+                      raise RuntimeError("created rectangle could not be resolved to an MCP object token")
+                  print(f"ILLUSTRATOR_CREATED_TOKEN=PASS token={probe_token}", flush=True)
+
                   await call(
                       client,
                       "creative_write",
                       "creative.object.select",
-                      {"uuids": [PROBE_ID]},
+                      {"uuids": [probe_token]},
                   )
 
                   selection = await call(
@@ -571,16 +292,16 @@ jobs:
                   )
                   if find_key(selection, "selectionCount") != 1:
                       raise RuntimeError("expected exactly one live Illustrator selection")
-                  item = find_item(selection, PROBE_ID)
+                  item = find_token_item(selection, probe_token)
                   if item is None:
-                      raise RuntimeError("selected object did not read back with the requested MCP ID")
+                      raise RuntimeError("selected object did not read back with the same MCP token")
                   bounds = item.get("bounds")
                   if not isinstance(bounds, Mapping):
                       raise RuntimeError("selected object has no readable bounds")
                   before_x = float(bounds["x"])
                   before_y = float(bounds["y"])
                   print(
-                      f"ILLUSTRATOR_SELECTION_BASELINE=PASS id={PROBE_ID} x={before_x} y={before_y}",
+                      f"ILLUSTRATOR_SELECTION_BASELINE=PASS token={probe_token} x={before_x} y={before_y}",
                       flush=True,
                   )
 
@@ -590,21 +311,22 @@ jobs:
                       "creative.selection.move",
                       {"deltaX": 12, "deltaY": 0},
                   )
-                  if find_key(moved, "selected_uuid") != PROBE_ID:
+                  if find_key(moved, "selected_uuid") != probe_token:
                       raise RuntimeError("selection.move did not target the live selected object")
+
                   moved_selection = await call(
                       client,
                       "creative_read",
                       "creative.selection.get",
                       {},
                   )
-                  moved_item = find_item(moved_selection, PROBE_ID)
+                  moved_item = find_token_item(moved_selection, probe_token)
                   if moved_item is None:
-                      raise RuntimeError("moved object disappeared from selection readback")
+                      raise RuntimeError("moved object disappeared from selection read-back")
                   moved_x = float(moved_item["bounds"]["x"])
                   if abs((moved_x - before_x) - 12.0) > 0.01:
                       raise RuntimeError(
-                          f"selection.move readback mismatch: before={before_x} after={moved_x}"
+                          f"selection.move read-back mismatch: before={before_x} after={moved_x}"
                       )
                   print("ILLUSTRATOR_SELECTION_MOVE_READBACK=PASS dx=12", flush=True)
 
@@ -614,18 +336,21 @@ jobs:
                       "creative.selection.update",
                       {"properties": {"opacity": 61}},
                   )
-                  if find_key(updated, "selected_uuid") != PROBE_ID:
+                  if find_key(updated, "selected_uuid") != probe_token:
                       raise RuntimeError("selection.update did not target the live selected object")
-                  found = await call(
+
+                  after_update = await call(
                       client,
                       "creative_read",
                       "creative.object.find",
                       {"name": PROBE_NAME},
                   )
-                  found_item = find_item(found, PROBE_ID)
-                  opacity = find_key(found_item, "opacity") if found_item else None
+                  update_item, update_token = find_named_item(after_update, PROBE_NAME)
+                  if update_item is None or update_token != probe_token:
+                      raise RuntimeError("updated object could not be read back by the same MCP token")
+                  opacity = find_key(update_item, "opacity")
                   if opacity is None or abs(float(opacity) - 61.0) > 0.01:
-                      raise RuntimeError(f"selection.update opacity readback mismatch: {opacity}")
+                      raise RuntimeError(f"selection.update opacity read-back mismatch: {opacity}")
                   print("ILLUSTRATOR_SELECTION_OPACITY_READBACK=PASS opacity=61", flush=True)
 
                   await call(
@@ -640,10 +365,12 @@ jobs:
                       "creative.object.find",
                       {"name": PROBE_NAME},
                   )
-                  undo_item = find_item(after_opacity_undo, PROBE_ID)
-                  undo_opacity = find_key(undo_item, "opacity") if undo_item else None
+                  undo_item, undo_token = find_named_item(after_opacity_undo, PROBE_NAME)
+                  if undo_item is None or undo_token != probe_token:
+                      raise RuntimeError("opacity undo lost the target object")
+                  undo_opacity = find_key(undo_item, "opacity")
                   if undo_opacity is None or abs(float(undo_opacity) - 100.0) > 0.01:
-                      raise RuntimeError(f"opacity undo readback mismatch: {undo_opacity}")
+                      raise RuntimeError(f"opacity undo read-back mismatch: {undo_opacity}")
                   print("ILLUSTRATOR_SELECTION_OPACITY_UNDO=PASS", flush=True)
 
                   await call(
@@ -652,22 +379,22 @@ jobs:
                       "creative.undo",
                       {"count": 1},
                   )
-                  after_move_undo = await call(
+                  final_selection = await call(
                       client,
                       "creative_read",
-                      "creative.object.find",
-                      {"name": PROBE_NAME},
+                      "creative.selection.get",
+                      {},
                   )
-                  final_item = find_item(after_move_undo, PROBE_ID)
-                  final_bounds = find_key(final_item, "bounds") if final_item else None
+                  final_item = find_token_item(final_selection, probe_token)
+                  if final_item is None:
+                      raise RuntimeError("move undo lost the selected target object")
+                  final_bounds = final_item.get("bounds")
                   if not isinstance(final_bounds, Mapping):
-                      raise RuntimeError("move undo readback did not contain bounds")
-                  final_x = final_bounds.get("x")
-                  if final_x is None:
-                      final_x = final_bounds.get("left")
-                  if final_x is None or abs(float(final_x) - before_x) > 0.01:
+                      raise RuntimeError("move undo read-back did not contain bounds")
+                  final_x = float(final_bounds["x"])
+                  if abs(final_x - before_x) > 0.01:
                       raise RuntimeError(
-                          f"move undo readback mismatch: expected={before_x} actual={final_x}"
+                          f"move undo read-back mismatch: expected={before_x} actual={final_x}"
                       )
                   print("ILLUSTRATOR_SELECTION_MOVE_UNDO=PASS", flush=True)
                   print("ILLUSTRATOR_DIRECT_INTERACTION_E2E=PASS", flush=True)
