@@ -112,3 +112,5 @@ jobs:
 # diagnostic-trigger: after-uxp-external-install-3e7e3500
 
 # diagnostic-trigger: after-external-v4-loader-07fcf800
+
+# diagnostic-trigger: exact-loader-failure-89bda024
