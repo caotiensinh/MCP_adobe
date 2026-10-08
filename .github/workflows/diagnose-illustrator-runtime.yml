@@ -11,8 +11,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: diagnose-illustrator-runtime-${{ github.ref }}
-  cancel-in-progress: true
+  group: mcp-adobe-illustrator-runtime-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   diagnose:
@@ -90,6 +90,54 @@ jobs:
                       ),
                       flush=True,
                   )
+
+                  def walk(value):
+                      yield value
+                      if isinstance(value, dict):
+                          for child in value.values():
+                              yield from walk(child)
+                      elif isinstance(value, (list, tuple)):
+                          for child in value:
+                              yield from walk(child)
+
+                  blocking = None
+                  for node in walk(result.structured_content):
+                      if isinstance(node, dict) and isinstance(node.get("blocking"), dict):
+                          candidate = node["blocking"]
+                          if isinstance(candidate.get("jobId"), str):
+                              blocking = candidate
+                              break
+                  if blocking is None:
+                      print("DIAG_JOB_STATUS=NO_BLOCKING_JOB", flush=True)
+                      return
+
+                  job_id = blocking["jobId"]
+                  status = await client.call_tool(
+                      "creative_read",
+                      {
+                          "application": "illustrator",
+                          "capability": "creative.job.status",
+                          "arguments": {
+                              "jobId": job_id,
+                              "detail": "full",
+                              "finalize_export": False,
+                          },
+                      },
+                  )
+                  print(
+                      "DIAG_JOB_STATUS=" +
+                      json.dumps(
+                          {
+                              "jobId": job_id,
+                              "is_error": status.is_error,
+                              "structured": status.structured_content,
+                              "content": [str(x) for x in status.content],
+                          },
+                          ensure_ascii=False,
+                          default=str,
+                      ),
+                      flush=True,
+                  )
           asyncio.run(main())
           '@ | Set-Content -Path diag_mcp_health.py -Encoding UTF8
           uv run python diag_mcp_health.py
@@ -122,3 +170,5 @@ jobs:
 # diagnostic-trigger: trace-job-623da7ab8c1c
 
 # diagnostic-trigger: identify-8081-client-renderer
+
+# diagnostic-trigger: serialized-retained-job-reconciliation
