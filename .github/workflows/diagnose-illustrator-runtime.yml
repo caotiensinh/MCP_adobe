@@ -39,6 +39,12 @@ jobs:
                 Write-Host "DIAG_TCP PORT=$port STATE=$($_.State) PID=$($_.OwningProcess) LOCAL=$($_.LocalAddress):$($_.LocalPort) REMOTE=$($_.RemoteAddress):$($_.RemotePort)"
               }
           }
+          Get-NetTCPConnection -RemotePort 8081 -State Established -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              $clientPid=$_.OwningProcess
+              $client=Get-CimInstance Win32_Process -Filter "ProcessId=$clientPid" -ErrorAction SilentlyContinue
+              Write-Host "DIAG_TCP_8081_CLIENT PID=$clientPid LOCAL=$($_.LocalAddress):$($_.LocalPort) REMOTE=$($_.RemoteAddress):$($_.RemotePort) EXE=$($client.ExecutablePath) CMD=$($client.CommandLine)"
+            }
           Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
             Where-Object {$_.Name -eq 'CEPHtmlEngine.exe'} |
             ForEach-Object { Write-Host "DIAG_CEP PID=$($_.ProcessId) CMD=$($_.CommandLine)" }
@@ -114,3 +120,5 @@ jobs:
 # diagnostic-trigger: live-build-root-cause-0c533e57
 
 # diagnostic-trigger: trace-job-623da7ab8c1c
+
+# diagnostic-trigger: identify-8081-client-renderer
