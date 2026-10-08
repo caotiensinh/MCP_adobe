@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 import unittest
+from pathlib import Path
 from typing import Any, Mapping
 
 from mcp_adobe import CapabilityRegistry, OperationUnknownError, XdAdapter
@@ -131,6 +132,27 @@ class XdAdapterTests(unittest.TestCase):
         adapter = XdAdapter(FakeXdClient(fail_timeout=True))
         with self.assertRaises(TimeoutError):
             adapter.execute("creative.health", {})
+
+
+class XdPluginContractTests(unittest.TestCase):
+    def test_manifest_exposes_command_shortcuts(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        manifest = json.loads((root / "adobe-xd-plugin" / "manifest.json").read_text(encoding="utf-8"))
+        entries = {entry["id"]: entry for entry in manifest["entrypoints"]}
+        self.assertEqual(entries["mcpAdobeConnect"]["type"], "command")
+        self.assertEqual(entries["mcpAdobeConnect"]["shortcut"]["win"], "Ctrl+Alt+Shift+B")
+        self.assertEqual(entries["mcpAdobeApply"]["type"], "command")
+        self.assertEqual(entries["mcpAdobeApply"]["shortcut"]["win"], "Ctrl+Alt+Shift+M")
+        self.assertEqual(entries["mcpAdobeBridge"]["type"], "panel")
+
+    def test_command_handler_applies_batch_in_xd_edit_context(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "adobe-xd-plugin" / "main.js").read_text(encoding="utf-8")
+        self.assertIn("function connectCommand(selection, documentRoot)", source)
+        self.assertIn("function applyPendingCommand(selection, documentRoot)", source)
+        self.assertIn("mcpAdobeConnect: connectCommand", source)
+        self.assertIn("mcpAdobeApply: applyPendingCommand", source)
+        self.assertIn("snapshot(scenegraph.selection, scenegraph.root)", source)
 
 
 class XdBridgeTests(unittest.TestCase):

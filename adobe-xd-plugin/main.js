@@ -1,5 +1,6 @@
 const application = require("application");
-const { Rectangle, Text, Color } = require("scenegraph");
+const scenegraph = require("scenegraph");
+const { Rectangle, Text, Color } = scenegraph;
 const { entrypoints } = require("uxp");
 
 const BRIDGE_URL = "ws://127.0.0.1:8765";
@@ -264,10 +265,12 @@ function dispatch(method, params) {
   }
 
   if (method === "xd.document.info") {
+    try { snapshot(scenegraph.selection, scenegraph.root); } catch (_) {}
     return latestSnapshot.document || { rootChildren: 0, insertionParent: null };
   }
 
   if (method === "xd.selection.get") {
+    try { snapshot(scenegraph.selection, scenegraph.root); } catch (_) {}
     return { items: latestSnapshot.selection || [] };
   }
 
@@ -413,10 +416,66 @@ function update(selection, documentRoot) {
   renderStatus();
 }
 
-// Keep the MCP transport alive even when the panel is not visibly open.
+function connectCommand(selection, documentRoot) {
+  snapshot(selection, documentRoot);
+  connect();
+  renderStatus();
+}
+
+function applyPendingCommand(selection, documentRoot) {
+  if (pendingWrites.length === 0) {
+    snapshot(selection, documentRoot);
+    return;
+  }
+
+  const batch = pendingWrites.slice();
+  pendingWrites = [];
+  const results = {};
+
+  try {
+    for (let i = 0; i < batch.length; i += 1) {
+      const item = batch[i];
+      results[item.operationId] = applyMutation(item, selection);
+    }
+
+    for (let i = 0; i < batch.length; i += 1) {
+      const item = batch[i];
+      rememberOperation(item.operationId, {
+        status: "applied",
+        method: item.method,
+        appliedAt: Date.now(),
+        result: results[item.operationId]
+      });
+    }
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error);
+    for (let i = 0; i < batch.length; i += 1) {
+      const item = batch[i];
+      rememberOperation(item.operationId, {
+        status: "failed",
+        method: item.method,
+        failedAt: Date.now(),
+        error: message
+      });
+    }
+    throw error;
+  } finally {
+    try { snapshot(scenegraph.selection, scenegraph.root); } catch (_) {
+      snapshot(selection, documentRoot);
+    }
+    renderStatus();
+  }
+}
+
+// Loading either command initializes the plugin module; connect immediately so
+// MCP can communicate without opening the panel.
 connect();
 
 entrypoints.setup({
+  commands: {
+    mcpAdobeConnect: connectCommand,
+    mcpAdobeApply: applyPendingCommand
+  },
   panels: {
     mcpAdobeBridge: {
       show,

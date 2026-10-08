@@ -83,12 +83,18 @@ jobs:
             Select-Object -First 1
           if(-not $installed){ throw 'installed XD MCP plugin main.js not found' }
           $raw=Get-Content -LiteralPath $installed -Raw
-          if(-not $raw.Contains('Apply pending')){ throw 'installed XD plugin does not contain one-click approval UI' }
-          if(-not $raw.Contains('connect();')){ throw 'installed XD plugin does not contain auto-connect bootstrap' }
+          if(-not $raw.Contains('applyPendingCommand')){ throw 'installed XD plugin does not contain command-context batch apply' }
+          if(-not $raw.Contains('mcpAdobeConnect')){ throw 'installed XD plugin does not contain connect command handler' }
           if(-not $raw.Contains('xd-one-click-v2')){ throw 'installed XD plugin does not contain expected bridge build marker' }
+          $manifestPath=Join-Path (Split-Path -Parent $installed) 'manifest.json'
+          $manifest=Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+          $connectEntry=@($manifest.entrypoints | Where-Object {$_.id -eq 'mcpAdobeConnect'}) | Select-Object -First 1
+          $applyEntry=@($manifest.entrypoints | Where-Object {$_.id -eq 'mcpAdobeApply'}) | Select-Object -First 1
+          if(-not $connectEntry -or $connectEntry.shortcut.win -ne 'Ctrl+Alt+Shift+B'){ throw 'installed XD manifest missing connect shortcut' }
+          if(-not $applyEntry -or $applyEntry.shortcut.win -ne 'Ctrl+Alt+Shift+M'){ throw 'installed XD manifest missing apply shortcut' }
           Write-Host "XD_PLUGIN_INSTALL=PASS PATH=$installed"
 
-      - name: Restart XD on Home and load fresh MCP panel
+      - name: Restart XD and load fresh MCP command bridge
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -117,9 +123,7 @@ jobs:
           if($xd){
             $title=[string]$xd.MainWindowTitle
             Write-Host "XD_PRE_RESTART PID=$($xd.Id) TITLE=$title SESSION=$($xd.SessionId)"
-            if($title -ne 'Adobe XD'){
-              throw "BLOCKED_SAFE_XD_RESTART: active document/window detected: $title"
-            }
+            if($title -ne 'Adobe XD'){ throw "BLOCKED_SAFE_XD_RESTART: active document/window detected: $title" }
             $oldPid=$xd.Id
             [void]$xd.CloseMainWindow()
             $deadline=(Get-Date).AddSeconds(20)
@@ -127,10 +131,7 @@ jobs:
               Start-Sleep -Milliseconds 500
               $remaining=Get-Process -Id $oldPid -ErrorAction SilentlyContinue
             } until(-not $remaining -or (Get-Date) -gt $deadline)
-            if($remaining){
-              Stop-Process -Id $oldPid -Force -ErrorAction Stop
-              Start-Sleep -Seconds 2
-            }
+            if($remaining){ Stop-Process -Id $oldPid -Force -ErrorAction Stop; Start-Sleep -Seconds 2 }
             Write-Host "XD_FRESH_RESTART_CLOSE=PASS OLD_PID=$oldPid"
           }
 
@@ -148,77 +149,55 @@ jobs:
           Write-Host "XD_FRESH_RESTART_OPEN=PASS PID=$($xd.Id) TITLE=$($xd.MainWindowTitle)"
 
           [void][XdWindowNative]::ShowWindow($xd.MainWindowHandle, 9)
-          if(-not [XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)){
-            throw 'failed to foreground fresh Adobe XD window'
-          }
+          if(-not [XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)){ throw 'failed to foreground fresh Adobe XD window' }
           Start-Sleep -Milliseconds 700
           [System.Windows.Forms.SendKeys]::SendWait('^n')
           Write-Host 'XD_TEST_DOCUMENT_REQUEST=CTRL+N'
           Start-Sleep -Seconds 4
 
           [void][XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
-          [System.Windows.Forms.SendKeys]::SendWait('%p')
-          Start-Sleep -Milliseconds 500
-          [System.Windows.Forms.SendKeys]::SendWait('MCP Adobe Bridge')
-          Start-Sleep -Milliseconds 300
-          [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
-          Write-Host 'XD_PLUGIN_MENU_TYPEAHEAD_REQUEST=PASS'
+          [System.Windows.Forms.SendKeys]::SendWait('^%+b')
+          Write-Host 'XD_CONNECT_COMMAND_REQUEST=PASS shortcut=Ctrl+Alt+Shift+B'
 
           $deadline=(Get-Date).AddSeconds(30)
           do {
             Start-Sleep -Milliseconds 500
             $connected=@(Get-NetTCPConnection -State Established -LocalPort 8765 -ErrorAction SilentlyContinue)
           } until($connected.Count -gt 0 -or (Get-Date) -gt $deadline)
-          if($connected.Count -eq 0){ throw 'fresh XD plugin did not connect to bridge port 8765' }
-          Write-Host "XD_PLUGIN_FRESH_CONNECT=PASS connections=$($connected.Count)"
+          if($connected.Count -eq 0){ throw 'XD connect command did not establish bridge port 8765' }
+          Write-Host "XD_COMMAND_CONNECT=PASS connections=$($connected.Count)"
 
           @'
-          import asyncio
-          import json
+          import asyncio, json
           from collections.abc import Mapping
           from mcp import Client
 
           def walk(value):
               yield value
               if isinstance(value, Mapping):
-                  for child in value.values():
-                      yield from walk(child)
+                  for child in value.values(): yield from walk(child)
               elif isinstance(value, (list, tuple)):
-                  for child in value:
-                      yield from walk(child)
+                  for child in value: yield from walk(child)
 
           def find_key(value, key):
               for node in walk(value):
-                  if isinstance(node, Mapping) and key in node:
-                      return node[key]
+                  if isinstance(node, Mapping) and key in node: return node[key]
               return None
 
           async def main():
               async with Client("http://127.0.0.1:8787/mcp") as client:
-                  result = await client.call_tool(
-                      "creative_read",
-                      {
-                          "application": "xd",
-                          "capability": "creative.health",
-                          "arguments": {},
-                      },
-                  )
-                  if result.is_error:
-                      raise RuntimeError(f"XD health failed after fresh load: {result}")
-                  payload = result.structured_content
-                  print("XD_FRESH_HEALTH=" + json.dumps(payload, ensure_ascii=False, default=str), flush=True)
-                  if find_key(payload, "bridge_build") != "xd-one-click-v2":
-                      raise RuntimeError(
-                          "XD loaded stale plugin build: " +
-                          str(find_key(payload, "bridge_build"))
-                      )
-                  if find_key(payload, "pending_count") != 0:
-                      raise RuntimeError(
-                          "fresh XD plugin unexpectedly retained pending work: " +
-                          str(find_key(payload, "pending_count"))
-                      )
-                  print("XD_FRESH_PLUGIN_BUILD=PASS", flush=True)
-
+                  health = await client.call_tool("creative_read", {"application":"xd","capability":"creative.health","arguments":{}})
+                  if health.is_error: raise RuntimeError(f"XD health failed: {health}")
+                  payload=health.structured_content
+                  print("XD_FRESH_HEALTH="+json.dumps(payload,ensure_ascii=False,default=str),flush=True)
+                  if find_key(payload,"bridge_build")!="xd-one-click-v2":
+                      raise RuntimeError("XD loaded stale plugin build: "+str(find_key(payload,"bridge_build")))
+                  if find_key(payload,"pending_count")!=0:
+                      raise RuntimeError("fresh XD plugin retained pending work: "+str(find_key(payload,"pending_count")))
+                  doc = await client.call_tool("creative_read", {"application":"xd","capability":"creative.document.info","arguments":{}})
+                  if doc.is_error: raise RuntimeError(f"XD document read failed: {doc}")
+                  print("XD_FRESH_DOCUMENT="+json.dumps(doc.structured_content,ensure_ascii=False,default=str),flush=True)
+                  print("XD_FRESH_PLUGIN_BUILD=PASS",flush=True)
           asyncio.run(main())
           '@ | Set-Content -Path xd_fresh_plugin_check.py -Encoding UTF8
           uv run python xd_fresh_plugin_check.py
@@ -453,25 +432,17 @@ jobs:
           '@ | Set-Content -Path xd_one_click_queue.py -Encoding UTF8
           uv run python xd_one_click_queue.py
 
-      - name: Apply queued XD composition with one UI approval
+      - name: Apply queued XD composition with one command approval
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           if(-not (Test-Path 'xd_one_click_state.json')){ throw 'XD one-click state file missing' }
-
-          function Get-XdProcess {
-            return Get-Process -ErrorAction SilentlyContinue |
-              Where-Object {
-                $_.ProcessName -match '^(XD|AdobeXD)$' -or
-                $_.MainWindowTitle -match 'Adobe XD'
-              } |
-              Where-Object {$_.MainWindowHandle -ne 0} |
-              Select-Object -First 1
-          }
+          $xd=Get-Process -ErrorAction SilentlyContinue |
+            Where-Object {($_.ProcessName -match '^(XD|AdobeXD)$' -or $_.MainWindowTitle -match 'Adobe XD') -and $_.MainWindowHandle -ne 0} |
+            Select-Object -First 1
+          if(-not $xd){ throw 'Adobe XD window unavailable for approval command' }
 
           Add-Type -AssemblyName System.Windows.Forms
-          Add-Type -AssemblyName UIAutomationClient
-          Add-Type -AssemblyName UIAutomationTypes
           Add-Type @'
           using System;
           using System.Runtime.InteropServices;
@@ -480,57 +451,11 @@ jobs:
               [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
           }
           '@
-
-          $xd=Get-XdProcess
-          if(-not $xd){ throw 'Adobe XD window is unavailable for the required approval click' }
           [void][XdApplyNative]::ShowWindow($xd.MainWindowHandle, 9)
-          if(-not [XdApplyNative]::SetForegroundWindow($xd.MainWindowHandle)){
-            throw 'failed to foreground XD for one-click approval'
-          }
+          if(-not [XdApplyNative]::SetForegroundWindow($xd.MainWindowHandle)){ throw 'failed to foreground XD for approval command' }
           Start-Sleep -Milliseconds 500
-
-          $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
-          $condition=New-Object System.Windows.Automation.PropertyCondition(
-            [System.Windows.Automation.AutomationElement]::NameProperty,
-            'Apply pending'
-          )
-          $button=$null
-          if($root){
-            $button=$root.FindFirst(
-              [System.Windows.Automation.TreeScope]::Descendants,
-              $condition
-            )
-          }
-
-          $invoked=$false
-          if($button){
-            Write-Host "XD_APPLY_UIA_FOUND=PASS CONTROL=$($button.Current.ControlType.ProgrammaticName)"
-            try {
-              $invoke=$button.GetCurrentPattern(
-                [System.Windows.Automation.InvokePattern]::Pattern
-              )
-              $invoke.Invoke()
-              $invoked=$true
-              Write-Host 'XD_ONE_CLICK_APPROVAL_METHOD=UIA_INVOKE'
-            } catch {
-              try {
-                $legacy=$button.GetCurrentPattern(
-                  [System.Windows.Automation.LegacyIAccessiblePattern]::Pattern
-                )
-                $legacy.DoDefaultAction()
-                $invoked=$true
-                Write-Host 'XD_ONE_CLICK_APPROVAL_METHOD=UIA_LEGACY'
-              } catch {}
-            }
-          }
-
-          if(-not $invoked){
-            # The XD UXP panel focuses Apply whenever MCP queues work.
-            [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
-            Write-Host 'XD_ONE_CLICK_APPROVAL_METHOD=FOCUSED_ENTER'
-          }
-
-          Write-Host 'XD_ONE_CLICK_APPROVAL_REQUEST=PASS'
+          [System.Windows.Forms.SendKeys]::SendWait('^%+m')
+          Write-Host 'XD_ONE_CLICK_APPROVAL_REQUEST=PASS shortcut=Ctrl+Alt+Shift+M'
           Start-Sleep -Seconds 3
 
       - name: Verify applied XD composition through MCP
