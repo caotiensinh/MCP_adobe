@@ -219,3 +219,5 @@ jobs:
 # diagnostic-trigger: active-document-read-after-clean-restart
 
 # diagnostic-trigger: inspect-cep-after-bootstrap-repair
+
+# diagnostic-trigger: c0707ca4-visual-build-root
