@@ -1,0 +1,86 @@
+name: Diagnose Adobe UXP Developer Tool
+
+on:
+  push:
+    branches: [feat/xd-live-interaction]
+    paths:
+      - ".github/workflows/diagnose-xd-udt.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect UXP Developer Tool and developer mode
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+
+          Write-Host 'UDT_START_APPS_BEGIN'
+          Get-StartApps -ErrorAction SilentlyContinue |
+            Where-Object {$_.Name -match 'UXP|Developer Tool|Adobe.*Developer'} |
+            Format-Table -AutoSize | Out-String | Write-Host
+          Write-Host 'UDT_START_APPS_END'
+
+          Write-Host 'UDT_APPX_BEGIN'
+          Get-AppxPackage -ErrorAction SilentlyContinue |
+            Where-Object {$_.Name -match 'UXP|Developer|Adobe'} |
+            Select-Object Name,PackageFamilyName,Version,InstallLocation |
+            Format-List | Out-String | Write-Host
+          Write-Host 'UDT_APPX_END'
+
+          $developerSettings=Join-Path $env:CommonProgramFiles 'Adobe\UXP\Developer\settings.json'
+          Write-Host "UDT_DEVELOPER_SETTINGS=$developerSettings EXISTS=$(Test-Path -LiteralPath $developerSettings)"
+          if(Test-Path -LiteralPath $developerSettings){
+            Write-Host 'UDT_DEVELOPER_SETTINGS_BEGIN'
+            Get-Content -LiteralPath $developerSettings -Raw -ErrorAction SilentlyContinue
+            Write-Host 'UDT_DEVELOPER_SETTINGS_END'
+          }
+
+          $roots=@(
+            (Join-Path $env:LOCALAPPDATA 'Adobe'),
+            (Join-Path $env:APPDATA 'Adobe'),
+            (Join-Path $env:LOCALAPPDATA 'Packages')
+          )
+          foreach($root in $roots){
+            if(-not (Test-Path -LiteralPath $root)){ continue }
+            Write-Host "UDT_SEARCH_ROOT=$root"
+            Get-ChildItem -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.FullName -match 'UXP.*Developer|Developer.*UXP|UXPDeveloper|Unified.*Extensibility'
+              } |
+              Select-Object -First 250 |
+              ForEach-Object {
+                Write-Host "UDT_MATCH PATH=$($_.FullName) DIR=$($_.PSIsContainer) SIZE=$($_.Length) TIME=$($_.LastWriteTime.ToString('o'))"
+              }
+          }
+
+          Write-Host 'UDT_PROCESS_BEGIN'
+          Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {$_.Name -match 'UXP|Developer' -or $_.CommandLine -match 'UXP Developer'} |
+            Select-Object Name,ProcessId,ExecutablePath,CommandLine |
+            Format-List | Out-String | Write-Host
+          Write-Host 'UDT_PROCESS_END'
+
+          Write-Host 'UDT_PROGRAM_FILES_BEGIN'
+          $programRoots=@(
+            [Environment]::GetEnvironmentVariable('ProgramFiles'),
+            [Environment]::GetEnvironmentVariable('ProgramFiles(x86)'),
+            $env:LOCALAPPDATA
+          )
+          foreach($root in $programRoots){
+            if(-not $root -or -not (Test-Path -LiteralPath $root)){ continue }
+            Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
+              Where-Object {$_.Name -match 'Adobe|UXP'} |
+              ForEach-Object {
+                Get-ChildItem -LiteralPath $_.FullName -Recurse -File -ErrorAction SilentlyContinue |
+                  Where-Object {$_.Name -match 'UXP.*Developer.*\.exe|Developer.*Tool.*\.exe'} |
+                  Select-Object -First 30 |
+                  ForEach-Object { Write-Host "UDT_EXE=$($_.FullName)" }
+              }
+          }
+          Write-Host 'UDT_PROGRAM_FILES_END'
