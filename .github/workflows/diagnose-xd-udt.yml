@@ -84,3 +84,5 @@ jobs:
               }
           }
           Write-Host 'UDT_PROGRAM_FILES_END'
+
+# diagnostic-trigger: udt-state-after-xd-loader-failure
