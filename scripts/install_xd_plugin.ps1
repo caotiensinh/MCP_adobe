@@ -92,6 +92,10 @@ New-Item -ItemType Directory -Force -Path $destination | Out-Null
 
 Copy-Item -LiteralPath (Join-Path $source 'main.js') -Destination $destination -Force
 Copy-Item -LiteralPath (Join-Path $source 'manifest.json') -Destination $destination -Force
+$debugSource=Join-Path $source 'debug.json'
+if(Test-Path -LiteralPath $debugSource){
+    Copy-Item -LiteralPath $debugSource -Destination $destination -Force
+}
 
 $manifestPath = Join-Path $destination 'manifest.json'
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
