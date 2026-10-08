@@ -84,6 +84,34 @@ jobs:
 
           Dump-Elements -Stage 'closed'
 
+          # Home screen: enter a real document through the locale-independent Create button.
+          $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
+          $createCond=New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
+            'sidebar-work--create'
+          )
+          $create=$root.FindFirst(
+            [System.Windows.Automation.TreeScope]::Descendants,
+            $createCond
+          )
+          if($create){
+            try {
+              $invoke=$create.GetCurrentPattern(
+                [System.Windows.Automation.InvokePattern]::Pattern
+              )
+              $invoke.Invoke()
+              Write-Host 'XD_UI_CREATE_DOCUMENT=PASS automationId=sidebar-work--create'
+            } catch {
+              throw "XD Create button found but could not be invoked: $($_.Exception.Message)"
+            }
+            Start-Sleep -Seconds 5
+            $xd=Get-Xd
+            Write-Host "XD_UI_AFTER_CREATE PID=$($xd.Id) TITLE=$($xd.MainWindowTitle)"
+            Dump-Elements -Stage 'after-create'
+          } else {
+            Write-Host 'XD_UI_CREATE_DOCUMENT=SKIP create-button-not-found'
+          }
+
           # Open each visible top-level menu candidate via ExpandCollapse/Invoke and dump descendants.
           $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
           $menuCond=New-Object System.Windows.Automation.PropertyCondition(
@@ -109,3 +137,5 @@ jobs:
               Write-Host "XD_UI_EXPAND=SKIP INDEX=$i NAME=[$name] ERROR=$($_.Exception.Message)"
             }
           }
+
+# diagnostic-trigger: create-document-and-dump-menus
