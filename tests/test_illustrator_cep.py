@@ -158,6 +158,50 @@ class IllustratorCepCompatibilityTests(unittest.TestCase):
         )
         self.assertEqual(result["data"]["name"], "Live Document")
 
+    def test_job_status_maps_to_read_only_upstream_reconciliation(self) -> None:
+        raw = RawCaller(
+            {
+                "illustrator_job_status": {
+                    "execution": "succeeded",
+                    "jobId": "job_623da7ab8c1c",
+                    "data": {"job": {"status": "completed"}},
+                }
+            }
+        )
+
+        result = call_legacy_tool(
+            raw,
+            "illustrator_job_status",
+            {"jobId": "job_623da7ab8c1c", "detail": "full", "finalize_export": False},
+        )
+
+        self.assertEqual(
+            raw.calls,
+            [
+                (
+                    "illustrator_job_status",
+                    {
+                        "params": {
+                            "jobId": "job_623da7ab8c1c",
+                            "detail": "full",
+                            "finalize_export": False,
+                        }
+                    },
+                )
+            ],
+        )
+        self.assertEqual(result["jobId"], "job_623da7ab8c1c")
+
+    def test_job_status_rejects_export_finalization_in_compatibility_layer(self) -> None:
+        raw = RawCaller()
+        with self.assertRaisesRegex(ValueError, "inspection-only"):
+            call_legacy_tool(
+                raw,
+                "illustrator_job_status",
+                {"jobId": "job_623da7ab8c1c", "finalize_export": True},
+            )
+        self.assertEqual(raw.calls, [])
+
     def test_selection_uses_ephemeral_handle_and_converts_native_bounds(self) -> None:
         raw = RawCaller(
             {

@@ -23,6 +23,7 @@ SUPPORTED_LEGACY_TOOLS = frozenset(
         "get_groups",
         "list_text_frames",
         "find_objects",
+        "illustrator_job_status",
         "create_document",
         "open_document",
         "save_document",
@@ -405,6 +406,21 @@ def call_legacy_tool(raw: RawToolCaller, name: str, arguments: Mapping[str, Any]
             "list_text_frames": "TextFrame",
         }[name]
         return _query(raw, {"type": "query", "itemType": item_type})
+    if name == "illustrator_job_status":
+        job_id = args.get("jobId", args.get("job_id"))
+        if not isinstance(job_id, str) or not job_id.strip():
+            raise ValueError("illustrator_job_status requires jobId")
+        detail = args.get("detail", "full")
+        if detail not in {"summary", "full"}:
+            raise ValueError("illustrator_job_status detail must be summary/full")
+        if args.get("finalize_export") is True:
+            raise ValueError("illustrator_job_status compatibility path is inspection-only")
+        return _call(
+            raw,
+            "illustrator_job_status",
+            {"jobId": job_id.strip(), "detail": detail, "finalize_export": False},
+        )
+
     if name == "find_objects":
         selector: dict[str, Any] = {"type": "query"}
         item_type = args.get("itemType") or args.get("item_type") or args.get("type")
