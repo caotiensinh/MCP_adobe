@@ -108,3 +108,5 @@ jobs:
           } catch {
             Write-Host "XD_DIAG_LOOPBACK_FAIL=$($_.Exception.Message)"
           }
+
+# diagnostic-trigger: after-uxp-external-install-3e7e3500
