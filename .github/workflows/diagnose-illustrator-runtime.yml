@@ -106,3 +106,5 @@ jobs:
               Write-Host "DIAG_LOG_MISSING=$p"
             }
           }
+
+# diagnostic-trigger: 2026-10-08-live-build-root-cause
