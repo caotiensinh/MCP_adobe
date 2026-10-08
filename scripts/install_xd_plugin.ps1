@@ -125,6 +125,35 @@ if (-not (Test-Path (Join-Path $destination 'main.js'))) {
     throw 'XD bridge install verification failed: main.js missing.'
 }
 
+# XD 57.x scans Adobe's shared UXP External directory in addition to the
+# legacy LocalState\develop path. Keep the legacy copy for Development >
+# Reload Plugins compatibility, and install the same validated plugin into the
+# External registry so the current UXP loader can discover it on startup.
+if(-not $env:APPDATA){
+    throw 'APPDATA is unavailable; cannot install the XD bridge into the UXP External registry.'
+}
+$externalRoot=Join-Path $env:APPDATA 'Adobe\UXP\Plugins\External'
+New-Item -ItemType Directory -Force -Path $externalRoot | Out-Null
+$externalDestination=Join-Path $externalRoot ([string]$installedManifest.id)
+if(Test-Path -LiteralPath $externalDestination){
+    Remove-Item -LiteralPath $externalDestination -Recurse -Force
+}
+Copy-Item -LiteralPath $destination -Destination $externalDestination -Recurse -Force
+
+$externalManifestPath=Join-Path $externalDestination 'manifest.json'
+$externalMainPath=Join-Path $externalDestination 'main.js'
+if(-not (Test-Path -LiteralPath $externalManifestPath)){
+    throw 'XD UXP External install verification failed: manifest.json missing.'
+}
+if(-not (Test-Path -LiteralPath $externalMainPath)){
+    throw 'XD UXP External install verification failed: main.js missing.'
+}
+$externalManifest=Get-Content -LiteralPath $externalManifestPath -Raw | ConvertFrom-Json
+if([string]$externalManifest.id -ne [string]$installedManifest.id){
+    throw "XD UXP External plugin ID mismatch: $($externalManifest.id)"
+}
+
+Write-Host "XD_EXTERNAL_INSTALL=PASS PATH=$externalDestination"
 Write-Host "PASS: Adobe XD MCP bridge installed. Plugin ID=$($installedManifest.id)"
 if (-not $NoReloadHint) {
     Write-Host 'In Adobe XD: Plugins > Development > Reload Plugins (Windows shortcut: Ctrl+Shift+R).'

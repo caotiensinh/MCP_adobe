@@ -94,6 +94,16 @@ jobs:
           if(-not $connectEntry -or $connectEntry.type -ne 'menu' -or $connectEntry.shortcut.win -ne 'Ctrl+Alt+Shift+9'){ throw 'installed XD manifest missing official connect entry point' }
           if(-not $applyEntry -or $applyEntry.type -ne 'menu' -or $applyEntry.shortcut.win -ne 'Ctrl+Alt+Shift+8'){ throw 'installed XD manifest missing official apply entry point' }
           if(-not $panelEntry -or $panelEntry.type -ne 'panel'){ throw 'installed XD manifest missing official panel entry point' }
+
+          $externalRoot=Join-Path $env:APPDATA 'Adobe\UXP\Plugins\External'
+          $externalDestination=Join-Path $externalRoot ([string]$manifest.id)
+          $externalMain=Join-Path $externalDestination 'main.js'
+          $externalManifest=Join-Path $externalDestination 'manifest.json'
+          if(-not (Test-Path -LiteralPath $externalMain)){ throw "XD External install missing main.js: $externalMain" }
+          if(-not (Test-Path -LiteralPath $externalManifest)){ throw "XD External install missing manifest.json: $externalManifest" }
+          $externalRaw=Get-Content -LiteralPath $externalMain -Raw
+          if(-not $externalRaw.Contains('xd-one-click-v2')){ throw 'XD External install is stale' }
+          Write-Host "XD_PLUGIN_EXTERNAL_INSTALL=PASS PATH=$externalDestination"
           Write-Host "XD_PLUGIN_INSTALL=PASS PATH=$installed"
 
       - name: Restart XD and load fresh MCP command bridge
