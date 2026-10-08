@@ -142,6 +142,17 @@ jobs:
           Write-Host 'XD_PLUGIN_RELOAD_REQUEST=PASS'
           Start-Sleep -Seconds 5
 
+          # Create a fresh test document before opening the MCP panel so the
+          # panel remains the last active plugin UI before approval.
+          $xd=Get-XdProcess
+          [void][XdWindowNative]::ShowWindow($xd.MainWindowHandle, 9)
+          $foreground=[XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
+          if(-not $foreground){ throw 'failed to foreground Adobe XD for test-document creation' }
+          Start-Sleep -Milliseconds 700
+          [System.Windows.Forms.SendKeys]::SendWait('^n')
+          Write-Host 'XD_TEST_DOCUMENT_REQUEST=CTRL+N'
+          Start-Sleep -Seconds 4
+
           $deadline=(Get-Date).AddSeconds(8)
           do {
             Start-Sleep -Milliseconds 500
@@ -251,14 +262,6 @@ jobs:
           if($connected.Count -eq 0){ throw 'XD plugin did not connect to bridge port 8765 after opening MCP Adobe Bridge panel' }
           Write-Host "XD_PLUGIN_AUTOCONNECT=PASS connections=$($connected.Count)"
 
-          $xd=Get-XdProcess
-          [void][XdWindowNative]::ShowWindow($xd.MainWindowHandle, 9)
-          $foreground=[XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
-          if(-not $foreground){ throw 'failed to foreground Adobe XD for test-document creation' }
-          Start-Sleep -Milliseconds 700
-          [System.Windows.Forms.SendKeys]::SendWait('^n')
-          Write-Host 'XD_TEST_DOCUMENT_REQUEST=CTRL+N'
-          Start-Sleep -Seconds 4
 
       - name: Queue visual composition through MCP live-build
         shell: powershell
@@ -483,6 +486,8 @@ jobs:
           }
 
           Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
           Add-Type @'
           using System;
           using System.Runtime.InteropServices;
@@ -498,12 +503,49 @@ jobs:
           if(-not [XdApplyNative]::SetForegroundWindow($xd.MainWindowHandle)){
             throw 'failed to foreground XD for one-click approval'
           }
-          Start-Sleep -Milliseconds 700
+          Start-Sleep -Milliseconds 500
 
-          # The plugin focuses the Apply button whenever MCP queues new work.
-          # Enter here emulates the single user approval required by XD's official
-          # edit lifecycle. Production users click the visible Apply button once.
-          [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+          $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
+          $condition=New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::NameProperty,
+            'Apply pending'
+          )
+          $button=$null
+          if($root){
+            $button=$root.FindFirst(
+              [System.Windows.Automation.TreeScope]::Descendants,
+              $condition
+            )
+          }
+
+          $invoked=$false
+          if($button){
+            Write-Host "XD_APPLY_UIA_FOUND=PASS CONTROL=$($button.Current.ControlType.ProgrammaticName)"
+            try {
+              $invoke=$button.GetCurrentPattern(
+                [System.Windows.Automation.InvokePattern]::Pattern
+              )
+              $invoke.Invoke()
+              $invoked=$true
+              Write-Host 'XD_ONE_CLICK_APPROVAL_METHOD=UIA_INVOKE'
+            } catch {
+              try {
+                $legacy=$button.GetCurrentPattern(
+                  [System.Windows.Automation.LegacyIAccessiblePattern]::Pattern
+                )
+                $legacy.DoDefaultAction()
+                $invoked=$true
+                Write-Host 'XD_ONE_CLICK_APPROVAL_METHOD=UIA_LEGACY'
+              } catch {}
+            }
+          }
+
+          if(-not $invoked){
+            # The XD UXP panel focuses Apply whenever MCP queues work.
+            [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+            Write-Host 'XD_ONE_CLICK_APPROVAL_METHOD=FOCUSED_ENTER'
+          }
+
           Write-Host 'XD_ONE_CLICK_APPROVAL_REQUEST=PASS'
           Start-Sleep -Seconds 3
 
