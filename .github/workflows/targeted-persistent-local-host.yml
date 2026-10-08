@@ -357,6 +357,7 @@ jobs:
           Write-Host 'PERSISTENT_HOST_AFTER_CLIENT_DISCONNECT=PASS'
 
       - name: Live bounded Illustrator selection interaction
+        if: ${{ false }} # Dedicated live workflow owns all canvas mutations.
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'

@@ -380,7 +380,10 @@ def call_legacy_tool(raw: RawToolCaller, name: str, arguments: Mapping[str, Any]
         }
 
     if name == "get_document_info":
-        return _call(raw, "illustrator_get_document", {"scope": "both", "max_items": 1, "max_layers": 50})
+        # Upstream scope="both" composes two nested canonical calls and can
+        # misclassify their CallToolResult envelopes as failures. The gateway
+        # only needs document state here, so use one bounded host round-trip.
+        return _call(raw, "illustrator_get_document", {"scope": "document", "max_items": 1, "max_layers": 50})
     if name == "get_document_structure":
         return _call(raw, "illustrator_get_document", {"scope": "document"})
     if name == "get_selection":

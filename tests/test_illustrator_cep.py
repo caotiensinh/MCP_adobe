@@ -129,6 +129,35 @@ class IllustratorCepCompatibilityTests(unittest.TestCase):
             ],
         )
 
+    def test_document_info_uses_single_document_scope_round_trip(self) -> None:
+        raw = RawCaller(
+            {
+                "illustrator_get_document": {
+                    "data": {"name": "Live Document", "layers": []},
+                    "ok": True,
+                }
+            }
+        )
+
+        result = call_legacy_tool(raw, "get_document_info", {})
+
+        self.assertEqual(
+            raw.calls,
+            [
+                (
+                    "illustrator_get_document",
+                    {
+                        "params": {
+                            "scope": "document",
+                            "max_items": 1,
+                            "max_layers": 50,
+                        }
+                    },
+                )
+            ],
+        )
+        self.assertEqual(result["data"]["name"], "Live Document")
+
     def test_selection_uses_ephemeral_handle_and_converts_native_bounds(self) -> None:
         raw = RawCaller(
             {
