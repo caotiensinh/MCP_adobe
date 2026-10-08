@@ -1,0 +1,289 @@
+name: Live Adobe XD direct interaction
+
+on:
+  push:
+    branches: [feat/xd-live-interaction]
+    paths:
+      - ".github/workflows/targeted-xd-live-interaction.yml"
+      - "src/mcp_adobe/xd.py"
+      - "src/mcp_adobe/xd_bridge.py"
+      - "src/mcp_adobe/server.py"
+      - "adobe-xd-plugin/**"
+      - "scripts/install_xd_plugin.ps1"
+      - "scripts/install_local_host.ps1"
+      - "tests/test_xd.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-adobe-xd-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  xd-live:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    env:
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: copy
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare runtime and targeted XD tests
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+            $uvDir=Join-Path $HOME '.local\bin'
+            if(Test-Path (Join-Path $uvDir 'uv.exe')) { $env:Path="$uvDir;$env:Path" }
+          }
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){ throw 'uv unavailable' }
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){ throw "uv sync failed rc=$LASTEXITCODE" }
+          uv run python -m unittest tests.test_xd -v
+          if($LASTEXITCODE -ne 0){ throw "XD targeted tests failed rc=$LASTEXITCODE" }
+
+      - name: Refresh persistent MCP host for XD
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          powershell -ExecutionPolicy Bypass -File scripts/install_local_host.ps1 -SkipStartupRegistration
+          if($LASTEXITCODE -ne 0){ throw "persistent MCP host refresh failed rc=$LASTEXITCODE" }
+
+          $deadline=(Get-Date).AddSeconds(45)
+          do {
+            Start-Sleep -Milliseconds 500
+            $p8787=@(Get-NetTCPConnection -State Listen -LocalPort 8787 -ErrorAction SilentlyContinue)
+            $p8765=@(Get-NetTCPConnection -State Listen -LocalPort 8765 -ErrorAction SilentlyContinue)
+          } until(($p8787.Count -gt 0 -and $p8765.Count -gt 0) -or (Get-Date) -gt $deadline)
+
+          if($p8787.Count -eq 0){ throw 'MCP gateway port 8787 did not become ready' }
+          if($p8765.Count -eq 0){ throw 'XD bridge port 8765 did not become ready' }
+          Write-Host 'XD_MCP_GATEWAY_PORT_8787=PASS'
+          Write-Host 'XD_MCP_BRIDGE_PORT_8765=PASS'
+
+      - name: Install updated XD plugin
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          powershell -ExecutionPolicy Bypass -File scripts/install_xd_plugin.ps1 -NoReloadHint
+          if($LASTEXITCODE -ne 0){ throw "XD plugin install failed rc=$LASTEXITCODE" }
+
+          $packagesRoot=Join-Path $env:LOCALAPPDATA 'Packages'
+          $installed=Get-ChildItem -LiteralPath $packagesRoot -Directory -ErrorAction SilentlyContinue |
+            Where-Object {$_.Name -match 'Adobe.*XD|XD.*Adobe'} |
+            ForEach-Object { Join-Path $_.FullName 'LocalState\develop\MCPAdobeBridge\main.js' } |
+            Where-Object {Test-Path -LiteralPath $_} |
+            Select-Object -First 1
+          if(-not $installed){ throw 'installed XD MCP plugin main.js not found' }
+          $raw=Get-Content -LiteralPath $installed -Raw
+          if(-not $raw.Contains('xd.direct.rectangle_create')){ throw 'installed XD plugin does not contain direct rectangle probe' }
+          if(-not $raw.Contains('connect();')){ throw 'installed XD plugin does not contain auto-connect bootstrap' }
+          Write-Host "XD_PLUGIN_INSTALL=PASS PATH=$installed"
+
+      - name: Reload XD plugin and ensure a test document
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+
+          function Get-XdProcess {
+            return Get-Process -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.ProcessName -match '^(XD|AdobeXD)$' -or
+                $_.MainWindowTitle -match 'Adobe XD'
+              } |
+              Where-Object {$_.MainWindowHandle -ne 0} |
+              Select-Object -First 1
+          }
+
+          $xd=Get-XdProcess
+          if(-not $xd){
+            $start=Get-StartApps -ErrorAction SilentlyContinue |
+              Where-Object {$_.Name -match '^Adobe XD$|Adobe.*XD'} |
+              Select-Object -First 1
+            if(-not $start){ throw 'Adobe XD start-app registration was not found' }
+            Start-Process explorer.exe "shell:AppsFolder\$($start.AppID)"
+            $deadline=(Get-Date).AddSeconds(60)
+            do {
+              Start-Sleep -Seconds 1
+              $xd=Get-XdProcess
+            } until($xd -or (Get-Date) -gt $deadline)
+            if(-not $xd){ throw 'Adobe XD interactive window did not appear' }
+          }
+          Write-Host "XD_PROCESS=PASS PID=$($xd.Id) TITLE=$($xd.MainWindowTitle)"
+
+          $shell=New-Object -ComObject WScript.Shell
+          if(-not $shell.AppActivate($xd.Id)){ throw 'failed to activate Adobe XD window' }
+          Start-Sleep -Milliseconds 700
+          $shell.SendKeys('^+r')
+          Write-Host 'XD_PLUGIN_RELOAD_REQUEST=PASS'
+          Start-Sleep -Seconds 5
+
+          $deadline=(Get-Date).AddSeconds(30)
+          do {
+            Start-Sleep -Milliseconds 500
+            $connected=@(Get-NetTCPConnection -State Established -LocalPort 8765 -ErrorAction SilentlyContinue)
+          } until($connected.Count -gt 0 -or (Get-Date) -gt $deadline)
+          if($connected.Count -eq 0){ throw 'XD plugin did not auto-connect to bridge port 8765 after reload' }
+          Write-Host "XD_PLUGIN_AUTOCONNECT=PASS connections=$($connected.Count)"
+
+          $xd=Get-XdProcess
+          if(-not $shell.AppActivate($xd.Id)){ throw 'failed to reactivate Adobe XD window' }
+          Start-Sleep -Milliseconds 500
+          $shell.SendKeys('^n')
+          Write-Host 'XD_TEST_DOCUMENT_REQUEST=CTRL+N'
+          Start-Sleep -Seconds 4
+
+      - name: Direct MCP rectangle without Apply pending
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import asyncio
+          import json
+          from collections.abc import Mapping
+          from mcp import Client
+
+          URL = "http://127.0.0.1:8787/mcp"
+          NAME = "MCP XD Direct Rectangle"
+
+          def walk(value):
+              yield value
+              if isinstance(value, Mapping):
+                  for child in value.values():
+                      yield from walk(child)
+              elif isinstance(value, (list, tuple)):
+                  for child in value:
+                      yield from walk(child)
+
+          def find_key(value, key):
+              for node in walk(value):
+                  if isinstance(node, Mapping) and key in node:
+                      return node[key]
+              return None
+
+          async def call(client, tool, capability, arguments):
+              result = await client.call_tool(
+                  tool,
+                  {
+                      "application": "xd",
+                      "capability": capability,
+                      "arguments": arguments,
+                  },
+              )
+              print(
+                  "XD_MCP_CALL=" +
+                  json.dumps(
+                      {
+                          "tool": tool,
+                          "capability": capability,
+                          "is_error": result.is_error,
+                          "structured": result.structured_content,
+                          "content": [str(x) for x in result.content],
+                      },
+                      ensure_ascii=False,
+                      default=str,
+                  ),
+                  flush=True,
+              )
+              if result.is_error:
+                  raise RuntimeError(f"{tool}/{capability} failed: {result}")
+              return result.structured_content
+
+          async def main():
+              async with Client(URL) as client:
+                  listed = await client.list_tools()
+                  names = {tool.name for tool in listed.tools}
+                  if "creative_write" not in names:
+                      raise RuntimeError(f"creative_write missing: {sorted(names)}")
+
+                  health = await call(client, "creative_read", "creative.health", {})
+                  if find_key(health, "bridge") != "connected":
+                      raise RuntimeError("XD bridge is not connected")
+
+                  before = await call(client, "creative_read", "creative.document.info", {})
+                  before_count = find_key(before, "rootChildren")
+                  if not isinstance(before_count, int):
+                      before_count = 0
+                  print(f"XD_DIRECT_BASELINE rootChildren={before_count}", flush=True)
+
+                  written = await call(
+                      client,
+                      "creative_write",
+                      "creative.shape.rectangle",
+                      {
+                          "name": NAME,
+                          "width": 220,
+                          "height": 130,
+                          "x": 80,
+                          "y": 80,
+                          "fill": "#F05A67",
+                      },
+                  )
+                  status = find_key(written, "status")
+                  approval = find_key(written, "approval_required")
+                  node_name = find_key(written, "name")
+                  if status != "applied":
+                      raise RuntimeError(f"XD direct write was not applied: status={status}")
+                  if approval is not False:
+                      raise RuntimeError(f"XD direct write still requires approval: {approval}")
+                  if node_name != NAME:
+                      raise RuntimeError(f"XD direct write returned unexpected node name: {node_name}")
+                  print("XD_DIRECT_WRITE_RESPONSE=PASS", flush=True)
+
+                  after_count = None
+                  for _ in range(20):
+                      await asyncio.sleep(0.25)
+                      after = await call(client, "creative_read", "creative.document.info", {})
+                      after_count = find_key(after, "rootChildren")
+                      if isinstance(after_count, int) and after_count > before_count:
+                          break
+                  if not isinstance(after_count, int) or after_count <= before_count:
+                      raise RuntimeError(
+                          f"XD canvas did not read back new child: before={before_count} after={after_count}"
+                      )
+
+                  final_health = await call(client, "creative_read", "creative.health", {})
+                  pending = find_key(final_health, "pending_count")
+                  if pending != 0:
+                      raise RuntimeError(f"XD direct write left pending approvals: {pending}")
+
+                  print(
+                      "XD_DIRECT_INTERACTION=PASS " +
+                      json.dumps(
+                          {
+                              "name": NAME,
+                              "before_rootChildren": before_count,
+                              "after_rootChildren": after_count,
+                              "approval_required": False,
+                              "pending_count": pending,
+                          },
+                          ensure_ascii=False,
+                      ),
+                      flush=True,
+                  )
+
+          asyncio.run(main())
+          '@ | Set-Content -Path xd_direct_probe.py -Encoding UTF8
+          uv run python xd_direct_probe.py
+
+      - name: Verify XD remains interactive
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $xd=Get-Process -ErrorAction SilentlyContinue |
+            Where-Object {
+              ($_.ProcessName -match '^(XD|AdobeXD)$' -or $_.MainWindowTitle -match 'Adobe XD') -and
+              $_.MainWindowHandle -ne 0
+            } |
+            Select-Object -First 1
+          if(-not $xd){ throw 'Adobe XD disappeared after direct MCP write' }
+          $ws=@(Get-NetTCPConnection -State Established -LocalPort 8765 -ErrorAction SilentlyContinue)
+          if($ws.Count -eq 0){ throw 'XD MCP bridge disconnected after direct write' }
+          Write-Host "XD_DIRECT_WINDOW=PASS PID=$($xd.Id) TITLE=$($xd.MainWindowTitle) WS=$($ws.Count)"
