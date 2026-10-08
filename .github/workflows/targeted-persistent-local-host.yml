@@ -508,3 +508,5 @@ jobs:
           asyncio.run(main())
           '@ | Set-Content -Path illustrator_direct_interaction.py -Encoding UTF8
           uv run python illustrator_direct_interaction.py
+
+# recovery-trigger: clear-create-document-unknown-before-shape-live-build
