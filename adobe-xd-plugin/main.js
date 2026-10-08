@@ -411,6 +411,9 @@ function update(selection, documentRoot) {
   renderStatus();
 }
 
+// Keep the MCP transport alive even when the panel is not visibly open.
+connect();
+
 entrypoints.setup({
   panels: {
     mcpAdobeBridge: {
