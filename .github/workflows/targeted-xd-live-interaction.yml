@@ -88,31 +88,14 @@ jobs:
           if(-not $raw.Contains('xd-one-click-v2')){ throw 'installed XD plugin does not contain expected bridge build marker' }
           $manifestPath=Join-Path (Split-Path -Parent $installed) 'manifest.json'
           $manifest=Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-          $connectEntry=@($manifest.uiEntryPoints | Where-Object {$_.commandId -eq 'mcpAdobeConnect'}) | Select-Object -First 1
-          $applyEntry=@($manifest.uiEntryPoints | Where-Object {$_.commandId -eq 'mcpAdobeApply'}) | Select-Object -First 1
-          $panelEntry=@($manifest.uiEntryPoints | Where-Object {$_.panelId -eq 'mcpAdobeBridge'}) | Select-Object -First 1
-          if(-not $connectEntry -or $connectEntry.type -ne 'menu' -or $connectEntry.shortcut.win -ne 'Ctrl+Alt+Shift+9'){ throw 'installed XD manifest missing official connect entry point' }
-          if(-not $applyEntry -or $applyEntry.type -ne 'menu' -or $applyEntry.shortcut.win -ne 'Ctrl+Alt+Shift+8'){ throw 'installed XD manifest missing official apply entry point' }
-          if(-not $panelEntry -or $panelEntry.type -ne 'panel'){ throw 'installed XD manifest missing official panel entry point' }
+          if($manifest.manifestVersion -ne 4){ throw 'installed XD manifestVersion must be 4' }
+          $connectEntry=@($manifest.entrypoints | Where-Object {$_.id -eq 'mcpAdobeConnect'}) | Select-Object -First 1
+          $applyEntry=@($manifest.entrypoints | Where-Object {$_.id -eq 'mcpAdobeApply'}) | Select-Object -First 1
+          $panelEntry=@($manifest.entrypoints | Where-Object {$_.id -eq 'mcpAdobeBridge'}) | Select-Object -First 1
+          if(-not $connectEntry -or $connectEntry.type -ne 'command'){ throw 'installed XD manifest missing connect command entry point' }
+          if(-not $applyEntry -or $applyEntry.type -ne 'command'){ throw 'installed XD manifest missing apply command entry point' }
+          if(-not $panelEntry -or $panelEntry.type -ne 'panel'){ throw 'installed XD manifest missing panel entry point' }
 
-          $externalRoot=Join-Path $env:APPDATA 'Adobe\UXP\Plugins\External'
-          $externalDestination=Join-Path $externalRoot 'com.mcpadobe.xd.bridge'
-          $externalMain=Join-Path $externalDestination 'main.js'
-          $externalEntry=Join-Path $externalDestination 'main.external.js'
-          $externalManifestPath=Join-Path $externalDestination 'manifest.json'
-          foreach($required in @($externalMain,$externalEntry,$externalManifestPath)){
-            if(-not (Test-Path -LiteralPath $required)){ throw "XD External install missing: $required" }
-          }
-          $externalRaw=Get-Content -LiteralPath $externalMain -Raw
-          if(-not $externalRaw.Contains('xd-one-click-v2')){ throw 'XD External install is stale' }
-          $externalManifest=Get-Content -LiteralPath $externalManifestPath -Raw | ConvertFrom-Json
-          if($externalManifest.manifestVersion -ne 4 -or $externalManifest.host.app -ne 'XD'){
-            throw 'XD External manifest contract mismatch'
-          }
-          if($externalManifest.main -ne 'main.external.js'){
-            throw 'XD External manifest main mismatch'
-          }
-          Write-Host "XD_PLUGIN_EXTERNAL_INSTALL=PASS ID=$($externalManifest.id) PATH=$externalDestination"
           Write-Host "XD_PLUGIN_INSTALL=PASS PATH=$installed"
 
       - name: Restart XD and load fresh MCP command bridge
@@ -168,6 +151,13 @@ jobs:
           } until($xd -or (Get-Date) -gt $deadline)
           if(-not $xd){ throw 'Adobe XD interactive window did not appear after restart' }
           Write-Host "XD_FRESH_RESTART_OPEN=PASS PID=$($xd.Id) TITLE=$($xd.MainWindowTitle)"
+
+          [void][XdWindowNative]::ShowWindow($xd.MainWindowHandle, 9)
+          if(-not [XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)){ throw 'failed to foreground fresh Adobe XD window' }
+          Start-Sleep -Milliseconds 700
+          [System.Windows.Forms.SendKeys]::SendWait('^+r')
+          Write-Host 'XD_DEVELOPMENT_RELOAD_REQUEST=PASS shortcut=Ctrl+Shift+R'
+          Start-Sleep -Seconds 4
 
           [void][XdWindowNative]::ShowWindow($xd.MainWindowHandle, 9)
           if(-not [XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)){ throw 'failed to foreground fresh Adobe XD window' }

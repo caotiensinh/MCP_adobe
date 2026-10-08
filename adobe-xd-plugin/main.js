@@ -1,4 +1,5 @@
 const application = require("application");
+const { entrypoints } = require("uxp");
 const scenegraph = require("scenegraph");
 const { Rectangle, Text, Color } = scenegraph;
 
@@ -466,12 +467,8 @@ function applyPendingCommand(selection, documentRoot) {
   }
 }
 
-// Adobe XD 57.x uses the documented CommonJS plugin export contract.
-// Loading any entry point initializes this module; connect immediately so MCP
-// can communicate without requiring the panel to remain visible.
-connect();
-
-module.exports = {
+// Manifest v4 entrypoints are registered through UXP entrypoints.setup().
+entrypoints.setup({
   commands: {
     mcpAdobeConnect: connectCommand,
     mcpAdobeApply: applyPendingCommand
@@ -482,4 +479,4 @@ module.exports = {
       update
     }
   }
-};
+});

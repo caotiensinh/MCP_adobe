@@ -1,34 +1,28 @@
 {
+  "manifestVersion": 4,
   "id": "MCPADB01",
   "name": "MCP Adobe Bridge",
-  "version": "0.3.0",
+  "version": "0.4.0",
+  "main": "main.js",
   "host": {
     "app": "XD",
     "minVersion": "40.0"
   },
-  "uiEntryPoints": [
+  "entrypoints": [
     {
-      "type": "menu",
-      "label": "MCP Adobe Connect",
-      "commandId": "mcpAdobeConnect",
-      "shortcut": {
-        "win": "Ctrl+Alt+Shift+9",
-        "mac": "Cmd+Alt+Shift+9"
-      }
+      "type": "command",
+      "id": "mcpAdobeConnect",
+      "label": { "default": "MCP Adobe Connect" }
     },
     {
-      "type": "menu",
-      "label": "MCP Adobe Apply",
-      "commandId": "mcpAdobeApply",
-      "shortcut": {
-        "win": "Ctrl+Alt+Shift+8",
-        "mac": "Cmd+Alt+Shift+8"
-      }
+      "type": "command",
+      "id": "mcpAdobeApply",
+      "label": { "default": "MCP Adobe Apply" }
     },
     {
       "type": "panel",
-      "label": "MCP Adobe Bridge",
-      "panelId": "mcpAdobeBridge"
+      "id": "mcpAdobeBridge",
+      "label": { "default": "MCP Adobe Bridge" }
     }
   ]
 }
