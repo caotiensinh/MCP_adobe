@@ -216,6 +216,26 @@ function applyPending() {
   renderStatus();
 }
 
+function clearPending(reason) {
+  const batch = pendingWrites.slice();
+  pendingWrites = [];
+  for (let i = 0; i < batch.length; i += 1) {
+    const item = batch[i];
+    rememberOperation(item.operationId, {
+      status: "rejected",
+      method: item.method,
+      rejectedAt: Date.now(),
+      reason: reason || "queue cleared"
+    });
+  }
+  renderStatus();
+  return {
+    status: "cleared",
+    rejected_count: batch.length,
+    pending_count: pendingWrites.length
+  };
+}
+
 function rejectPending() {
   const batch = pendingWrites.slice();
   pendingWrites = [];
@@ -247,6 +267,10 @@ function dispatch(method, params) {
 
   if (method === "xd.selection.get") {
     return { items: latestSnapshot.selection || [] };
+  }
+
+  if (method === "xd.queue.clear") {
+    return clearPending(params && params.reason ? String(params.reason) : "MCP queue reset");
   }
 
   if (method === "xd.queue.status") {

@@ -27,6 +27,7 @@ _BINDINGS: dict[str, ToolBinding] = {
     "creative.shape.rectangle": ToolBinding("xd.queue.rectangle_create", RiskClass.WRITE_REVERSIBLE),
     "creative.text.create": ToolBinding("xd.queue.text_create", RiskClass.WRITE_REVERSIBLE),
     "xd.queue.status": ToolBinding("xd.queue.status", RiskClass.READ),
+    "xd.queue.clear": ToolBinding("xd.queue.clear", RiskClass.WRITE_REVERSIBLE),
     "xd.queue.rectangle_create": ToolBinding("xd.queue.rectangle_create", RiskClass.WRITE_REVERSIBLE),
     "xd.queue.text_create": ToolBinding("xd.queue.text_create", RiskClass.WRITE_REVERSIBLE),
     "xd.queue.selection_resize": ToolBinding("xd.queue.selection_resize", RiskClass.WRITE_REVERSIBLE),

@@ -398,6 +398,30 @@ jobs:
                   if find_key(health, "bridge") != "connected":
                       raise RuntimeError("XD bridge is not connected")
 
+                  stale_pending = find_key(health, "pending_count")
+                  if isinstance(stale_pending, int) and stale_pending > 0:
+                      cleared = await call(
+                          client,
+                          "creative_write",
+                          "xd.queue.clear",
+                          {"reason": "fresh MCP live-build test"},
+                      )
+                      print(
+                          "XD_STALE_QUEUE_CLEARED=" +
+                          json.dumps(
+                              {
+                                  "before": stale_pending,
+                                  "result": cleared,
+                              },
+                              ensure_ascii=False,
+                              default=str,
+                          ),
+                          flush=True,
+                      )
+                      health = await call(client, "creative_read", "creative.health", {})
+                      if find_key(health, "pending_count") != 0:
+                          raise RuntimeError("XD stale pending queue could not be cleared")
+
                   before = await call(client, "creative_read", "creative.document.info", {})
                   before_count = find_key(before, "rootChildren")
                   if not isinstance(before_count, int):

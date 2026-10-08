@@ -79,6 +79,22 @@ class XdAdapterTests(unittest.TestCase):
         self.assertEqual(text_result["result"]["status"], "queued")
         self.assertTrue(text_result["result"]["approval_required"])
 
+    def test_queue_clear_maps_to_bridge_without_document_mutation(self) -> None:
+        client = FakeXdClient()
+        registry = CapabilityRegistry()
+        registry.register(XdAdapter(client))
+        result = registry.execute(
+            "xd",
+            "xd.queue.clear",
+            {"reason": "fresh live test"},
+        )
+        self.assertEqual(
+            [name for name, _ in client.calls],
+            ["xd.health", "xd.queue.clear"],
+        )
+        self.assertEqual(client.calls[1][1]["reason"], "fresh live test")
+        self.assertEqual(result["result"]["method"], "xd.queue.clear")
+
     def test_queue_rectangle_maps_to_exact_bridge_method(self) -> None:
         client = FakeXdClient()
         registry = CapabilityRegistry()
