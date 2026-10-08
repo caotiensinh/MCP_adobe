@@ -228,6 +228,37 @@ class McpServerContractTests(unittest.TestCase):
         self.assertEqual([step["label"] for step in payload["steps"]], ["base", "second"])
         self.assertEqual([name for name, _ in self.runtime.calls], ["write", "write"])
 
+    def test_live_build_logs_root_cause_with_operation_context(self) -> None:
+        def fail_write(*args, **kwargs):
+            raise RuntimeError("backend exploded")
+
+        self.runtime.write = fail_write  # type: ignore[method-assign]
+
+        async def scenario(client):
+            return await client.call_tool(
+                "creative_live_build",
+                {
+                    "application": "photoshop",
+                    "step_delay_ms": 0,
+                    "steps": [
+                        {
+                            "label": "first",
+                            "capability": "creative.document.create",
+                            "arguments": {"width": 800, "height": 600},
+                        }
+                    ],
+                },
+            )
+
+        with self.assertLogs("mcp_adobe.server", level="ERROR") as captured:
+            result = asyncio.run(self._with_client(scenario))
+
+        self.assertTrue(result.is_error)
+        joined = "\n".join(captured.output)
+        self.assertIn("backend exploded", joined)
+        self.assertIn("creative.document.create", joined)
+        self.assertIn("operation_id=", joined)
+
     def test_live_build_rejects_file_writes_before_runtime(self) -> None:
         async def scenario(client):
             return await client.call_tool(

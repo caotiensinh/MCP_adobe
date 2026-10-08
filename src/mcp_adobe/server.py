@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import atexit
 import os
 import sys
@@ -26,6 +27,8 @@ from .core import AdapterInfo, CapabilityRegistry, ExecutionPolicy, PolicyError,
 from .illustrator import IllustratorAdapter
 from .mcp_stdio import McpSubprocessToolClient, illustrator_stdio_config, photoshop_stdio_config
 from .photoshop import OperationUnknownError, PhotoshopAdapter
+
+logger = logging.getLogger(__name__)
 from .xd import XdAdapter
 from .xd_bridge import XdWebSocketBridgeClient
 
@@ -368,8 +371,17 @@ def build_server(
                 operation_id=operation_id,
                 outcome="failed",
             )
+            logger.exception(
+                "creative operation failed tool=%s application=%s capability=%s operation_id=%s cause=%s",
+                tool_name,
+                application,
+                capability,
+                operation_id,
+                exc,
+            )
             raise RuntimeError(
-                f"operation failed; operation_id={operation_id}"
+                f"operation failed; operation_id={operation_id}; "
+                f"cause={type(exc).__name__}: {exc}"
             ) from None
 
         outcome = str(payload.get("outcome", "accepted_unverified"))
