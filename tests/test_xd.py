@@ -138,20 +138,24 @@ class XdPluginContractTests(unittest.TestCase):
     def test_manifest_exposes_command_shortcuts(self) -> None:
         root = Path(__file__).resolve().parents[1]
         manifest = json.loads((root / "adobe-xd-plugin" / "manifest.json").read_text(encoding="utf-8"))
-        entries = {entry["id"]: entry for entry in manifest["entrypoints"]}
-        self.assertEqual(entries["mcpAdobeConnect"]["type"], "command")
-        self.assertEqual(entries["mcpAdobeConnect"]["shortcut"]["win"], "Ctrl+Shift+B")
-        self.assertEqual(entries["mcpAdobeApply"]["type"], "command")
-        self.assertEqual(entries["mcpAdobeApply"]["shortcut"]["win"], "Ctrl+Shift+Q")
-        self.assertEqual(entries["mcpAdobeBridge"]["type"], "panel")
+        entries = manifest["uiEntryPoints"]
+        commands = {entry.get("commandId"): entry for entry in entries if entry.get("commandId")}
+        panels = {entry.get("panelId"): entry for entry in entries if entry.get("panelId")}
+        self.assertEqual(commands["mcpAdobeConnect"]["type"], "menu")
+        self.assertEqual(commands["mcpAdobeConnect"]["shortcut"]["win"], "Ctrl+Alt+Shift+9")
+        self.assertEqual(commands["mcpAdobeApply"]["type"], "menu")
+        self.assertEqual(commands["mcpAdobeApply"]["shortcut"]["win"], "Ctrl+Alt+Shift+8")
+        self.assertEqual(panels["mcpAdobeBridge"]["type"], "panel")
 
     def test_command_handler_applies_batch_in_xd_edit_context(self) -> None:
         root = Path(__file__).resolve().parents[1]
         source = (root / "adobe-xd-plugin" / "main.js").read_text(encoding="utf-8")
         self.assertIn("function connectCommand(selection, documentRoot)", source)
         self.assertIn("function applyPendingCommand(selection, documentRoot)", source)
+        self.assertIn("module.exports = {", source)
         self.assertIn("mcpAdobeConnect: connectCommand", source)
         self.assertIn("mcpAdobeApply: applyPendingCommand", source)
+        self.assertNotIn("entrypoints.setup", source)
         self.assertIn("snapshot(scenegraph.selection, scenegraph.root)", source)
 
 

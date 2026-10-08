@@ -88,10 +88,12 @@ jobs:
           if(-not $raw.Contains('xd-one-click-v2')){ throw 'installed XD plugin does not contain expected bridge build marker' }
           $manifestPath=Join-Path (Split-Path -Parent $installed) 'manifest.json'
           $manifest=Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-          $connectEntry=@($manifest.entrypoints | Where-Object {$_.id -eq 'mcpAdobeConnect'}) | Select-Object -First 1
-          $applyEntry=@($manifest.entrypoints | Where-Object {$_.id -eq 'mcpAdobeApply'}) | Select-Object -First 1
-          if(-not $connectEntry -or $connectEntry.shortcut.win -ne 'Ctrl+Shift+B'){ throw 'installed XD manifest missing connect shortcut' }
-          if(-not $applyEntry -or $applyEntry.shortcut.win -ne 'Ctrl+Shift+Q'){ throw 'installed XD manifest missing apply shortcut' }
+          $connectEntry=@($manifest.uiEntryPoints | Where-Object {$_.commandId -eq 'mcpAdobeConnect'}) | Select-Object -First 1
+          $applyEntry=@($manifest.uiEntryPoints | Where-Object {$_.commandId -eq 'mcpAdobeApply'}) | Select-Object -First 1
+          $panelEntry=@($manifest.uiEntryPoints | Where-Object {$_.panelId -eq 'mcpAdobeBridge'}) | Select-Object -First 1
+          if(-not $connectEntry -or $connectEntry.type -ne 'menu' -or $connectEntry.shortcut.win -ne 'Ctrl+Alt+Shift+9'){ throw 'installed XD manifest missing official connect entry point' }
+          if(-not $applyEntry -or $applyEntry.type -ne 'menu' -or $applyEntry.shortcut.win -ne 'Ctrl+Alt+Shift+8'){ throw 'installed XD manifest missing official apply entry point' }
+          if(-not $panelEntry -or $panelEntry.type -ne 'panel'){ throw 'installed XD manifest missing official panel entry point' }
           Write-Host "XD_PLUGIN_INSTALL=PASS PATH=$installed"
 
       - name: Restart XD and load fresh MCP command bridge
@@ -155,94 +157,10 @@ jobs:
           Write-Host 'XD_TEST_DOCUMENT_REQUEST=CTRL+N'
           Start-Sleep -Seconds 4
 
-          Add-Type -AssemblyName UIAutomationClient
-          Add-Type -AssemblyName UIAutomationTypes
-
-          function Invoke-XdPluginCommand {
-            param(
-              [System.Diagnostics.Process]$Process,
-              [string]$CommandName
-            )
-
-            [void][XdWindowNative]::ShowWindow($Process.MainWindowHandle, 9)
-            if(-not [XdWindowNative]::SetForegroundWindow($Process.MainWindowHandle)){
-              throw "failed to foreground XD for command: $CommandName"
-            }
-            Start-Sleep -Milliseconds 500
-
-            $root=[System.Windows.Automation.AutomationElement]::FromHandle($Process.MainWindowHandle)
-            if(-not $root){ throw 'UI Automation could not attach to Adobe XD' }
-
-            function Find-NamedDescendant {
-              param(
-                [System.Windows.Automation.AutomationElement]$UiRoot,
-                [string]$Name
-              )
-              $condition=New-Object System.Windows.Automation.PropertyCondition(
-                [System.Windows.Automation.AutomationElement]::NameProperty,
-                $Name
-              )
-              return $UiRoot.FindFirst(
-                [System.Windows.Automation.TreeScope]::Descendants,
-                $condition
-              )
-            }
-
-            $item=Find-NamedDescendant -UiRoot $root -Name $CommandName
-            if(-not $item){
-              $pluginsMenu=Find-NamedDescendant -UiRoot $root -Name 'Plugins'
-              if($pluginsMenu){
-                try {
-                  $expand=$pluginsMenu.GetCurrentPattern(
-                    [System.Windows.Automation.ExpandCollapsePattern]::Pattern
-                  )
-                  $expand.Expand()
-                } catch {
-                  [System.Windows.Forms.SendKeys]::SendWait('%p')
-                }
-              } else {
-                [System.Windows.Forms.SendKeys]::SendWait('%p')
-              }
-              Start-Sleep -Milliseconds 800
-              $root=[System.Windows.Automation.AutomationElement]::FromHandle($Process.MainWindowHandle)
-              $item=Find-NamedDescendant -UiRoot $root -Name $CommandName
-            }
-
-            if(-not $item){
-              $names=@()
-              $cond=New-Object System.Windows.Automation.PropertyCondition(
-                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-                [System.Windows.Automation.ControlType]::MenuItem
-              )
-              $items=$root.FindAll(
-                [System.Windows.Automation.TreeScope]::Descendants,
-                $cond
-              )
-              foreach($entry in $items){
-                if($entry.Current.Name){ $names += $entry.Current.Name }
-              }
-              throw "XD command not found: $CommandName. Visible menu items: $($names -join ' | ')"
-            }
-
-            try {
-              $invoke=$item.GetCurrentPattern(
-                [System.Windows.Automation.InvokePattern]::Pattern
-              )
-              $invoke.Invoke()
-            } catch {
-              try {
-                $select=$item.GetCurrentPattern(
-                  [System.Windows.Automation.SelectionItemPattern]::Pattern
-                )
-                $select.Select()
-              } catch {
-                throw "XD command found but could not be invoked: $CommandName / $($_.Exception.Message)"
-              }
-            }
-            Write-Host "XD_UIA_COMMAND_REQUEST=PASS command=$CommandName"
-          }
-
-          Invoke-XdPluginCommand -Process $xd -CommandName 'MCP Adobe Connect'
+          [void][XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
+          Start-Sleep -Milliseconds 500
+          [System.Windows.Forms.SendKeys]::SendWait('^%+9')
+          Write-Host 'XD_CONNECT_COMMAND_REQUEST=PASS shortcut=Ctrl+Alt+Shift+9 schema=uiEntryPoints'
 
           $deadline=(Get-Date).AddSeconds(30)
           do {
@@ -540,59 +458,8 @@ jobs:
           if(-not [XdApplyNative]::SetForegroundWindow($xd.MainWindowHandle)){ throw 'failed to foreground XD for approval command' }
           Start-Sleep -Milliseconds 500
 
-          Add-Type -AssemblyName UIAutomationClient
-          Add-Type -AssemblyName UIAutomationTypes
-
-          function Find-XdUiElementByName {
-            param(
-              [System.Windows.Automation.AutomationElement]$Root,
-              [string]$Name
-            )
-            $condition=New-Object System.Windows.Automation.PropertyCondition(
-              [System.Windows.Automation.AutomationElement]::NameProperty,
-              $Name
-            )
-            return $Root.FindFirst(
-              [System.Windows.Automation.TreeScope]::Descendants,
-              $condition
-            )
-          }
-
-          $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
-          if(-not $root){ throw 'UI Automation could not attach to XD for approval command' }
-          $item=Find-XdUiElementByName -Root $root -Name 'MCP Adobe Apply'
-          if(-not $item){
-            $pluginsMenu=Find-XdUiElementByName -Root $root -Name 'Plugins'
-            if($pluginsMenu){
-              try {
-                $expand=$pluginsMenu.GetCurrentPattern(
-                  [System.Windows.Automation.ExpandCollapsePattern]::Pattern
-                )
-                $expand.Expand()
-              } catch {
-                [System.Windows.Forms.SendKeys]::SendWait('%p')
-              }
-            } else {
-              [System.Windows.Forms.SendKeys]::SendWait('%p')
-            }
-            Start-Sleep -Milliseconds 800
-            $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
-            $item=Find-XdUiElementByName -Root $root -Name 'MCP Adobe Apply'
-          }
-          if(-not $item){ throw 'MCP Adobe Apply command was not found through UI Automation' }
-
-          try {
-            $invoke=$item.GetCurrentPattern(
-              [System.Windows.Automation.InvokePattern]::Pattern
-            )
-            $invoke.Invoke()
-          } catch {
-            $select=$item.GetCurrentPattern(
-              [System.Windows.Automation.SelectionItemPattern]::Pattern
-            )
-            $select.Select()
-          }
-          Write-Host 'XD_ONE_CLICK_APPROVAL_REQUEST=PASS ui=UIAutomation command=MCP Adobe Apply'
+          [System.Windows.Forms.SendKeys]::SendWait('^%+8')
+          Write-Host 'XD_ONE_CLICK_APPROVAL_REQUEST=PASS shortcut=Ctrl+Alt+Shift+8 schema=uiEntryPoints'
           Start-Sleep -Seconds 3
 
       - name: Verify applied XD composition through MCP

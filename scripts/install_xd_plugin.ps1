@@ -104,12 +104,19 @@ if ($PluginId) {
 }
 
 $installedManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-if ($installedManifest.manifestVersion -ne 4) {
-    throw "Unexpected XD manifestVersion: $($installedManifest.manifestVersion)"
-}
 if ($installedManifest.host.app -ne 'XD') {
     throw "Unexpected XD manifest host: $($installedManifest.host.app)"
 }
+$entries=@($installedManifest.uiEntryPoints)
+if($entries.Count -lt 3){
+    throw 'XD manifest is missing required uiEntryPoints.'
+}
+$connect=@($entries | Where-Object {$_.commandId -eq 'mcpAdobeConnect'}) | Select-Object -First 1
+$apply=@($entries | Where-Object {$_.commandId -eq 'mcpAdobeApply'}) | Select-Object -First 1
+$panel=@($entries | Where-Object {$_.panelId -eq 'mcpAdobeBridge'}) | Select-Object -First 1
+if(-not $connect -or $connect.type -ne 'menu'){ throw 'XD connect command entry point missing.' }
+if(-not $apply -or $apply.type -ne 'menu'){ throw 'XD apply command entry point missing.' }
+if(-not $panel -or $panel.type -ne 'panel'){ throw 'XD bridge panel entry point missing.' }
 if (-not (Test-Path (Join-Path $destination 'main.js'))) {
     throw 'XD bridge install verification failed: main.js missing.'
 }

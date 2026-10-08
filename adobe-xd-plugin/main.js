@@ -1,7 +1,6 @@
 const application = require("application");
 const scenegraph = require("scenegraph");
 const { Rectangle, Text, Color } = scenegraph;
-const { entrypoints } = require("uxp");
 
 const BRIDGE_URL = "ws://127.0.0.1:8765";
 const STATUS_LIMIT = 200;
@@ -467,11 +466,12 @@ function applyPendingCommand(selection, documentRoot) {
   }
 }
 
-// Loading either command initializes the plugin module; connect immediately so
-// MCP can communicate without opening the panel.
+// Adobe XD 57.x uses the documented CommonJS plugin export contract.
+// Loading any entry point initializes this module; connect immediately so MCP
+// can communicate without requiring the panel to remain visible.
 connect();
 
-entrypoints.setup({
+module.exports = {
   commands: {
     mcpAdobeConnect: connectCommand,
     mcpAdobeApply: applyPendingCommand
@@ -482,4 +482,4 @@ entrypoints.setup({
       update
     }
   }
-});
+};
