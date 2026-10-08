@@ -72,6 +72,35 @@ jobs:
             Write-Host "XD_DIAG_DEBUG_9345=FAIL error=$($_.Exception.Message)"
           }
 
+          $external=Join-Path $env:APPDATA 'Adobe\UXP\Plugins\External'
+          Write-Host "XD_DIAG_UXP_EXTERNAL=$external"
+          if(Test-Path -LiteralPath $external){
+            Write-Host 'XD_DIAG_UXP_EXTERNAL_TREE_BEGIN'
+            Get-ChildItem -LiteralPath $external -Recurse -Force -ErrorAction SilentlyContinue |
+              Select-Object -First 300 |
+              ForEach-Object {
+                Write-Host "XD_DIAG_UXP_ENTRY PATH=$($_.FullName) TYPE=$($_.PSIsContainer) SIZE=$($_.Length) TIME=$($_.LastWriteTime.ToString('o'))"
+              }
+            Write-Host 'XD_DIAG_UXP_EXTERNAL_TREE_END'
+
+            $migration=Join-Path $external '.pluginsMigrationStatus.json'
+            if(Test-Path -LiteralPath $migration){
+              Write-Host 'XD_DIAG_MIGRATION_STATUS_BEGIN'
+              Get-Content -LiteralPath $migration -Raw -ErrorAction SilentlyContinue
+              Write-Host 'XD_DIAG_MIGRATION_STATUS_END'
+            }
+
+            Get-ChildItem -LiteralPath $external -Recurse -Filter manifest.json -File -ErrorAction SilentlyContinue |
+              Select-Object -First 20 |
+              ForEach-Object {
+                Write-Host "XD_DIAG_EXTERNAL_MANIFEST_BEGIN=$($_.FullName)"
+                Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue
+                Write-Host "XD_DIAG_EXTERNAL_MANIFEST_END=$($_.FullName)"
+              }
+          } else {
+            Write-Host 'XD_DIAG_UXP_EXTERNAL_MISSING'
+          }
+
           try {
             Write-Host 'XD_DIAG_LOOPBACK_BEGIN'
             & CheckNetIsolation.exe LoopbackExempt -s | Out-Host
