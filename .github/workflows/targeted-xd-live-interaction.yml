@@ -271,13 +271,17 @@ jobs:
             Write-Host 'XD_DEVELOPMENT_RELOAD=PASS ui=Plugins>Development>Reload Plugins'
           }
 
-          Reload-XdDevelopmentPlugins -Process $xd
-          Start-Sleep -Seconds 5
-
           [void][XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
           [System.Windows.Forms.SendKeys]::SendWait('^n')
           Write-Host 'XD_TEST_DOCUMENT_REQUEST=CTRL+N'
           Start-Sleep -Seconds 4
+
+          $xd=Get-XdProcess
+          if(-not $xd){ throw 'Adobe XD document window did not remain available after Ctrl+N' }
+          Write-Host "XD_DOCUMENT_CONTEXT=PASS PID=$($xd.Id) TITLE=$($xd.MainWindowTitle)"
+
+          Reload-XdDevelopmentPlugins -Process $xd
+          Start-Sleep -Seconds 5
 
           Invoke-XdNamedMenuItem -Process $xd -Name 'MCP Adobe Connect'
           Write-Host 'XD_CONNECT_COMMAND_REQUEST=PASS ui=Plugins>MCP Adobe Connect'
