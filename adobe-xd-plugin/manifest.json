@@ -16,8 +16,8 @@
         "default": "MCP Adobe Connect"
       },
       "shortcut": {
-        "win": "Ctrl+Alt+Shift+B",
-        "mac": "Cmd+Alt+Shift+B"
+        "win": "Ctrl+Shift+B",
+        "mac": "Cmd+Shift+B"
       }
     },
     {
@@ -27,8 +27,8 @@
         "default": "MCP Adobe Apply"
       },
       "shortcut": {
-        "win": "Ctrl+Alt+Shift+M",
-        "mac": "Cmd+Alt+Shift+M"
+        "win": "Ctrl+Shift+Q",
+        "mac": "Cmd+Shift+Q"
       }
     },
     {

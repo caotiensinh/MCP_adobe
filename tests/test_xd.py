@@ -140,9 +140,9 @@ class XdPluginContractTests(unittest.TestCase):
         manifest = json.loads((root / "adobe-xd-plugin" / "manifest.json").read_text(encoding="utf-8"))
         entries = {entry["id"]: entry for entry in manifest["entrypoints"]}
         self.assertEqual(entries["mcpAdobeConnect"]["type"], "command")
-        self.assertEqual(entries["mcpAdobeConnect"]["shortcut"]["win"], "Ctrl+Alt+Shift+B")
+        self.assertEqual(entries["mcpAdobeConnect"]["shortcut"]["win"], "Ctrl+Shift+B")
         self.assertEqual(entries["mcpAdobeApply"]["type"], "command")
-        self.assertEqual(entries["mcpAdobeApply"]["shortcut"]["win"], "Ctrl+Alt+Shift+M")
+        self.assertEqual(entries["mcpAdobeApply"]["shortcut"]["win"], "Ctrl+Shift+Q")
         self.assertEqual(entries["mcpAdobeBridge"]["type"], "panel")
 
     def test_command_handler_applies_batch_in_xd_edit_context(self) -> None:

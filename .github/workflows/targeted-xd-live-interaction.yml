@@ -90,8 +90,8 @@ jobs:
           $manifest=Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
           $connectEntry=@($manifest.entrypoints | Where-Object {$_.id -eq 'mcpAdobeConnect'}) | Select-Object -First 1
           $applyEntry=@($manifest.entrypoints | Where-Object {$_.id -eq 'mcpAdobeApply'}) | Select-Object -First 1
-          if(-not $connectEntry -or $connectEntry.shortcut.win -ne 'Ctrl+Alt+Shift+B'){ throw 'installed XD manifest missing connect shortcut' }
-          if(-not $applyEntry -or $applyEntry.shortcut.win -ne 'Ctrl+Alt+Shift+M'){ throw 'installed XD manifest missing apply shortcut' }
+          if(-not $connectEntry -or $connectEntry.shortcut.win -ne 'Ctrl+Shift+B'){ throw 'installed XD manifest missing connect shortcut' }
+          if(-not $applyEntry -or $applyEntry.shortcut.win -ne 'Ctrl+Shift+Q'){ throw 'installed XD manifest missing apply shortcut' }
           Write-Host "XD_PLUGIN_INSTALL=PASS PATH=$installed"
 
       - name: Restart XD and load fresh MCP command bridge
@@ -156,8 +156,8 @@ jobs:
           Start-Sleep -Seconds 4
 
           [void][XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
-          [System.Windows.Forms.SendKeys]::SendWait('^%+b')
-          Write-Host 'XD_CONNECT_COMMAND_REQUEST=PASS shortcut=Ctrl+Alt+Shift+B'
+          [System.Windows.Forms.SendKeys]::SendWait('^+b')
+          Write-Host 'XD_CONNECT_COMMAND_REQUEST=PASS shortcut=Ctrl+Shift+B'
 
           $deadline=(Get-Date).AddSeconds(30)
           do {
@@ -454,8 +454,8 @@ jobs:
           [void][XdApplyNative]::ShowWindow($xd.MainWindowHandle, 9)
           if(-not [XdApplyNative]::SetForegroundWindow($xd.MainWindowHandle)){ throw 'failed to foreground XD for approval command' }
           Start-Sleep -Milliseconds 500
-          [System.Windows.Forms.SendKeys]::SendWait('^%+m')
-          Write-Host 'XD_ONE_CLICK_APPROVAL_REQUEST=PASS shortcut=Ctrl+Alt+Shift+M'
+          [System.Windows.Forms.SendKeys]::SendWait('^+q')
+          Write-Host 'XD_ONE_CLICK_APPROVAL_REQUEST=PASS shortcut=Ctrl+Shift+Q'
           Start-Sleep -Seconds 3
 
       - name: Verify applied XD composition through MCP
