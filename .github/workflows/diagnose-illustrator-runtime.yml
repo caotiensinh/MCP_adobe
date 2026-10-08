@@ -217,3 +217,5 @@ jobs:
 # diagnostic-trigger: serialized-retained-job-reconciliation
 
 # diagnostic-trigger: active-document-read-after-clean-restart
+
+# diagnostic-trigger: inspect-cep-after-bootstrap-repair
