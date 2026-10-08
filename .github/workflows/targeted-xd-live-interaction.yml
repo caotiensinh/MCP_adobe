@@ -188,15 +188,43 @@ jobs:
               $localState=Join-Path $env:LOCALAPPDATA "Packages\$($pkg.PackageFamilyName)\LocalState"
               if(Test-Path -LiteralPath $localState){
                 $cutoff=(Get-Date).AddMinutes(-15)
-                $recent=@(
-                  Get-ChildItem -LiteralPath $localState -Recurse -File -ErrorAction SilentlyContinue |
-                    Where-Object {$_.LastWriteTime -ge $cutoff} |
-                    Sort-Object LastWriteTime -Descending |
-                    Select-Object -First 120
-                )
-                foreach($file in $recent){
-                  Write-Host "XD_RECENT_FILE TIME=$($file.LastWriteTime.ToString('o')) SIZE=$($file.Length) PATH=$($file.FullName)"
-                  if($file.Length -le 1048576 -and $file.Extension -match '^\.(log|txt|json|js|html|xml)
+                Get-ChildItem -LiteralPath $localState -Recurse -File -ErrorAction SilentlyContinue |
+                  Where-Object {$_.LastWriteTime -ge $cutoff} |
+                  Sort-Object LastWriteTime -Descending |
+                  Select-Object -First 120 |
+                  ForEach-Object {
+                    Write-Host "XD_RECENT_FILE TIME=$($_.LastWriteTime.ToString('o')) SIZE=$($_.Length) PATH=$($_.FullName)"
+                  }
+              }
+            }
+
+            try {
+              $targets=Invoke-RestMethod -Uri 'http://127.0.0.1:9345/json' -TimeoutSec 3
+              Write-Host "XD_DEBUG_PORT_9345=PASS targets=$(@($targets).Count)"
+              $targets | ConvertTo-Json -Depth 8 | Write-Host
+            } catch {
+              Write-Host "XD_DEBUG_PORT_9345=FAIL error=$($_.Exception.Message)"
+            }
+
+            $develop=Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Packages') -Directory -ErrorAction SilentlyContinue |
+              Where-Object {$_.Name -match 'Adobe.*XD|XD.*Adobe'} |
+              ForEach-Object { Join-Path $_.FullName 'LocalState\develop\MCPAdobeBridge' } |
+              Where-Object {Test-Path -LiteralPath $_} |
+              Select-Object -First 1
+            if($develop){
+              Write-Host "XD_PLUGIN_TREE_BEGIN=$develop"
+              Get-ChildItem -LiteralPath $develop -Recurse -Force |
+                ForEach-Object {
+                  Write-Host "XD_PLUGIN_FILE PATH=$($_.FullName) SIZE=$($_.Length) TIME=$($_.LastWriteTime.ToString('o'))"
+                }
+              Write-Host "XD_PLUGIN_TREE_END=$develop"
+            }
+
+            Write-Host 'XD_CONNECT_DIAG_END'
+            throw 'XD connect command did not establish bridge port 8765; diagnostic evidence emitted above'
+          }
+          Write-Host "XD_COMMAND_CONNECT=PASS connections=$($connected.Count)"
+
           @'
           import asyncio, json
           from collections.abc import Mapping
