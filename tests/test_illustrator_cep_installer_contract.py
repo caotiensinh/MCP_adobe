@@ -59,6 +59,16 @@ class IllustratorCepInstallerContractTests(unittest.TestCase):
         self.assertIn("Illustrator staged CEP auto-start", self.backend_installer)
         self.assertIn("Installed Illustrator CEP auto-start", self.backend_installer)
 
+    def test_installer_replaces_react_entry_with_panel_context_compat_transport(self) -> None:
+        self.assertIn("Install-CepPanelCompatTransport", self.backend_installer)
+        self.assertIn("Test-CepPanelCompatTransport", self.backend_installer)
+        self.assertIn("illustrator_cep_fallback_transport.html", self.backend_installer)
+        self.assertIn("MCP_ADOBE_CEP_COMPAT_TRANSPORT_V1", self.backend_installer)
+        self.assertIn("compat-v1", self.backend_installer)
+        self.assertIn("./CSInterface.js", self.backend_installer)
+        self.assertIn("bootstrap-relative CSInterface path leaked", self.backend_installer)
+        self.assertIn("real panel transport must not recursively open itself", self.backend_installer)
+
     def test_installer_builds_missing_pinned_panel_dist(self) -> None:
         self.assertIn('"dist\\index.html"', self.backend_installer)
         self.assertIn('Invoke-Checked $npm @("ci", "--no-audit", "--no-fund")', self.backend_installer)

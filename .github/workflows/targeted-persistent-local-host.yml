@@ -66,21 +66,25 @@ jobs:
           $metaPath=Join-Path $root 'install-metadata.json'
           $python=Join-Path $root 'venv\Scripts\python.exe'
           $source=Join-Path $root 'source'
-          $panel=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel\CSXS\manifest.xml'
+          $panelRoot=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel'
+          $panel=Join-Path $panelRoot 'CSXS\manifest.xml'
+          $panelIndex=Join-Path $panelRoot 'dist\index.html'
           $expected='5d7a3edc8ebc89a0fc56b059e1311d3b2bfca815'
           $reuse=$false
-          if((Test-Path $metaPath) -and (Test-Path $python) -and (Test-Path $panel) -and (Test-Path $source)){
+          if((Test-Path $metaPath) -and (Test-Path $python) -and (Test-Path $panel) -and (Test-Path $panelIndex) -and (Test-Path $source)){
             try {
               $meta=Get-Content -LiteralPath $metaPath -Raw | ConvertFrom-Json
               $sha=(git -C $source rev-parse HEAD).Trim()
               $version=(& $python -c "import importlib.metadata as m; print(m.version('illustrator-mcp'))").Trim()
               $manifestText=Get-Content -LiteralPath $panel -Raw
+              $panelIndexText=Get-Content -LiteralPath $panelIndex -Raw
+              $compatTransportOk=$panelIndexText.Contains('MCP_ADOBE_CEP_COMPAT_TRANSPORT_V1')
               $autoStartOk=(
                 $manifestText.Contains('<StartOn>') -and
                 $manifestText.Contains('<Event>applicationActivate</Event>') -and
                 $manifestText.Contains('<Event>com.adobe.csxs.events.ApplicationActivate</Event>')
               )
-              if($meta.upstream_sha -eq $expected -and $sha -eq $expected -and $version -eq '3.0.0' -and $autoStartOk){
+              if($meta.upstream_sha -eq $expected -and $sha -eq $expected -and $version -eq '3.0.0' -and $meta.cep_transport -eq 'compat-v1' -and $compatTransportOk -and $autoStartOk){
                 $reuse=$true
               }
             } catch {

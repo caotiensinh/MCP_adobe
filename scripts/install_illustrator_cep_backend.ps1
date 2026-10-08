@@ -42,6 +42,51 @@ function Get-ExistingItem([string]$Path) {
     return Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
 }
 
+function Install-CepPanelCompatTransport([string]$Root) {
+    $source = Join-Path $PSScriptRoot "illustrator_cep_fallback_transport.html"
+    if (-not (Test-Path -LiteralPath $source)) {
+        throw "Illustrator CEP compatibility transport source missing: $source"
+    }
+    $target = Join-Path $Root "dist\index.html"
+    if (-not (Test-Path -LiteralPath $target)) {
+        throw "Illustrator CEP panel dist index missing before compatibility patch: $target"
+    }
+    $html = [IO.File]::ReadAllText($source)
+    $html = $html.Replace('../dist/CSInterface.js', './CSInterface.js')
+    $html = $html.Replace('  try { cs.requestOpenExtension(PANEL_ID, ""); } catch (_) {}' + [Environment]::NewLine, '')
+    $marker = '<!-- MCP_ADOBE_CEP_COMPAT_TRANSPORT_V1 -->'
+    if (-not $html.Contains($marker)) {
+        $html = $marker + [Environment]::NewLine + $html
+    }
+    [IO.File]::WriteAllText($target, $html, (New-Object Text.UTF8Encoding($false)))
+    Write-Host "illustrator_cep_transport=COMPAT_V1"
+}
+
+function Test-CepPanelCompatTransport([string]$Root, [string]$Label) {
+    $target = Join-Path $Root "dist\index.html"
+    if (-not (Test-Path -LiteralPath $target)) {
+        throw "$Label failed: compatibility transport index missing"
+    }
+    $html = [IO.File]::ReadAllText($target)
+    foreach ($required in @(
+        'MCP_ADOBE_CEP_COMPAT_TRANSPORT_V1',
+        'ws://127.0.0.1:8081',
+        './CSInterface.js',
+        'mcp_handle_request'
+    )) {
+        if (-not $html.Contains($required)) {
+            throw "$Label failed: compatibility transport marker missing: $required"
+        }
+    }
+    if ($html.Contains('../dist/CSInterface.js')) {
+        throw "$Label failed: bootstrap-relative CSInterface path leaked into panel transport"
+    }
+    if ($html.Contains('cs.requestOpenExtension(PANEL_ID')) {
+        throw "$Label failed: real panel transport must not recursively open itself"
+    }
+    Write-Host "$Label=PASS"
+}
+
 function Test-CepPanelPayload([string]$Root, [string]$Label) {
     $rootFull = [IO.Path]::GetFullPath($Root)
     $prefix = $rootFull.TrimEnd([char[]]"\/") + [IO.Path]::DirectorySeparatorChar
@@ -274,9 +319,11 @@ try {
     Invoke-CepPanelValidation $cepSource "Illustrator source CEP validation"
 
     Copy-Item -LiteralPath $cepSource -Destination $panelStage -Recurse -Force
+    Install-CepPanelCompatTransport $panelStage
     Enable-CepPanelAutoStart $panelStage
     Invoke-CepPanelValidation $panelStage "Illustrator staged CEP validation"
     Test-CepPanelAutoStart $panelStage "Illustrator staged CEP auto-start"
+    Test-CepPanelCompatTransport $panelStage "Illustrator staged CEP compatibility transport"
 
     $nodeModules = Join-Path $source "cep-extension\node_modules"
     if (Test-Path -LiteralPath $nodeModules) {
@@ -290,6 +337,7 @@ try {
         package_version = $ExpectedPackageVersion
         python_version = $PythonVersion
         extension_id = $ExtensionId
+        cep_transport = "compat-v1"
         installed_utc = [DateTime]::UtcNow.ToString("o")
     }
     $metadata | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $stagingRoot "install-metadata.json") -Encoding UTF8
@@ -333,6 +381,7 @@ try {
     }
     Invoke-CepPanelValidation $PanelTarget "Installed Illustrator CEP validation"
     Test-CepPanelAutoStart $PanelTarget "Installed Illustrator CEP auto-start"
+    Test-CepPanelCompatTransport $PanelTarget "Installed Illustrator CEP compatibility transport"
     $manifest = Join-Path $PanelTarget "CSXS\manifest.xml"
     if (-not (Test-Path -LiteralPath $manifest)) {
         throw "Installed Illustrator CEP manifest missing: $manifest"
