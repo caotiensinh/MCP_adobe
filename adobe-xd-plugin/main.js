@@ -167,6 +167,33 @@ function applyMutation(item, selection) {
   throw new Error(`unsupported queued XD mutation: ${item.method}`);
 }
 
+function applyDirectMutation(method, params) {
+  let queuedMethod = null;
+  if (method === "xd.direct.rectangle_create") {
+    queuedMethod = "xd.queue.rectangle_create";
+  } else {
+    throw new Error(`unsupported direct XD mutation: ${method}`);
+  }
+
+  let result = null;
+  application.editDocument(
+    { editLabel: "MCP Adobe Direct" },
+    function(selection) {
+      result = applyMutation({ method: queuedMethod, params: params || {} }, selection);
+      try {
+        snapshot(selection, selection.insertionParent);
+      } catch (_) {}
+    }
+  );
+
+  return {
+    status: "applied",
+    approval_required: false,
+    method,
+    result
+  };
+}
+
 function applyPending() {
   if (pendingWrites.length === 0) return;
 
@@ -241,6 +268,10 @@ function dispatch(method, params) {
 
   if (method === "xd.selection.get") {
     return { items: latestSnapshot.selection || [] };
+  }
+
+  if (method === "xd.direct.rectangle_create") {
+    return applyDirectMutation(method, params || {});
   }
 
   if (method === "xd.queue.status") {
