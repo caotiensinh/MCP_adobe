@@ -1,0 +1,111 @@
+name: Diagnose Adobe XD UI tree
+
+on:
+  push:
+    branches: [feat/xd-live-interaction]
+    paths:
+      - ".github/workflows/diagnose-xd-ui.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Dump XD UI Automation menu tree
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class XdUiNative {
+              [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+              [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+          }
+          '@
+
+          function Get-Xd {
+            Get-Process -ErrorAction SilentlyContinue |
+              Where-Object {
+                ($_.ProcessName -match '^(XD|AdobeXD)$' -or $_.MainWindowTitle -match 'Adobe XD') -and
+                $_.MainWindowHandle -ne 0
+              } |
+              Select-Object -First 1
+          }
+
+          $xd=Get-Xd
+          if(-not $xd){
+            $start=Get-StartApps -ErrorAction SilentlyContinue |
+              Where-Object {$_.Name -match '^Adobe XD$|Adobe.*XD'} |
+              Select-Object -First 1
+            if(-not $start){ throw 'Adobe XD Start App registration missing' }
+            Start-Process explorer.exe "shell:AppsFolder\$($start.AppID)"
+            $deadline=(Get-Date).AddSeconds(45)
+            do {
+              Start-Sleep -Seconds 1
+              $xd=Get-Xd
+            } until($xd -or (Get-Date) -gt $deadline)
+          }
+          if(-not $xd){ throw 'Adobe XD interactive window unavailable' }
+          [void][XdUiNative]::ShowWindow($xd.MainWindowHandle,9)
+          [void][XdUiNative]::SetForegroundWindow($xd.MainWindowHandle)
+          Start-Sleep -Milliseconds 800
+          Write-Host "XD_UI_PID=$($xd.Id) TITLE=$($xd.MainWindowTitle)"
+
+          function Dump-Elements {
+            param([string]$Stage)
+            $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
+            if(-not $root){ throw 'UIA root unavailable' }
+            $trueCond=[System.Windows.Automation.Condition]::TrueCondition
+            $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$trueCond)
+            Write-Host "XD_UI_DUMP_BEGIN stage=$Stage count=$($all.Count)"
+            for($i=0;$i -lt $all.Count;$i++){
+              $e=$all.Item($i)
+              $ct=''
+              try { $ct=$e.Current.ControlType.ProgrammaticName } catch {}
+              if($ct -notmatch 'Menu|MenuItem|Button|TabItem'){ continue }
+              $name='';$aid='';$access='';$accel='';$enabled=''
+              try{$name=$e.Current.Name}catch{}
+              try{$aid=$e.Current.AutomationId}catch{}
+              try{$access=$e.Current.AccessKey}catch{}
+              try{$accel=$e.Current.AcceleratorKey}catch{}
+              try{$enabled=$e.Current.IsEnabled}catch{}
+              Write-Host "XD_UI_ELEMENT INDEX=$i TYPE=$ct NAME=[$name] AID=[$aid] ACCESS=[$access] ACCEL=[$accel] ENABLED=$enabled"
+            }
+            Write-Host "XD_UI_DUMP_END stage=$Stage"
+          }
+
+          Dump-Elements -Stage 'closed'
+
+          # Open each visible top-level menu candidate via ExpandCollapse/Invoke and dump descendants.
+          $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
+          $menuCond=New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+            [System.Windows.Automation.ControlType]::MenuItem
+          )
+          $menus=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$menuCond)
+          $limit=[Math]::Min($menus.Count,20)
+          for($i=0;$i -lt $limit;$i++){
+            $item=$menus.Item($i)
+            $name=''
+            try{$name=$item.Current.Name}catch{}
+            if([string]::IsNullOrWhiteSpace($name)){continue}
+            try {
+              $pattern=$item.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+              $pattern.Expand()
+              Start-Sleep -Milliseconds 400
+              Write-Host "XD_UI_EXPAND=PASS INDEX=$i NAME=[$name]"
+              Dump-Elements -Stage ("expanded-"+$i)
+              $pattern.Collapse()
+              Start-Sleep -Milliseconds 200
+            } catch {
+              Write-Host "XD_UI_EXPAND=SKIP INDEX=$i NAME=[$name] ERROR=$($_.Exception.Message)"
+            }
+          }
