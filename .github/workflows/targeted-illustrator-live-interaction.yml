@@ -172,6 +172,16 @@ jobs:
 
           STEPS = [
               {
+                  "label": "00 document",
+                  "capability": "creative.document.create",
+                  "arguments": {
+                      "width": 900,
+                      "height": 600,
+                      "color_mode": "RGB",
+                      "name": "ChatGPT MCP Visual Live Build",
+                  },
+              },
+              {
                   "label": "01 clean canvas",
                   "capability": "creative.shape.rectangle",
                   "arguments": {
