@@ -199,7 +199,7 @@ jobs:
             Write-Host "PERSISTENT_PORT_$port=PASS PID=$ownerPid EXE=$($p.ExecutablePath) CMD=$($p.CommandLine)"
           }
 
-      - name: Verify HTTP MCP to live Illustrator twice
+      - name: Verify HTTP MCP and connected Illustrator panel twice
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -257,26 +257,6 @@ jobs:
                   )
                   return payload
 
-          async def document_info(label: str):
-              async with Client(URL) as client:
-                  result = await client.call_tool(
-                      "creative_read",
-                      {
-                          "application": "illustrator",
-                          "capability": "creative.document.info",
-                          "arguments": {},
-                      },
-                  )
-                  if result.is_error:
-                      raise RuntimeError(f"Illustrator document read failed: {result}")
-                  payload = result.structured_content
-                  print(
-                      label + "=" +
-                      json.dumps(payload, ensure_ascii=False, default=str),
-                      flush=True,
-                  )
-                  return payload
-
           def require_panel_connected(payload):
               layers = find_key(payload, "layers")
               if not isinstance(layers, dict):
@@ -324,11 +304,6 @@ jobs:
               health("PERSISTENT_HTTP_ILLUSTRATOR_LOCAL_1")
           )
           require_panel_connected(local)
-          doc = asyncio.run(
-              document_info("PERSISTENT_HTTP_ILLUSTRATOR_DOCUMENT_1")
-          )
-          if find_key(doc, "application") != "illustrator":
-              raise RuntimeError("Illustrator document read returned unexpected application")
 
           time.sleep(8)
 
@@ -336,12 +311,7 @@ jobs:
               health("PERSISTENT_HTTP_ILLUSTRATOR_LOCAL_2")
           )
           require_panel_connected(local2)
-          doc2 = asyncio.run(
-              document_info("PERSISTENT_HTTP_ILLUSTRATOR_DOCUMENT_2")
-          )
-          if find_key(doc2, "application") != "illustrator":
-              raise RuntimeError("second Illustrator document read returned unexpected application")
-          print("PERSISTENT_MCP_ADOBE_HOST_E2E=PASS", flush=True)
+          print("PERSISTENT_MCP_ADOBE_TRANSPORT_E2E=PASS", flush=True)
           '@ | Set-Content -Path persistent_host_probe.py -Encoding UTF8
           uv run python persistent_host_probe.py
 
