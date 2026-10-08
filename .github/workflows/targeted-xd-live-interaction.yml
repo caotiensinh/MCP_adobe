@@ -142,12 +142,100 @@ jobs:
           Write-Host 'XD_PLUGIN_RELOAD_REQUEST=PASS'
           Start-Sleep -Seconds 5
 
-          $deadline=(Get-Date).AddSeconds(30)
+          $deadline=(Get-Date).AddSeconds(8)
           do {
             Start-Sleep -Milliseconds 500
             $connected=@(Get-NetTCPConnection -State Established -LocalPort 8765 -ErrorAction SilentlyContinue)
           } until($connected.Count -gt 0 -or (Get-Date) -gt $deadline)
-          if($connected.Count -eq 0){ throw 'XD plugin did not auto-connect to bridge port 8765 after reload' }
+
+          if($connected.Count -eq 0){
+            Add-Type -AssemblyName UIAutomationClient
+            Add-Type -AssemblyName UIAutomationTypes
+
+            function Find-UiElementByName {
+              param(
+                [System.Windows.Automation.AutomationElement]$Root,
+                [string]$Name
+              )
+              $condition=New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::NameProperty,
+                $Name
+              )
+              return $Root.FindFirst(
+                [System.Windows.Automation.TreeScope]::Descendants,
+                $condition
+              )
+            }
+
+            $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
+            if(-not $root){ throw 'UI Automation could not attach to the Adobe XD window' }
+
+            $bridgeItem=Find-UiElementByName -Root $root -Name 'MCP Adobe Bridge'
+            if(-not $bridgeItem){
+              $pluginsMenu=Find-UiElementByName -Root $root -Name 'Plugins'
+              if($pluginsMenu){
+                try {
+                  $expand=$pluginsMenu.GetCurrentPattern(
+                    [System.Windows.Automation.ExpandCollapsePattern]::Pattern
+                  )
+                  $expand.Expand()
+                  Start-Sleep -Milliseconds 700
+                } catch {
+                  [void][XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
+                  [System.Windows.Forms.SendKeys]::SendWait('%p')
+                  Start-Sleep -Milliseconds 700
+                }
+              } else {
+                [void][XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
+                [System.Windows.Forms.SendKeys]::SendWait('%p')
+                Start-Sleep -Milliseconds 700
+              }
+              $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
+              $bridgeItem=Find-UiElementByName -Root $root -Name 'MCP Adobe Bridge'
+            }
+
+            if(-not $bridgeItem){
+              $menuNames=@()
+              $menuCondition=New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                [System.Windows.Automation.ControlType]::MenuItem
+              )
+              $items=$root.FindAll(
+                [System.Windows.Automation.TreeScope]::Descendants,
+                $menuCondition
+              )
+              foreach($item in $items){
+                if($item.Current.Name){ $menuNames += $item.Current.Name }
+              }
+              throw "XD MCP panel menu item not found. Visible menu items: $($menuNames -join ' | ')"
+            }
+
+            try {
+              $invoke=$bridgeItem.GetCurrentPattern(
+                [System.Windows.Automation.InvokePattern]::Pattern
+              )
+              $invoke.Invoke()
+            } catch {
+              try {
+                $select=$bridgeItem.GetCurrentPattern(
+                  [System.Windows.Automation.SelectionItemPattern]::Pattern
+                )
+                $select.Select()
+              } catch {
+                throw "XD MCP panel item found but could not be invoked: $($_.Exception.Message)"
+              }
+            }
+            Write-Host 'XD_PLUGIN_PANEL_OPEN_REQUEST=PASS'
+            Start-Sleep -Seconds 3
+
+            $deadline=(Get-Date).AddSeconds(25)
+            do {
+              Start-Sleep -Milliseconds 500
+              $connected=@(Get-NetTCPConnection -State Established -LocalPort 8765 -ErrorAction SilentlyContinue)
+            } until($connected.Count -gt 0 -or (Get-Date) -gt $deadline)
+          }
+
+          if($connected.Count -eq 0){ throw 'XD plugin did not connect to bridge port 8765 after opening MCP Adobe Bridge panel' }
           Write-Host "XD_PLUGIN_AUTOCONNECT=PASS connections=$($connected.Count)"
 
           $xd=Get-XdProcess
