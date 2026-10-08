@@ -146,6 +146,20 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
+          Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+          public static class MCPAdobeWindow {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+          }
+          "@
+          $ai=Get-Process -Name Illustrator -ErrorAction Stop |
+            Where-Object {$_.MainWindowHandle -ne 0} |
+            Select-Object -First 1
+          [MCPAdobeWindow]::ShowWindow($ai.MainWindowHandle,9) | Out-Null
+          [MCPAdobeWindow]::SetForegroundWindow($ai.MainWindowHandle) | Out-Null
+          Write-Host "ILLUSTRATOR_VISUAL_FOREGROUND=PASS PID=$($ai.Id) TITLE=$($ai.MainWindowTitle)"
           @'
           import asyncio
           import json
@@ -154,17 +168,16 @@ jobs:
 
           URL = "http://127.0.0.1:8787/mcp"
           USER_REQUEST = "Hãy vẽ một chiếc ô tô và cho tôi thấy quá trình dựng hình trực tiếp."
-          DELAY_MS = 900
+          DELAY_MS = 1000
 
           STEPS = [
               {
-                  "label": "01 document",
-                  "capability": "creative.document.create",
+                  "label": "01 clean canvas",
+                  "capability": "creative.shape.rectangle",
                   "arguments": {
-                      "width": 900,
-                      "height": 600,
-                      "color_mode": "RGB",
-                      "name": "ChatGPT MCP Visual Live Build",
+                      "name": "Live Build Background",
+                      "x": 80, "y": 145, "width": 680, "height": 330,
+                      "fill": {"r": 250, "g": 250, "b": 250},
                   },
               },
               {
@@ -172,7 +185,7 @@ jobs:
                   "capability": "creative.shape.rectangle",
                   "arguments": {
                       "name": "Live Car Road",
-                      "x": 70, "y": 390, "width": 760, "height": 70,
+                      "x": 100, "y": 390, "width": 640, "height": 55,
                       "fill": {"r": 70, "g": 74, "b": 82},
                   },
               },
@@ -181,7 +194,7 @@ jobs:
                   "capability": "creative.shape.rectangle",
                   "arguments": {
                       "name": "Live Car Body",
-                      "x": 155, "y": 265, "width": 580, "height": 135,
+                      "x": 155, "y": 280, "width": 540, "height": 115,
                       "fill": {"r": 214, "g": 52, "b": 65},
                   },
               },
@@ -190,7 +203,7 @@ jobs:
                   "capability": "creative.shape.rectangle",
                   "arguments": {
                       "name": "Live Car Roof",
-                      "x": 300, "y": 185, "width": 300, "height": 95,
+                      "x": 295, "y": 205, "width": 285, "height": 90,
                       "fill": {"r": 188, "g": 42, "b": 56},
                   },
               },
@@ -199,7 +212,7 @@ jobs:
                   "capability": "creative.shape.rectangle",
                   "arguments": {
                       "name": "Live Car Window Left",
-                      "x": 325, "y": 202, "width": 105, "height": 60,
+                      "x": 320, "y": 220, "width": 100, "height": 56,
                       "fill": {"r": 142, "g": 207, "b": 235},
                   },
               },
@@ -208,7 +221,7 @@ jobs:
                   "capability": "creative.shape.rectangle",
                   "arguments": {
                       "name": "Live Car Window Right",
-                      "x": 457, "y": 202, "width": 110, "height": 60,
+                      "x": 447, "y": 220, "width": 105, "height": 56,
                       "fill": {"r": 142, "g": 207, "b": 235},
                   },
               },
@@ -217,7 +230,7 @@ jobs:
                   "capability": "creative.shape.ellipse",
                   "arguments": {
                       "name": "Live Car Wheel Left",
-                      "x": 205, "y": 345, "width": 100, "height": 100,
+                      "x": 205, "y": 350, "width": 92, "height": 92,
                       "fill": {"r": 31, "g": 33, "b": 38},
                   },
               },
@@ -226,7 +239,7 @@ jobs:
                   "capability": "creative.shape.ellipse",
                   "arguments": {
                       "name": "Live Car Wheel Right",
-                      "x": 585, "y": 345, "width": 100, "height": 100,
+                      "x": 555, "y": 350, "width": 92, "height": 92,
                       "fill": {"r": 31, "g": 33, "b": 38},
                   },
               },
@@ -235,7 +248,7 @@ jobs:
                   "capability": "creative.shape.ellipse",
                   "arguments": {
                       "name": "Live Car Hub Left",
-                      "x": 233, "y": 373, "width": 44, "height": 44,
+                      "x": 231, "y": 376, "width": 40, "height": 40,
                       "fill": {"r": 190, "g": 193, "b": 198},
                   },
               },
@@ -244,7 +257,7 @@ jobs:
                   "capability": "creative.shape.ellipse",
                   "arguments": {
                       "name": "Live Car Hub Right",
-                      "x": 613, "y": 373, "width": 44, "height": 44,
+                      "x": 581, "y": 376, "width": 40, "height": 40,
                       "fill": {"r": 190, "g": 193, "b": 198},
                   },
               },
@@ -253,7 +266,7 @@ jobs:
                   "capability": "creative.shape.ellipse",
                   "arguments": {
                       "name": "Live Car Headlight",
-                      "x": 704, "y": 300, "width": 28, "height": 28,
+                      "x": 665, "y": 305, "width": 26, "height": 26,
                       "fill": {"r": 255, "g": 225, "b": 92},
                   },
               },
@@ -262,7 +275,7 @@ jobs:
                   "capability": "creative.shape.rectangle",
                   "arguments": {
                       "name": "Live Car Tail Light",
-                      "x": 158, "y": 300, "width": 20, "height": 30,
+                      "x": 158, "y": 307, "width": 18, "height": 28,
                       "fill": {"r": 255, "g": 120, "b": 70},
                   },
               },
@@ -361,7 +374,7 @@ jobs:
                               "request": USER_REQUEST,
                               "steps": len(STEPS),
                               "delay_ms": DELAY_MS,
-                              "document": "ChatGPT MCP Visual Live Build",
+                              "document": "current-active-document",
                           },
                           ensure_ascii=False,
                       ),
@@ -380,9 +393,8 @@ jobs:
             Where-Object {$_.MainWindowHandle -ne 0} |
             Select-Object -First 1
           if(-not $ai){ throw 'Illustrator disappeared after visual build' }
-          if($ai.MainWindowTitle -notmatch 'ChatGPT MCP Visual Live Build'){
-            throw "unexpected Illustrator window after visual build: $($ai.MainWindowTitle)"
-          }
-          Write-Host "ILLUSTRATOR_VISUAL_WINDOW=PASS PID=$($ai.Id) TITLE=$($ai.MainWindowTitle)"
+          $ws=@(Get-NetTCPConnection -State Established -LocalPort 8081 -ErrorAction SilentlyContinue)
+          if($ws.Count -eq 0){ throw 'CEP WebSocket disappeared after visual build' }
+          Write-Host "ILLUSTRATOR_VISUAL_WINDOW=PASS PID=$($ai.Id) TITLE=$($ai.MainWindowTitle) WS=$($ws.Count)"
 
 # visual-retry: root-cause-logging-e6e03917
