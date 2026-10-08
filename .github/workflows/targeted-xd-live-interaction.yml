@@ -83,7 +83,7 @@ jobs:
             Select-Object -First 1
           if(-not $installed){ throw 'installed XD MCP plugin main.js not found' }
           $raw=Get-Content -LiteralPath $installed -Raw
-          if(-not $raw.Contains('xd.direct.rectangle_create')){ throw 'installed XD plugin does not contain direct rectangle probe' }
+          if(-not $raw.Contains('Apply pending')){ throw 'installed XD plugin does not contain one-click approval UI' }
           if(-not $raw.Contains('connect();')){ throw 'installed XD plugin does not contain auto-connect bootstrap' }
           Write-Host "XD_PLUGIN_INSTALL=PASS PATH=$installed"
 
@@ -147,6 +147,19 @@ jobs:
             Start-Sleep -Milliseconds 500
             $connected=@(Get-NetTCPConnection -State Established -LocalPort 8765 -ErrorAction SilentlyContinue)
           } until($connected.Count -gt 0 -or (Get-Date) -gt $deadline)
+
+          if($connected.Count -eq 0){
+            [void][XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
+            [System.Windows.Forms.SendKeys]::SendWait('%p')
+            Start-Sleep -Milliseconds 500
+            [System.Windows.Forms.SendKeys]::SendWait('MCP Adobe Bridge')
+            Start-Sleep -Milliseconds 300
+            [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+            Write-Host 'XD_PLUGIN_MENU_TYPEAHEAD_REQUEST=PASS'
+            Start-Sleep -Seconds 3
+
+            $connected=@(Get-NetTCPConnection -State Established -LocalPort 8765 -ErrorAction SilentlyContinue)
+          }
 
           if($connected.Count -eq 0){
             Add-Type -AssemblyName UIAutomationClient
@@ -247,7 +260,7 @@ jobs:
           Write-Host 'XD_TEST_DOCUMENT_REQUEST=CTRL+N'
           Start-Sleep -Seconds 4
 
-      - name: Direct MCP rectangle without Apply pending
+      - name: Queue visual composition through MCP live-build
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -258,7 +271,80 @@ jobs:
           from mcp import Client
 
           URL = "http://127.0.0.1:8787/mcp"
-          NAME = "MCP XD Direct Rectangle"
+          STEPS = [
+              {
+                  "label": "card background",
+                  "capability": "creative.shape.rectangle",
+                  "arguments": {
+                      "name": "MCP XD Card",
+                      "width": 520,
+                      "height": 320,
+                      "x": 120,
+                      "y": 100,
+                      "fill": "#1F2937",
+                  },
+              },
+              {
+                  "label": "accent",
+                  "capability": "creative.shape.rectangle",
+                  "arguments": {
+                      "name": "MCP XD Accent",
+                      "width": 520,
+                      "height": 18,
+                      "x": 120,
+                      "y": 100,
+                      "fill": "#4F7CFF",
+                  },
+              },
+              {
+                  "label": "title",
+                  "capability": "creative.text.create",
+                  "arguments": {
+                      "name": "MCP XD Title",
+                      "text": "MCP Adobe XD",
+                      "fontSize": 32,
+                      "x": 165,
+                      "y": 165,
+                      "fill": "#FFFFFF",
+                  },
+              },
+              {
+                  "label": "subtitle",
+                  "capability": "creative.text.create",
+                  "arguments": {
+                      "name": "MCP XD Subtitle",
+                      "text": "One-click approved composition",
+                      "fontSize": 18,
+                      "x": 165,
+                      "y": 220,
+                      "fill": "#D1D5DB",
+                  },
+              },
+              {
+                  "label": "button",
+                  "capability": "creative.shape.rectangle",
+                  "arguments": {
+                      "name": "MCP XD Button",
+                      "width": 210,
+                      "height": 58,
+                      "x": 165,
+                      "y": 300,
+                      "fill": "#4F7CFF",
+                  },
+              },
+              {
+                  "label": "button label",
+                  "capability": "creative.text.create",
+                  "arguments": {
+                      "name": "MCP XD Button Label",
+                      "text": "Apply once",
+                      "fontSize": 20,
+                      "x": 210,
+                      "y": 318,
+                      "fill": "#FFFFFF",
+                  },
+              },
+          ]
 
           def walk(value):
               yield value
@@ -305,11 +391,6 @@ jobs:
 
           async def main():
               async with Client(URL) as client:
-                  listed = await client.list_tools()
-                  names = {tool.name for tool in listed.tools}
-                  if "creative_write" not in names:
-                      raise RuntimeError(f"creative_write missing: {sorted(names)}")
-
                   health = await call(client, "creative_read", "creative.health", {})
                   if find_key(health, "bridge") != "connected":
                       raise RuntimeError("XD bridge is not connected")
@@ -318,57 +399,183 @@ jobs:
                   before_count = find_key(before, "rootChildren")
                   if not isinstance(before_count, int):
                       before_count = 0
-                  print(f"XD_DIRECT_BASELINE rootChildren={before_count}", flush=True)
 
-                  written = await call(
-                      client,
-                      "creative_write",
-                      "creative.shape.rectangle",
+                  result = await client.call_tool(
+                      "creative_live_build",
                       {
-                          "name": NAME,
-                          "width": 220,
-                          "height": 130,
-                          "x": 80,
-                          "y": 80,
-                          "fill": "#F05A67",
+                          "application": "xd",
+                          "steps": STEPS,
+                          "step_delay_ms": 150,
                       },
                   )
-                  status = find_key(written, "status")
-                  approval = find_key(written, "approval_required")
-                  node_name = find_key(written, "name")
-                  if status != "applied":
-                      raise RuntimeError(f"XD direct write was not applied: status={status}")
-                  if approval is not False:
-                      raise RuntimeError(f"XD direct write still requires approval: {approval}")
-                  if node_name != NAME:
-                      raise RuntimeError(f"XD direct write returned unexpected node name: {node_name}")
-                  print("XD_DIRECT_WRITE_RESPONSE=PASS", flush=True)
-
-                  after_count = None
-                  for _ in range(20):
-                      await asyncio.sleep(0.25)
-                      after = await call(client, "creative_read", "creative.document.info", {})
-                      after_count = find_key(after, "rootChildren")
-                      if isinstance(after_count, int) and after_count > before_count:
-                          break
-                  if not isinstance(after_count, int) or after_count <= before_count:
-                      raise RuntimeError(
-                          f"XD canvas did not read back new child: before={before_count} after={after_count}"
-                      )
-
-                  final_health = await call(client, "creative_read", "creative.health", {})
-                  pending = find_key(final_health, "pending_count")
-                  if pending != 0:
-                      raise RuntimeError(f"XD direct write left pending approvals: {pending}")
-
                   print(
-                      "XD_DIRECT_INTERACTION=PASS " +
+                      "XD_LIVE_BUILD_QUEUE=" +
                       json.dumps(
                           {
-                              "name": NAME,
+                              "is_error": result.is_error,
+                              "structured": result.structured_content,
+                              "content": [str(x) for x in result.content],
+                          },
+                          ensure_ascii=False,
+                          default=str,
+                      ),
+                      flush=True,
+                  )
+                  if result.is_error:
+                      raise RuntimeError(f"XD creative_live_build queue failed: {result}")
+                  payload = result.structured_content
+                  if not isinstance(payload, Mapping):
+                      raise RuntimeError("XD live-build returned no structured payload")
+                  if payload.get("steps_completed") != len(STEPS):
+                      raise RuntimeError(
+                          f"XD queue incomplete: {payload.get('steps_completed')}/{len(STEPS)}"
+                      )
+
+                  queued_health = await call(client, "creative_read", "creative.health", {})
+                  pending = find_key(queued_health, "pending_count")
+                  if pending != len(STEPS):
+                      raise RuntimeError(
+                          f"XD pending approval count mismatch: expected={len(STEPS)} actual={pending}"
+                      )
+
+                  Path = __import__("pathlib").Path
+                  Path("xd_one_click_state.json").write_text(
+                      json.dumps(
+                          {
                               "before_rootChildren": before_count,
-                              "after_rootChildren": after_count,
-                              "approval_required": False,
+                              "expected_created": len(STEPS),
+                              "pending": pending,
+                          }
+                      ),
+                      encoding="utf-8",
+                  )
+                  print(
+                      "XD_ONE_CLICK_QUEUE=PASS " +
+                      json.dumps(
+                          {
+                              "steps": len(STEPS),
+                              "pending_count": pending,
+                              "before_rootChildren": before_count,
+                          },
+                          ensure_ascii=False,
+                      ),
+                      flush=True,
+                  )
+
+          asyncio.run(main())
+          '@ | Set-Content -Path xd_one_click_queue.py -Encoding UTF8
+          uv run python xd_one_click_queue.py
+
+      - name: Apply queued XD composition with one UI approval
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if(-not (Test-Path 'xd_one_click_state.json')){ throw 'XD one-click state file missing' }
+
+          function Get-XdProcess {
+            return Get-Process -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.ProcessName -match '^(XD|AdobeXD)$' -or
+                $_.MainWindowTitle -match 'Adobe XD'
+              } |
+              Where-Object {$_.MainWindowHandle -ne 0} |
+              Select-Object -First 1
+          }
+
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class XdApplyNative {
+              [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+              [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+          }
+          '@
+
+          $xd=Get-XdProcess
+          if(-not $xd){ throw 'Adobe XD window is unavailable for the required approval click' }
+          [void][XdApplyNative]::ShowWindow($xd.MainWindowHandle, 9)
+          if(-not [XdApplyNative]::SetForegroundWindow($xd.MainWindowHandle)){
+            throw 'failed to foreground XD for one-click approval'
+          }
+          Start-Sleep -Milliseconds 700
+
+          # The plugin focuses the Apply button whenever MCP queues new work.
+          # Enter here emulates the single user approval required by XD's official
+          # edit lifecycle. Production users click the visible Apply button once.
+          [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+          Write-Host 'XD_ONE_CLICK_APPROVAL_REQUEST=PASS'
+          Start-Sleep -Seconds 3
+
+      - name: Verify applied XD composition through MCP
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import asyncio
+          import json
+          from pathlib import Path
+          from collections.abc import Mapping
+          from mcp import Client
+
+          URL = "http://127.0.0.1:8787/mcp"
+
+          def walk(value):
+              yield value
+              if isinstance(value, Mapping):
+                  for child in value.values():
+                      yield from walk(child)
+              elif isinstance(value, (list, tuple)):
+                  for child in value:
+                      yield from walk(child)
+
+          def find_key(value, key):
+              for node in walk(value):
+                  if isinstance(node, Mapping) and key in node:
+                      return node[key]
+              return None
+
+          async def call(client, capability):
+              result = await client.call_tool(
+                  "creative_read",
+                  {
+                      "application": "xd",
+                      "capability": capability,
+                      "arguments": {},
+                  },
+              )
+              if result.is_error:
+                  raise RuntimeError(f"{capability} failed: {result}")
+              print(
+                  "XD_VERIFY_CALL=" +
+                  json.dumps(result.structured_content, ensure_ascii=False, default=str),
+                  flush=True,
+              )
+              return result.structured_content
+
+          async def main():
+              state = json.loads(Path("xd_one_click_state.json").read_text(encoding="utf-8"))
+              async with Client(URL) as client:
+                  health = await call(client, "creative.health")
+                  pending = find_key(health, "pending_count")
+                  if pending != 0:
+                      raise RuntimeError(f"XD approval did not drain pending queue: {pending}")
+
+                  document = await call(client, "creative.document.info")
+                  after = find_key(document, "rootChildren")
+                  before = int(state["before_rootChildren"])
+                  expected = int(state["expected_created"])
+                  if not isinstance(after, int) or after < before + expected:
+                      raise RuntimeError(
+                          f"XD composition read-back mismatch: before={before} expected+={expected} after={after}"
+                      )
+                  print(
+                      "XD_ONE_CLICK_COMPOSITION=PASS " +
+                      json.dumps(
+                          {
+                              "before_rootChildren": before,
+                              "after_rootChildren": after,
+                              "created": expected,
                               "pending_count": pending,
                           },
                           ensure_ascii=False,
@@ -377,8 +584,8 @@ jobs:
                   )
 
           asyncio.run(main())
-          '@ | Set-Content -Path xd_direct_probe.py -Encoding UTF8
-          uv run python xd_direct_probe.py
+          '@ | Set-Content -Path xd_one_click_verify.py -Encoding UTF8
+          uv run python xd_one_click_verify.py
 
       - name: Verify XD remains interactive
         shell: powershell

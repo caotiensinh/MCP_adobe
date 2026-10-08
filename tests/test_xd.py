@@ -25,8 +25,6 @@ class FakeXdClient:
         self.calls.append((name, dict(arguments)))
         if self.fail_timeout:
             raise TimeoutError(name)
-        if name == "xd.direct.rectangle_create":
-            return {"status": "applied", "approval_required": False, "result": {"name": arguments.get("name")}}
         if name.startswith("xd.queue.") and name != "xd.queue.status":
             return {"status": "queued", "approval_required": True, "operation_id": "xd-test-1"}
         return {"status": "ok", "method": name}
@@ -38,7 +36,7 @@ class XdAdapterTests(unittest.TestCase):
         info = adapter.info()
         self.assertTrue(info.connected)
         self.assertEqual(info.application, "xd")
-        self.assertEqual(info.transport, "uxp-websocket-approval")
+        self.assertEqual(info.transport, "uxp-websocket-one-click-approval")
         self.assertFalse(info.undo_supported)
         self.assertIn("creative.context.get", info.common_capabilities)
         self.assertIn("xd.queue.rectangle_create", info.native_capabilities)
@@ -52,22 +50,34 @@ class XdAdapterTests(unittest.TestCase):
         self.assertEqual(result["result"]["document"]["method"], "xd.document.info")
         self.assertEqual(result["result"]["selection"]["method"], "xd.selection.get")
 
-    def test_direct_rectangle_maps_to_live_bridge_method(self) -> None:
+    def test_common_visual_capabilities_queue_for_one_click_approval(self) -> None:
         client = FakeXdClient()
         registry = CapabilityRegistry()
         registry.register(XdAdapter(client))
-        result = registry.execute(
+
+        rectangle = registry.execute(
             "xd",
             "creative.shape.rectangle",
-            {"name": "XD Direct Probe", "width": 160, "height": 96, "x": 32, "y": 40, "fill": "#F05A67"},
+            {"name": "XD Card", "width": 320, "height": 180, "fill": "#112233"},
         )
+        text_result = registry.execute(
+            "xd",
+            "creative.text.create",
+            {"name": "XD Label", "text": "MCP Adobe", "x": 40, "y": 40},
+        )
+
         self.assertEqual(
             [name for name, _ in client.calls],
-            ["xd.health", "xd.direct.rectangle_create"],
+            [
+                "xd.health",
+                "xd.queue.rectangle_create",
+                "xd.queue.text_create",
+            ],
         )
-        self.assertEqual(client.calls[1][1]["name"], "XD Direct Probe")
-        self.assertFalse(result["result"]["approval_required"])
-        self.assertEqual(result["result"]["status"], "applied")
+        self.assertEqual(rectangle["result"]["status"], "queued")
+        self.assertTrue(rectangle["result"]["approval_required"])
+        self.assertEqual(text_result["result"]["status"], "queued")
+        self.assertTrue(text_result["result"]["approval_required"])
 
     def test_queue_rectangle_maps_to_exact_bridge_method(self) -> None:
         client = FakeXdClient()

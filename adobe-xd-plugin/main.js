@@ -93,6 +93,12 @@ function queueMutation(method, params) {
     queuedAt: Date.now()
   });
   renderStatus();
+  if (panel) {
+    const applyButton = panel.querySelector("#apply");
+    if (applyButton) {
+      try { applyButton.focus(); } catch (_) {}
+    }
+  }
   return {
     status: "queued",
     approval_required: true,
@@ -165,33 +171,6 @@ function applyMutation(item, selection) {
   }
 
   throw new Error(`unsupported queued XD mutation: ${item.method}`);
-}
-
-function applyDirectMutation(method, params) {
-  let queuedMethod = null;
-  if (method === "xd.direct.rectangle_create") {
-    queuedMethod = "xd.queue.rectangle_create";
-  } else {
-    throw new Error(`unsupported direct XD mutation: ${method}`);
-  }
-
-  let result = null;
-  application.editDocument(
-    { editLabel: "MCP Adobe Direct" },
-    function(selection) {
-      result = applyMutation({ method: queuedMethod, params: params || {} }, selection);
-      try {
-        snapshot(selection, selection.insertionParent);
-      } catch (_) {}
-    }
-  );
-
-  return {
-    status: "applied",
-    approval_required: false,
-    method,
-    result
-  };
 }
 
 function applyPending() {
@@ -268,10 +247,6 @@ function dispatch(method, params) {
 
   if (method === "xd.selection.get") {
     return { items: latestSnapshot.selection || [] };
-  }
-
-  if (method === "xd.direct.rectangle_create") {
-    return applyDirectMutation(method, params || {});
   }
 
   if (method === "xd.queue.status") {
@@ -382,10 +357,10 @@ function create() {
       <div class="mcp-row" id="pending">Pending approvals: 0</div>
       <div class="mcp-actions">
         <button id="reconnect">Reconnect</button>
-        <button id="apply" uxp-variant="cta" uxp-edit-label="Apply MCP Adobe operations">Apply pending</button>
+        <button id="apply" autofocus uxp-variant="cta" uxp-edit-label="Apply MCP Adobe operations">Apply pending</button>
         <button id="reject">Reject pending</button>
       </div>
-      <p class="mcp-note">Read requests use the latest XD panel snapshot. Write requests are queued and only applied after an explicit click, as required by the XD plugin edit lifecycle.</p>
+      <p class="mcp-note">Read requests use the latest XD panel snapshot. Write requests are queued and applied together with one explicit Apply click, as required by the XD plugin edit lifecycle.</p>
     </div>
   `;
 
