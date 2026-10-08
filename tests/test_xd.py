@@ -135,6 +135,26 @@ class XdAdapterTests(unittest.TestCase):
 
 
 class XdPluginContractTests(unittest.TestCase):
+    def test_external_manifest_uses_uxp_v4_entrypoint_contract(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        manifest = json.loads(
+            (root / "adobe-xd-plugin" / "manifest.external.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["manifestVersion"], 4)
+        self.assertEqual(manifest["id"], "com.mcpadobe.xd.bridge")
+        self.assertEqual(manifest["main"], "main.external.js")
+        self.assertEqual(manifest["host"]["app"], "XD")
+        entries = {entry["id"]: entry for entry in manifest["entrypoints"]}
+        self.assertEqual(entries["mcpAdobeConnect"]["type"], "command")
+        self.assertEqual(entries["mcpAdobeApply"]["type"], "command")
+        self.assertEqual(entries["mcpAdobeBridge"]["type"], "panel")
+
+    def test_external_entrypoint_wraps_shared_plugin_logic(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "adobe-xd-plugin" / "main.external.js").read_text(encoding="utf-8")
+        self.assertIn('require("./main.js")', source)
+        self.assertIn("entrypoints.setup(plugin)", source)
+
     def test_manifest_exposes_command_shortcuts(self) -> None:
         root = Path(__file__).resolve().parents[1]
         manifest = json.loads((root / "adobe-xd-plugin" / "manifest.json").read_text(encoding="utf-8"))

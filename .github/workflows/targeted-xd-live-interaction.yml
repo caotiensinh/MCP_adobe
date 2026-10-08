@@ -96,14 +96,23 @@ jobs:
           if(-not $panelEntry -or $panelEntry.type -ne 'panel'){ throw 'installed XD manifest missing official panel entry point' }
 
           $externalRoot=Join-Path $env:APPDATA 'Adobe\UXP\Plugins\External'
-          $externalDestination=Join-Path $externalRoot ([string]$manifest.id)
+          $externalDestination=Join-Path $externalRoot 'com.mcpadobe.xd.bridge'
           $externalMain=Join-Path $externalDestination 'main.js'
-          $externalManifest=Join-Path $externalDestination 'manifest.json'
-          if(-not (Test-Path -LiteralPath $externalMain)){ throw "XD External install missing main.js: $externalMain" }
-          if(-not (Test-Path -LiteralPath $externalManifest)){ throw "XD External install missing manifest.json: $externalManifest" }
+          $externalEntry=Join-Path $externalDestination 'main.external.js'
+          $externalManifestPath=Join-Path $externalDestination 'manifest.json'
+          foreach($required in @($externalMain,$externalEntry,$externalManifestPath)){
+            if(-not (Test-Path -LiteralPath $required)){ throw "XD External install missing: $required" }
+          }
           $externalRaw=Get-Content -LiteralPath $externalMain -Raw
           if(-not $externalRaw.Contains('xd-one-click-v2')){ throw 'XD External install is stale' }
-          Write-Host "XD_PLUGIN_EXTERNAL_INSTALL=PASS PATH=$externalDestination"
+          $externalManifest=Get-Content -LiteralPath $externalManifestPath -Raw | ConvertFrom-Json
+          if($externalManifest.manifestVersion -ne 4 -or $externalManifest.host.app -ne 'XD'){
+            throw 'XD External manifest contract mismatch'
+          }
+          if($externalManifest.main -ne 'main.external.js'){
+            throw 'XD External manifest main mismatch'
+          }
+          Write-Host "XD_PLUGIN_EXTERNAL_INSTALL=PASS ID=$($externalManifest.id) PATH=$externalDestination"
           Write-Host "XD_PLUGIN_INSTALL=PASS PATH=$installed"
 
       - name: Restart XD and load fresh MCP command bridge

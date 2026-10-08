@@ -134,26 +134,58 @@ if(-not $env:APPDATA){
 }
 $externalRoot=Join-Path $env:APPDATA 'Adobe\UXP\Plugins\External'
 New-Item -ItemType Directory -Force -Path $externalRoot | Out-Null
-$externalDestination=Join-Path $externalRoot ([string]$installedManifest.id)
+
+$externalManifestSource=Join-Path $source 'manifest.external.json'
+$externalEntrySource=Join-Path $source 'main.external.js'
+if(-not (Test-Path -LiteralPath $externalManifestSource)){
+    throw "XD UXP External manifest source missing: $externalManifestSource"
+}
+if(-not (Test-Path -LiteralPath $externalEntrySource)){
+    throw "XD UXP External entry source missing: $externalEntrySource"
+}
+$externalSourceManifest=Get-Content -LiteralPath $externalManifestSource -Raw | ConvertFrom-Json
+$externalDestination=Join-Path $externalRoot ([string]$externalSourceManifest.id)
 if(Test-Path -LiteralPath $externalDestination){
     Remove-Item -LiteralPath $externalDestination -Recurse -Force
 }
-Copy-Item -LiteralPath $destination -Destination $externalDestination -Recurse -Force
+New-Item -ItemType Directory -Force -Path $externalDestination | Out-Null
+Copy-Item -LiteralPath (Join-Path $source 'main.js') -Destination (Join-Path $externalDestination 'main.js') -Force
+Copy-Item -LiteralPath $externalEntrySource -Destination (Join-Path $externalDestination 'main.external.js') -Force
+Copy-Item -LiteralPath $externalManifestSource -Destination (Join-Path $externalDestination 'manifest.json') -Force
+if(Test-Path -LiteralPath $debugSource){
+    Copy-Item -LiteralPath $debugSource -Destination (Join-Path $externalDestination 'debug.json') -Force
+}
 
 $externalManifestPath=Join-Path $externalDestination 'manifest.json'
 $externalMainPath=Join-Path $externalDestination 'main.js'
-if(-not (Test-Path -LiteralPath $externalManifestPath)){
-    throw 'XD UXP External install verification failed: manifest.json missing.'
-}
-if(-not (Test-Path -LiteralPath $externalMainPath)){
-    throw 'XD UXP External install verification failed: main.js missing.'
+$externalEntryPath=Join-Path $externalDestination 'main.external.js'
+foreach($required in @($externalManifestPath,$externalMainPath,$externalEntryPath)){
+    if(-not (Test-Path -LiteralPath $required)){
+        throw "XD UXP External install verification failed: missing $required"
+    }
 }
 $externalManifest=Get-Content -LiteralPath $externalManifestPath -Raw | ConvertFrom-Json
-if([string]$externalManifest.id -ne [string]$installedManifest.id){
-    throw "XD UXP External plugin ID mismatch: $($externalManifest.id)"
+if($externalManifest.manifestVersion -ne 4){
+    throw "XD UXP External manifestVersion must be 4, got $($externalManifest.manifestVersion)"
+}
+if($externalManifest.host.app -ne 'XD'){
+    throw "XD UXP External host must be XD, got $($externalManifest.host.app)"
+}
+if([string]$externalManifest.main -ne 'main.external.js'){
+    throw "XD UXP External main must be main.external.js, got $($externalManifest.main)"
+}
+$externalEntries=@($externalManifest.entrypoints)
+if(-not ($externalEntries | Where-Object {$_.id -eq 'mcpAdobeConnect'})){
+    throw 'XD UXP External connect command entrypoint missing.'
+}
+if(-not ($externalEntries | Where-Object {$_.id -eq 'mcpAdobeApply'})){
+    throw 'XD UXP External apply command entrypoint missing.'
+}
+if(-not ($externalEntries | Where-Object {$_.id -eq 'mcpAdobeBridge'})){
+    throw 'XD UXP External panel entrypoint missing.'
 }
 
-Write-Host "XD_EXTERNAL_INSTALL=PASS PATH=$externalDestination"
+Write-Host "XD_EXTERNAL_INSTALL=PASS ID=$($externalManifest.id) PATH=$externalDestination"
 Write-Host "PASS: Adobe XD MCP bridge installed. Plugin ID=$($installedManifest.id)"
 if (-not $NoReloadHint) {
     Write-Host 'In Adobe XD: Plugins > Development > Reload Plugins (Windows shortcut: Ctrl+Shift+R).'
