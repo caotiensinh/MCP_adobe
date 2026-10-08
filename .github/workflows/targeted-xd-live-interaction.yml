@@ -263,7 +263,7 @@ jobs:
           '@ | Set-Content -Path xd_panel_reconnect_check.py -Encoding UTF8
           uv run python xd_panel_reconnect_check.py
 
-      - name: Queue visual composition through MCP live-build
+      - name: Queue XD visual composition through ordered MCP writes
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -427,44 +427,68 @@ jobs:
                   if not isinstance(before_count, int):
                       before_count = 0
 
-                  result = await client.call_tool(
-                      "creative_live_build",
-                      {
-                          "application": "xd",
-                          "steps": STEPS,
-                          "step_delay_ms": 150,
-                      },
-                  )
-                  print(
-                      "XD_LIVE_BUILD_QUEUE=" +
-                      json.dumps(
+                  queued_operations = []
+                  for index, step in enumerate(STEPS, start=1):
+                      written = await call(
+                          client,
+                          "creative_write",
+                          step["capability"],
+                          step["arguments"],
+                      )
+                      bridge_result = written.get("result") if isinstance(written, Mapping) else None
+                      if not isinstance(bridge_result, Mapping):
+                          raise RuntimeError(
+                              f"XD write {index} returned no bridge result: {written}"
+                          )
+                      bridge_operation_id = bridge_result.get("operation_id")
+                      write_pending = bridge_result.get("pending_count")
+                      status = bridge_result.get("status")
+                      if status != "queued":
+                          raise RuntimeError(
+                              f"XD write {index} was not queued: status={status}"
+                          )
+                      if not isinstance(bridge_operation_id, str) or not bridge_operation_id:
+                          raise RuntimeError(
+                              f"XD write {index} returned no bridge operation id"
+                          )
+
+                      queued_health = await call(
+                          client,
+                          "creative_read",
+                          "creative.health",
+                          {},
+                      )
+                      health_pending = find_key(queued_health, "pending_count")
+                      if write_pending != index or health_pending != index:
+                          raise RuntimeError(
+                              "XD queue retention mismatch at step "
+                              f"{index}: write={write_pending} health={health_pending}"
+                          )
+
+                      queued_operations.append(
                           {
-                              "is_error": result.is_error,
-                              "structured": result.structured_content,
-                              "content": [str(x) for x in result.content],
-                          },
-                          ensure_ascii=False,
-                          default=str,
-                      ),
-                      flush=True,
-                  )
-                  if result.is_error:
-                      raise RuntimeError(f"XD creative_live_build queue failed: {result}")
-                  payload = result.structured_content
-                  if not isinstance(payload, Mapping):
-                      raise RuntimeError("XD live-build returned no structured payload")
-                  if payload.get("steps_completed") != len(STEPS):
-                      raise RuntimeError(
-                          f"XD queue incomplete: {payload.get('steps_completed')}/{len(STEPS)}"
+                              "index": index,
+                              "label": step["label"],
+                              "capability": step["capability"],
+                              "operation_id": bridge_operation_id,
+                              "expected_name": step["arguments"].get("name"),
+                          }
+                      )
+                      print(
+                          "XD_ORDERED_QUEUE_STEP=PASS " +
+                          json.dumps(
+                              {
+                                  "index": index,
+                                  "label": step["label"],
+                                  "operation_id": bridge_operation_id,
+                                  "pending_count": health_pending,
+                              },
+                              ensure_ascii=False,
+                          ),
+                          flush=True,
                       )
 
-                  queued_health = await call(client, "creative_read", "creative.health", {})
-                  pending = find_key(queued_health, "pending_count")
-                  if pending != len(STEPS):
-                      raise RuntimeError(
-                          f"XD pending approval count mismatch: expected={len(STEPS)} actual={pending}"
-                      )
-
+                  pending = len(queued_operations)
                   Path = __import__("pathlib").Path
                   Path("xd_one_click_state.json").write_text(
                       json.dumps(
@@ -472,6 +496,7 @@ jobs:
                               "before_rootChildren": before_count,
                               "expected_created": len(STEPS),
                               "pending": pending,
+                              "operations": queued_operations,
                           }
                       ),
                       encoding="utf-8",
@@ -482,11 +507,12 @@ jobs:
                           {
                               "steps": len(STEPS),
                               "pending_count": pending,
-                              "before_rootChildren": before_count,
+                              "operations": queued_operations,
                           },
                           ensure_ascii=False,
                       ),
                       flush=True,
+                  )
                   )
 
           asyncio.run(main())
@@ -568,13 +594,13 @@ jobs:
                       return node[key]
               return None
 
-          async def call(client, capability):
+          async def call(client, capability, arguments=None):
               result = await client.call_tool(
                   "creative_read",
                   {
                       "application": "xd",
                       "capability": capability,
-                      "arguments": {},
+                      "arguments": arguments or {},
                   },
               )
               if result.is_error:
@@ -588,32 +614,83 @@ jobs:
 
           async def main():
               state = json.loads(Path("xd_one_click_state.json").read_text(encoding="utf-8"))
+              operations = state.get("operations") or []
+              expected = int(state["expected_created"])
+              if len(operations) != expected:
+                  raise RuntimeError(
+                      f"XD state lost queued operations: expected={expected} actual={len(operations)}"
+                  )
+
               async with Client(URL) as client:
                   health = await call(client, "creative.health")
                   pending = find_key(health, "pending_count")
                   if pending != 0:
                       raise RuntimeError(f"XD approval did not drain pending queue: {pending}")
 
-                  document = await call(client, "creative.document.info")
-                  after = find_key(document, "rootChildren")
-                  before = int(state["before_rootChildren"])
-                  expected = int(state["expected_created"])
-                  if not isinstance(after, int) or after < before + expected:
-                      raise RuntimeError(
-                          f"XD composition read-back mismatch: before={before} expected+={expected} after={after}"
+                  applied = []
+                  for operation in operations:
+                      payload = await call(
+                          client,
+                          "xd.queue.status",
+                          {"operation_id": operation["operation_id"]},
                       )
+                      bridge_status = payload.get("result") if isinstance(payload, Mapping) else None
+                      if not isinstance(bridge_status, Mapping):
+                          raise RuntimeError(
+                              f"XD operation status missing result: {operation['operation_id']}"
+                          )
+                      status = bridge_status.get("status")
+                      node = bridge_status.get("result")
+                      if status != "applied":
+                          raise RuntimeError(
+                              "XD queued operation was not applied: "
+                              f"{operation['operation_id']} status={status} "
+                              f"detail={json.dumps(bridge_status, ensure_ascii=False, default=str)}"
+                          )
+                      if not isinstance(node, Mapping):
+                          raise RuntimeError(
+                              f"XD applied operation has no node read-back: {operation['operation_id']}"
+                          )
+                      expected_name = operation.get("expected_name")
+                      actual_name = node.get("name")
+                      guid = node.get("guid")
+                      if expected_name and actual_name != expected_name:
+                          raise RuntimeError(
+                              f"XD node name mismatch: expected={expected_name} actual={actual_name}"
+                          )
+                      if not isinstance(guid, str) or not guid:
+                          raise RuntimeError(
+                              f"XD applied node has no guid: {operation['operation_id']}"
+                          )
+                      evidence = {
+                          "operation_id": operation["operation_id"],
+                          "name": actual_name,
+                          "guid": guid,
+                          "type": node.get("type"),
+                          "bounds": node.get("bounds"),
+                      }
+                      applied.append(evidence)
+                      print(
+                          "XD_OPERATION_READBACK=PASS " +
+                          json.dumps(evidence, ensure_ascii=False, default=str),
+                          flush=True,
+                      )
+
+                  document = await call(client, "creative.document.info")
                   print(
                       "XD_ONE_CLICK_COMPOSITION=PASS " +
                       json.dumps(
                           {
-                              "before_rootChildren": before,
-                              "after_rootChildren": after,
-                              "created": expected,
+                              "applied_count": len(applied),
                               "pending_count": pending,
+                              "nodes": applied,
+                              "document": document,
                           },
                           ensure_ascii=False,
+                          default=str,
                       ),
                       flush=True,
+                  )
                   )
 
           asyncio.run(main())
