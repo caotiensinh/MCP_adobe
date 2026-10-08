@@ -85,9 +85,10 @@ jobs:
           $raw=Get-Content -LiteralPath $installed -Raw
           if(-not $raw.Contains('Apply pending')){ throw 'installed XD plugin does not contain one-click approval UI' }
           if(-not $raw.Contains('connect();')){ throw 'installed XD plugin does not contain auto-connect bootstrap' }
+          if(-not $raw.Contains('xd-one-click-v2')){ throw 'installed XD plugin does not contain expected bridge build marker' }
           Write-Host "XD_PLUGIN_INSTALL=PASS PATH=$installed"
 
-      - name: Reload XD plugin and ensure a test document
+      - name: Restart XD on Home and load fresh MCP panel
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -102,22 +103,6 @@ jobs:
               Select-Object -First 1
           }
 
-          $xd=Get-XdProcess
-          if(-not $xd){
-            $start=Get-StartApps -ErrorAction SilentlyContinue |
-              Where-Object {$_.Name -match '^Adobe XD$|Adobe.*XD'} |
-              Select-Object -First 1
-            if(-not $start){ throw 'Adobe XD start-app registration was not found' }
-            Start-Process explorer.exe "shell:AppsFolder\$($start.AppID)"
-            $deadline=(Get-Date).AddSeconds(60)
-            do {
-              Start-Sleep -Seconds 1
-              $xd=Get-XdProcess
-            } until($xd -or (Get-Date) -gt $deadline)
-            if(-not $xd){ throw 'Adobe XD interactive window did not appear' }
-          }
-          Write-Host "XD_PROCESS=PASS PID=$($xd.Id) TITLE=$($xd.MainWindowTitle)"
-
           Add-Type -AssemblyName System.Windows.Forms
           Add-Type @'
           using System;
@@ -128,140 +113,115 @@ jobs:
           }
           '@
 
-          $runnerPid=$PID
-          $runnerProcess=Get-Process -Id $runnerPid
-          Write-Host "XD_UI_SESSIONS RUNNER_SESSION=$($runnerProcess.SessionId) XD_SESSION=$($xd.SessionId)"
-          [void][XdWindowNative]::ShowWindow($xd.MainWindowHandle, 9)
-          $foreground=[XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
-          Write-Host "XD_SET_FOREGROUND=$foreground HANDLE=$($xd.MainWindowHandle)"
-          Start-Sleep -Milliseconds 900
-          if(-not $foreground){
-            throw "failed to foreground Adobe XD via Win32; runner session=$($runnerProcess.SessionId) xd session=$($xd.SessionId)"
-          }
-          [System.Windows.Forms.SendKeys]::SendWait('^+r')
-          Write-Host 'XD_PLUGIN_RELOAD_REQUEST=PASS'
-          Start-Sleep -Seconds 5
-
-          # Create a fresh test document before opening the MCP panel so the
-          # panel remains the last active plugin UI before approval.
           $xd=Get-XdProcess
+          if($xd){
+            $title=[string]$xd.MainWindowTitle
+            Write-Host "XD_PRE_RESTART PID=$($xd.Id) TITLE=$title SESSION=$($xd.SessionId)"
+            if($title -ne 'Adobe XD'){
+              throw "BLOCKED_SAFE_XD_RESTART: active document/window detected: $title"
+            }
+            $oldPid=$xd.Id
+            [void]$xd.CloseMainWindow()
+            $deadline=(Get-Date).AddSeconds(20)
+            do {
+              Start-Sleep -Milliseconds 500
+              $remaining=Get-Process -Id $oldPid -ErrorAction SilentlyContinue
+            } until(-not $remaining -or (Get-Date) -gt $deadline)
+            if($remaining){
+              Stop-Process -Id $oldPid -Force -ErrorAction Stop
+              Start-Sleep -Seconds 2
+            }
+            Write-Host "XD_FRESH_RESTART_CLOSE=PASS OLD_PID=$oldPid"
+          }
+
+          $start=Get-StartApps -ErrorAction SilentlyContinue |
+            Where-Object {$_.Name -match '^Adobe XD$|Adobe.*XD'} |
+            Select-Object -First 1
+          if(-not $start){ throw 'Adobe XD start-app registration was not found' }
+          Start-Process explorer.exe "shell:AppsFolder\$($start.AppID)"
+          $deadline=(Get-Date).AddSeconds(60)
+          do {
+            Start-Sleep -Seconds 1
+            $xd=Get-XdProcess
+          } until($xd -or (Get-Date) -gt $deadline)
+          if(-not $xd){ throw 'Adobe XD interactive window did not appear after restart' }
+          Write-Host "XD_FRESH_RESTART_OPEN=PASS PID=$($xd.Id) TITLE=$($xd.MainWindowTitle)"
+
           [void][XdWindowNative]::ShowWindow($xd.MainWindowHandle, 9)
-          $foreground=[XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
-          if(-not $foreground){ throw 'failed to foreground Adobe XD for test-document creation' }
+          if(-not [XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)){
+            throw 'failed to foreground fresh Adobe XD window'
+          }
           Start-Sleep -Milliseconds 700
           [System.Windows.Forms.SendKeys]::SendWait('^n')
           Write-Host 'XD_TEST_DOCUMENT_REQUEST=CTRL+N'
           Start-Sleep -Seconds 4
 
-          $deadline=(Get-Date).AddSeconds(8)
+          [void][XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
+          [System.Windows.Forms.SendKeys]::SendWait('%p')
+          Start-Sleep -Milliseconds 500
+          [System.Windows.Forms.SendKeys]::SendWait('MCP Adobe Bridge')
+          Start-Sleep -Milliseconds 300
+          [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+          Write-Host 'XD_PLUGIN_MENU_TYPEAHEAD_REQUEST=PASS'
+
+          $deadline=(Get-Date).AddSeconds(30)
           do {
             Start-Sleep -Milliseconds 500
             $connected=@(Get-NetTCPConnection -State Established -LocalPort 8765 -ErrorAction SilentlyContinue)
           } until($connected.Count -gt 0 -or (Get-Date) -gt $deadline)
+          if($connected.Count -eq 0){ throw 'fresh XD plugin did not connect to bridge port 8765' }
+          Write-Host "XD_PLUGIN_FRESH_CONNECT=PASS connections=$($connected.Count)"
 
-          if($connected.Count -eq 0){
-            [void][XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
-            [System.Windows.Forms.SendKeys]::SendWait('%p')
-            Start-Sleep -Milliseconds 500
-            [System.Windows.Forms.SendKeys]::SendWait('MCP Adobe Bridge')
-            Start-Sleep -Milliseconds 300
-            [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
-            Write-Host 'XD_PLUGIN_MENU_TYPEAHEAD_REQUEST=PASS'
-            Start-Sleep -Seconds 3
+          @'
+          import asyncio
+          import json
+          from collections.abc import Mapping
+          from mcp import Client
 
-            $connected=@(Get-NetTCPConnection -State Established -LocalPort 8765 -ErrorAction SilentlyContinue)
-          }
+          def walk(value):
+              yield value
+              if isinstance(value, Mapping):
+                  for child in value.values():
+                      yield from walk(child)
+              elif isinstance(value, (list, tuple)):
+                  for child in value:
+                      yield from walk(child)
 
-          if($connected.Count -eq 0){
-            Add-Type -AssemblyName UIAutomationClient
-            Add-Type -AssemblyName UIAutomationTypes
+          def find_key(value, key):
+              for node in walk(value):
+                  if isinstance(node, Mapping) and key in node:
+                      return node[key]
+              return None
 
-            function Find-UiElementByName {
-              param(
-                [System.Windows.Automation.AutomationElement]$Root,
-                [string]$Name
-              )
-              $condition=New-Object System.Windows.Automation.PropertyCondition(
-                [System.Windows.Automation.AutomationElement]::NameProperty,
-                $Name
-              )
-              return $Root.FindFirst(
-                [System.Windows.Automation.TreeScope]::Descendants,
-                $condition
-              )
-            }
-
-            $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
-            if(-not $root){ throw 'UI Automation could not attach to the Adobe XD window' }
-
-            $bridgeItem=Find-UiElementByName -Root $root -Name 'MCP Adobe Bridge'
-            if(-not $bridgeItem){
-              $pluginsMenu=Find-UiElementByName -Root $root -Name 'Plugins'
-              if($pluginsMenu){
-                try {
-                  $expand=$pluginsMenu.GetCurrentPattern(
-                    [System.Windows.Automation.ExpandCollapsePattern]::Pattern
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as client:
+                  result = await client.call_tool(
+                      "creative_read",
+                      {
+                          "application": "xd",
+                          "capability": "creative.health",
+                          "arguments": {},
+                      },
                   )
-                  $expand.Expand()
-                  Start-Sleep -Milliseconds 700
-                } catch {
-                  [void][XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
-                  [System.Windows.Forms.SendKeys]::SendWait('%p')
-                  Start-Sleep -Milliseconds 700
-                }
-              } else {
-                [void][XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
-                [System.Windows.Forms.SendKeys]::SendWait('%p')
-                Start-Sleep -Milliseconds 700
-              }
-              $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
-              $bridgeItem=Find-UiElementByName -Root $root -Name 'MCP Adobe Bridge'
-            }
+                  if result.is_error:
+                      raise RuntimeError(f"XD health failed after fresh load: {result}")
+                  payload = result.structured_content
+                  print("XD_FRESH_HEALTH=" + json.dumps(payload, ensure_ascii=False, default=str), flush=True)
+                  if find_key(payload, "bridge_build") != "xd-one-click-v2":
+                      raise RuntimeError(
+                          "XD loaded stale plugin build: " +
+                          str(find_key(payload, "bridge_build"))
+                      )
+                  if find_key(payload, "pending_count") != 0:
+                      raise RuntimeError(
+                          "fresh XD plugin unexpectedly retained pending work: " +
+                          str(find_key(payload, "pending_count"))
+                      )
+                  print("XD_FRESH_PLUGIN_BUILD=PASS", flush=True)
 
-            if(-not $bridgeItem){
-              $menuNames=@()
-              $menuCondition=New-Object System.Windows.Automation.PropertyCondition(
-                [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-                [System.Windows.Automation.ControlType]::MenuItem
-              )
-              $items=$root.FindAll(
-                [System.Windows.Automation.TreeScope]::Descendants,
-                $menuCondition
-              )
-              foreach($item in $items){
-                if($item.Current.Name){ $menuNames += $item.Current.Name }
-              }
-              throw "XD MCP panel menu item not found. Visible menu items: $($menuNames -join ' | ')"
-            }
-
-            try {
-              $invoke=$bridgeItem.GetCurrentPattern(
-                [System.Windows.Automation.InvokePattern]::Pattern
-              )
-              $invoke.Invoke()
-            } catch {
-              try {
-                $select=$bridgeItem.GetCurrentPattern(
-                  [System.Windows.Automation.SelectionItemPattern]::Pattern
-                )
-                $select.Select()
-              } catch {
-                throw "XD MCP panel item found but could not be invoked: $($_.Exception.Message)"
-              }
-            }
-            Write-Host 'XD_PLUGIN_PANEL_OPEN_REQUEST=PASS'
-            Start-Sleep -Seconds 3
-
-            $deadline=(Get-Date).AddSeconds(25)
-            do {
-              Start-Sleep -Milliseconds 500
-              $connected=@(Get-NetTCPConnection -State Established -LocalPort 8765 -ErrorAction SilentlyContinue)
-            } until($connected.Count -gt 0 -or (Get-Date) -gt $deadline)
-          }
-
-          if($connected.Count -eq 0){ throw 'XD plugin did not connect to bridge port 8765 after opening MCP Adobe Bridge panel' }
-          Write-Host "XD_PLUGIN_AUTOCONNECT=PASS connections=$($connected.Count)"
-
+          asyncio.run(main())
+          '@ | Set-Content -Path xd_fresh_plugin_check.py -Encoding UTF8
+          uv run python xd_fresh_plugin_check.py
 
       - name: Queue visual composition through MCP live-build
         shell: powershell

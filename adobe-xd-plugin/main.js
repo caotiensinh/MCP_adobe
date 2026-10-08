@@ -4,6 +4,7 @@ const { entrypoints } = require("uxp");
 
 const BRIDGE_URL = "ws://127.0.0.1:8765";
 const STATUS_LIMIT = 200;
+const BRIDGE_BUILD = "xd-one-click-v2";
 
 let panel;
 let socket;
@@ -257,7 +258,8 @@ function dispatch(method, params) {
       version: application.version,
       appLanguage: application.appLanguage,
       bridge: "connected",
-      pending_count: pendingWrites.length
+      pending_count: pendingWrites.length,
+      bridge_build: BRIDGE_BUILD
     };
   }
 
@@ -316,7 +318,8 @@ function connect() {
       type: "hello",
       application: "xd",
       version: application.version,
-      protocol: 1
+      protocol: 1,
+      bridgeBuild: BRIDGE_BUILD
     });
     renderStatus();
   };
