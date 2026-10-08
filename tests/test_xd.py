@@ -25,6 +25,8 @@ class FakeXdClient:
         self.calls.append((name, dict(arguments)))
         if self.fail_timeout:
             raise TimeoutError(name)
+        if name == "xd.queue.clear":
+            return {"status": "cleared", "rejected_count": 0, "pending_count": 0}
         if name.startswith("xd.queue.") and name != "xd.queue.status":
             return {"status": "queued", "approval_required": True, "operation_id": "xd-test-1"}
         return {"status": "ok", "method": name}
@@ -93,7 +95,8 @@ class XdAdapterTests(unittest.TestCase):
             ["xd.health", "xd.queue.clear"],
         )
         self.assertEqual(client.calls[1][1]["reason"], "fresh live test")
-        self.assertEqual(result["result"]["method"], "xd.queue.clear")
+        self.assertEqual(result["result"]["status"], "cleared")
+        self.assertEqual(result["result"]["pending_count"], 0)
 
     def test_queue_rectangle_maps_to_exact_bridge_method(self) -> None:
         client = FakeXdClient()
