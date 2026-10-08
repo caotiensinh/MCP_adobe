@@ -11,8 +11,10 @@ on:
       - "tests/test_illustrator_cep.py"
       - "scripts/install_local_host.ps1"
       - "scripts/install_illustrator_cep_backend.ps1"
+      - "scripts/ensure_illustrator_cep_bootstrap.ps1"
       - "scripts/install_windows.ps1"
       - "tests/test_illustrator_cep_installer_contract.py"
+      - "tests/test_illustrator_cep_bootstrap_contract.py"
       - "tests/test_server.py"
       - "tests/test_install_windows.py"
       - "tests/test_persistent_local_host.py"
@@ -54,7 +56,7 @@ jobs:
           }
           if(-not (Get-Command uv -ErrorAction SilentlyContinue)){ throw 'uv unavailable' }
           uv sync
-          uv run python -m unittest tests.test_server tests.test_install_windows tests.test_persistent_local_host -v
+          uv run python -m unittest tests.test_server tests.test_install_windows tests.test_persistent_local_host tests.test_illustrator_cep_bootstrap_contract -v
 
       - name: Ensure production Illustrator CEP backend
         shell: powershell
@@ -119,6 +121,41 @@ jobs:
           $aiPath='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
           if(-not (Test-Path $aiPath)){ throw "Illustrator executable missing: $aiPath" }
 
+          $panelRoot=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel'
+          $manifest=Join-Path $panelRoot 'CSXS\manifest.xml'
+          $bootstrapHtml=Join-Path $panelRoot 'bootstrap\index.html'
+          function Get-HashOrMissing([string]$Path) {
+            if(-not (Test-Path -LiteralPath $Path)){ return 'MISSING' }
+            return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
+          }
+          $manifestBefore=Get-HashOrMissing $manifest
+          $bootstrapBefore=Get-HashOrMissing $bootstrapHtml
+          $legacyBootstrapTransport=$false
+          if(Test-Path -LiteralPath $bootstrapHtml){
+            $bootstrapText=[IO.File]::ReadAllText($bootstrapHtml)
+            $legacyBootstrapTransport=(
+              $bootstrapText.Contains('new WebSocket') -or
+              $bootstrapText.Contains('mcp_handle_request') -or
+              $bootstrapText.Contains('fallback transport is already executing request')
+            )
+          }
+          Write-Host "ILLUSTRATOR_BOOTSTRAP_REPAIR_BEFORE manifest=$manifestBefore html=$bootstrapBefore legacy_transport=$legacyBootstrapTransport"
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure_illustrator_cep_bootstrap.ps1
+          if($LASTEXITCODE -ne 0){ throw "CEP bootstrap repair failed: $LASTEXITCODE" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure_illustrator_cep_bootstrap.ps1 -VerifyOnly
+          if($LASTEXITCODE -ne 0){ throw "CEP bootstrap verification failed: $LASTEXITCODE" }
+          $manifestAfter=Get-HashOrMissing $manifest
+          $bootstrapAfter=Get-HashOrMissing $bootstrapHtml
+          $cepDefinitionChanged=(
+            $manifestBefore -ne $manifestAfter -or
+            $bootstrapBefore -ne $bootstrapAfter
+          )
+          $repairedText=[IO.File]::ReadAllText($bootstrapHtml)
+          if($repairedText.Contains('new WebSocket') -or $repairedText.Contains('mcp_handle_request')){
+            throw 'bootstrap repair left host transport logic in launcher-only extension'
+          }
+          Write-Host "ILLUSTRATOR_BOOTSTRAP_REPAIR=PASS changed=$cepDefinitionChanged legacy_transport_removed=$legacyBootstrapTransport"
+
           function Test-PanelConnected {
             return @(Get-NetTCPConnection -State Established -LocalPort 8081 -ErrorAction SilentlyContinue).Count -gt 0
           }
@@ -127,12 +164,14 @@ jobs:
             Where-Object {$_.MainWindowHandle -ne 0} |
             Select-Object -First 1
 
-          if($visible -and -not (Test-PanelConnected)){
+          if($visible -and ($cepDefinitionChanged -or -not (Test-PanelConnected))){
             $title=[string]$visible.MainWindowTitle
             $safeHome=(-not $title) -or ($title -match '^Adobe Illustrator(?: 2023)?$')
             $ownedProbe=(
               $title -match '^MCP Adobe Interactive Selection Probe(?: \[Recovered\])?\*? @' -or
-              $title -match '^ChatGPT MCP Direct Interaction(?: \[Recovered\])?\*? @'
+              $title -match '^ChatGPT MCP Direct Interaction(?: \[Recovered\])?\*? @' -or
+              $title -match '^ChatGPT MCP Car Test(?: \[Recovered\])?\*? @' -or
+              $title -match '^ChatGPT MCP Visual Live Build(?: \[Recovered\])?\*? @'
             )
             if(-not $safeHome -and -not $ownedProbe){
               throw "CEP auto-start requires one safe Illustrator restart, but a non-test document/window appears active: $title"

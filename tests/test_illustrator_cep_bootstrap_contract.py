@@ -24,6 +24,11 @@ class IllustratorCepBootstrapContractTests(unittest.TestCase):
         self.assertIn('com.illustrator.mcp.panel', self.script)
         self.assertIn('../dist/CSInterface.js', self.script)
 
+    def test_bootstrap_is_launcher_only_and_cannot_own_mcp_websocket(self) -> None:
+        self.assertNotIn('new WebSocket', self.script)
+        self.assertNotIn('mcp_handle_request', self.script)
+        self.assertNotIn('fallback transport is already executing request', self.script)
+
     def test_patch_is_idempotent_and_has_verify_only_mode(self) -> None:
         self.assertIn('[switch]$VerifyOnly', self.script)
         self.assertIn('Test-BootstrapContract', self.script)
