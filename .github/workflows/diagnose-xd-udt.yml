@@ -85,4 +85,47 @@ jobs:
           }
           Write-Host 'UDT_PROGRAM_FILES_END'
 
+          Write-Host 'ADOBE_CREATIVE_CLOUD_BEGIN'
+          $ccCandidates=@(
+            'C:\Program Files\Adobe\Adobe Creative Cloud\ACC\Creative Cloud.exe',
+            'C:\Program Files\Adobe\Adobe Creative Cloud\ACC\Creative Cloud Helper.exe',
+            'C:\Program Files (x86)\Adobe\Adobe Creative Cloud\ACC\Creative Cloud.exe'
+          )
+          foreach($p in $ccCandidates){
+            if(Test-Path -LiteralPath $p){
+              Write-Host "ADOBE_CC_EXE=$p"
+            }
+          }
+          Get-StartApps -ErrorAction SilentlyContinue |
+            Where-Object {$_.Name -match 'Creative Cloud'} |
+            ForEach-Object { Write-Host "ADOBE_CC_STARTAPP NAME=$($_.Name) APPID=$($_.AppID)" }
+          Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {$_.Name -match 'Creative Cloud|Adobe Desktop Service|CoreSync|CCXProcess'} |
+            ForEach-Object { Write-Host "ADOBE_CC_PROCESS NAME=$($_.Name) PID=$($_.ProcessId) PATH=$($_.ExecutablePath)" }
+          Write-Host 'ADOBE_CREATIVE_CLOUD_END'
+
+          $upia='C:\Program Files\Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe'
+          Write-Host "ADOBE_UPIA_PATH=$upia EXISTS=$(Test-Path -LiteralPath $upia)"
+          if(Test-Path -LiteralPath $upia){
+            & $upia /version 2>&1 | ForEach-Object { Write-Host "ADOBE_UPIA_VERSION=$_"}
+            & $upia /list all 2>&1 | ForEach-Object { Write-Host "ADOBE_UPIA_LIST=$_"}
+          }
+
+          Write-Host 'ADOBE_IDENTITY_BEGIN'
+          $identityRoots=@(
+            (Join-Path $env:LOCALAPPDATA 'Adobe\OOBE'),
+            (Join-Path $env:APPDATA 'Adobe\OOBE')
+          )
+          foreach($root in $identityRoots){
+            if(Test-Path -LiteralPath $root){
+              Write-Host "ADOBE_IDENTITY_ROOT=$root"
+              Get-ChildItem -LiteralPath $root -File -ErrorAction SilentlyContinue |
+                Select-Object Name,Length,LastWriteTime |
+                ForEach-Object { Write-Host "ADOBE_IDENTITY_FILE NAME=$($_.Name) SIZE=$($_.Length) TIME=$($_.LastWriteTime.ToString('o'))" }
+            }
+          }
+          Write-Host 'ADOBE_IDENTITY_END'
+
 # diagnostic-trigger: udt-state-after-xd-loader-failure
+
+# diagnostic-trigger: creative-cloud-upia-state
