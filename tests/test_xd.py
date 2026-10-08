@@ -155,27 +155,24 @@ class XdPluginContractTests(unittest.TestCase):
         self.assertIn('require("./main.js")', source)
         self.assertIn("entrypoints.setup(plugin)", source)
 
-    def test_manifest_exposes_command_shortcuts(self) -> None:
+    def test_manifest_exposes_official_v4_entrypoints(self) -> None:
         root = Path(__file__).resolve().parents[1]
         manifest = json.loads((root / "adobe-xd-plugin" / "manifest.json").read_text(encoding="utf-8"))
-        entries = manifest["uiEntryPoints"]
-        commands = {entry.get("commandId"): entry for entry in entries if entry.get("commandId")}
-        panels = {entry.get("panelId"): entry for entry in entries if entry.get("panelId")}
-        self.assertEqual(commands["mcpAdobeConnect"]["type"], "menu")
-        self.assertEqual(commands["mcpAdobeConnect"]["shortcut"]["win"], "Ctrl+Alt+Shift+9")
-        self.assertEqual(commands["mcpAdobeApply"]["type"], "menu")
-        self.assertEqual(commands["mcpAdobeApply"]["shortcut"]["win"], "Ctrl+Alt+Shift+8")
-        self.assertEqual(panels["mcpAdobeBridge"]["type"], "panel")
+        self.assertEqual(manifest["manifestVersion"], 4)
+        entries = {entry["id"]: entry for entry in manifest["entrypoints"]}
+        self.assertEqual(entries["mcpAdobeConnect"]["type"], "command")
+        self.assertEqual(entries["mcpAdobeApply"]["type"], "command")
+        self.assertEqual(entries["mcpAdobeBridge"]["type"], "panel")
 
     def test_command_handler_applies_batch_in_xd_edit_context(self) -> None:
         root = Path(__file__).resolve().parents[1]
         source = (root / "adobe-xd-plugin" / "main.js").read_text(encoding="utf-8")
         self.assertIn("function connectCommand(selection, documentRoot)", source)
         self.assertIn("function applyPendingCommand(selection, documentRoot)", source)
-        self.assertIn("module.exports = {", source)
+        self.assertIn('require("uxp")', source)
+        self.assertIn("entrypoints.setup({", source)
         self.assertIn("mcpAdobeConnect: connectCommand", source)
         self.assertIn("mcpAdobeApply: applyPendingCommand", source)
-        self.assertNotIn("entrypoints.setup", source)
         self.assertIn("snapshot(scenegraph.selection, scenegraph.root)", source)
 
 
