@@ -1,0 +1,81 @@
+name: Diagnose Adobe XD plugin load
+
+on:
+  push:
+    branches: [feat/xd-live-interaction]
+    paths:
+      - ".github/workflows/diagnose-xd-plugin-load.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Read XD plugin load evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+
+          $packages=@(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'Adobe.*XD|XD.*Adobe'})
+          foreach($pkg in $packages){
+            Write-Host "XD_DIAG_PACKAGE NAME=$($pkg.Name) FAMILY=$($pkg.PackageFamilyName) VERSION=$($pkg.Version)"
+            $localState=Join-Path $env:LOCALAPPDATA "Packages\$($pkg.PackageFamilyName)\LocalState"
+            $develop=Join-Path $localState 'develop\MCPAdobeBridge'
+            Write-Host "XD_DIAG_LOCALSTATE=$localState"
+            Write-Host "XD_DIAG_DEVELOP=$develop"
+
+            if(Test-Path -LiteralPath $develop){
+              Get-ChildItem -LiteralPath $develop -Force |
+                ForEach-Object {
+                  Write-Host "XD_DIAG_PLUGIN_FILE PATH=$($_.FullName) SIZE=$($_.Length) TIME=$($_.LastWriteTime.ToString('o'))"
+                }
+              $manifest=Join-Path $develop 'manifest.json'
+              if(Test-Path -LiteralPath $manifest){
+                Write-Host 'XD_DIAG_MANIFEST_BEGIN'
+                Get-Content -LiteralPath $manifest -Raw
+                Write-Host 'XD_DIAG_MANIFEST_END'
+              }
+            }
+
+            foreach($name in @('AdobeXD.log','LEC.log','XDActivity.log')){
+              $path=Join-Path $localState $name
+              if(-not (Test-Path -LiteralPath $path)){
+                Write-Host "XD_DIAG_LOG_MISSING=$path"
+                continue
+              }
+              Write-Host "XD_DIAG_LOG_FILE=$path SIZE=$((Get-Item -LiteralPath $path).Length)"
+              $tail=@(Get-Content -LiteralPath $path -Tail 6000 -ErrorAction SilentlyContinue)
+              $matches=@(
+                $tail |
+                  Select-String -Pattern 'MCPADB01|MCP Adobe Bridge|MCPAdobeBridge|plugin|Plugin|manifest|Manifest|develop|Development|9345|WebSocket|error|Error|exception|Exception|shortcut|Shortcut' -Context 3,6
+              )
+              Write-Host "XD_DIAG_MATCH_COUNT=$($matches.Count)"
+              foreach($m in $matches){
+                Write-Host 'XD_DIAG_MATCH_BEGIN'
+                $m.Context.PreContext | ForEach-Object { Write-Host $_ }
+                Write-Host $m.Line
+                $m.Context.PostContext | ForEach-Object { Write-Host $_ }
+                Write-Host 'XD_DIAG_MATCH_END'
+              }
+            }
+          }
+
+          try {
+            $targets=Invoke-RestMethod -Uri 'http://127.0.0.1:9345/json' -TimeoutSec 2
+            Write-Host "XD_DIAG_DEBUG_9345=PASS targets=$(@($targets).Count)"
+            $targets | ConvertTo-Json -Depth 8 | Write-Host
+          } catch {
+            Write-Host "XD_DIAG_DEBUG_9345=FAIL error=$($_.Exception.Message)"
+          }
+
+          try {
+            Write-Host 'XD_DIAG_LOOPBACK_BEGIN'
+            & CheckNetIsolation.exe LoopbackExempt -s | Out-Host
+            Write-Host 'XD_DIAG_LOOPBACK_END'
+          } catch {
+            Write-Host "XD_DIAG_LOOPBACK_FAIL=$($_.Exception.Message)"
+          }
