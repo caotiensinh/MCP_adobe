@@ -18,8 +18,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: illustrator-live-interaction-${{ github.ref }}
-  cancel-in-progress: true
+  group: mcp-adobe-illustrator-runtime-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   live-interaction:

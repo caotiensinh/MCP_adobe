@@ -23,8 +23,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: persistent-mcp-adobe-host-${{ github.ref }}
-  cancel-in-progress: true
+  group: mcp-adobe-illustrator-runtime-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   deploy-persistent-host:
