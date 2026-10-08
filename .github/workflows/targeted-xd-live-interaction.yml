@@ -153,6 +153,12 @@ jobs:
           [void][XdWindowNative]::ShowWindow($xd.MainWindowHandle, 9)
           if(-not [XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)){ throw 'failed to foreground fresh Adobe XD window' }
           Start-Sleep -Milliseconds 700
+
+          [System.Windows.Forms.SendKeys]::SendWait('^+r')
+          Write-Host 'XD_DEVELOPMENT_PLUGIN_RELOAD_REQUEST=PASS shortcut=Ctrl+Shift+R'
+          Start-Sleep -Seconds 5
+
+          [void][XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
           [System.Windows.Forms.SendKeys]::SendWait('^n')
           Write-Host 'XD_TEST_DOCUMENT_REQUEST=CTRL+N'
           Start-Sleep -Seconds 4
