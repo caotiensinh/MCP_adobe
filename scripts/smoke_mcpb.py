@@ -16,6 +16,7 @@ EXPECTED_TOOLS = {
     "creative_discover",
     "creative_read",
     "creative_write",
+    "creative_live_build",
     "creative_authorized_write",
 }
 EXPECTED_APPLICATIONS = {"photoshop", "illustrator", "xd"}
