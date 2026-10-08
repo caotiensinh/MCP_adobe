@@ -118,10 +118,27 @@ jobs:
           }
           Write-Host "XD_PROCESS=PASS PID=$($xd.Id) TITLE=$($xd.MainWindowTitle)"
 
-          $shell=New-Object -ComObject WScript.Shell
-          if(-not $shell.AppActivate($xd.Id)){ throw 'failed to activate Adobe XD window' }
-          Start-Sleep -Milliseconds 700
-          $shell.SendKeys('^+r')
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class XdWindowNative {
+              [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+              [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+          }
+          '@
+
+          $runnerPid=$PID
+          $runnerProcess=Get-Process -Id $runnerPid
+          Write-Host "XD_UI_SESSIONS RUNNER_SESSION=$($runnerProcess.SessionId) XD_SESSION=$($xd.SessionId)"
+          [void][XdWindowNative]::ShowWindow($xd.MainWindowHandle, 9)
+          $foreground=[XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
+          Write-Host "XD_SET_FOREGROUND=$foreground HANDLE=$($xd.MainWindowHandle)"
+          Start-Sleep -Milliseconds 900
+          if(-not $foreground){
+            throw "failed to foreground Adobe XD via Win32; runner session=$($runnerProcess.SessionId) xd session=$($xd.SessionId)"
+          }
+          [System.Windows.Forms.SendKeys]::SendWait('^+r')
           Write-Host 'XD_PLUGIN_RELOAD_REQUEST=PASS'
           Start-Sleep -Seconds 5
 
@@ -134,9 +151,11 @@ jobs:
           Write-Host "XD_PLUGIN_AUTOCONNECT=PASS connections=$($connected.Count)"
 
           $xd=Get-XdProcess
-          if(-not $shell.AppActivate($xd.Id)){ throw 'failed to reactivate Adobe XD window' }
-          Start-Sleep -Milliseconds 500
-          $shell.SendKeys('^n')
+          [void][XdWindowNative]::ShowWindow($xd.MainWindowHandle, 9)
+          $foreground=[XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
+          if(-not $foreground){ throw 'failed to foreground Adobe XD for test-document creation' }
+          Start-Sleep -Milliseconds 700
+          [System.Windows.Forms.SendKeys]::SendWait('^n')
           Write-Host 'XD_TEST_DOCUMENT_REQUEST=CTRL+N'
           Start-Sleep -Seconds 4
 
