@@ -513,7 +513,6 @@ jobs:
                       ),
                       flush=True,
                   )
-                  )
 
           asyncio.run(main())
           '@ | Set-Content -Path xd_one_click_queue.py -Encoding UTF8
@@ -690,7 +689,6 @@ jobs:
                           default=str,
                       ),
                       flush=True,
-                  )
                   )
 
           asyncio.run(main())
