@@ -469,6 +469,11 @@ function applyPendingCommand(selection, documentRoot) {
 
 // Manifest v4 entrypoints are registered through UXP entrypoints.setup().
 entrypoints.setup({
+  plugin: {
+    create() {
+      connect();
+    }
+  },
   commands: {
     mcpAdobeConnect: connectCommand,
     mcpAdobeApply: applyPendingCommand

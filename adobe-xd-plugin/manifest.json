@@ -12,17 +12,31 @@
     {
       "type": "command",
       "id": "mcpAdobeConnect",
-      "label": { "default": "MCP Adobe Connect" }
+      "label": {
+        "default": "MCP Adobe Connect"
+      },
+      "shortcut": {
+        "win": "Ctrl+Alt+Shift+9",
+        "mac": "Cmd+Alt+Shift+9"
+      }
     },
     {
       "type": "command",
       "id": "mcpAdobeApply",
-      "label": { "default": "MCP Adobe Apply" }
+      "label": {
+        "default": "MCP Adobe Apply"
+      },
+      "shortcut": {
+        "win": "Ctrl+Alt+Shift+8",
+        "mac": "Cmd+Alt+Shift+8"
+      }
     },
     {
       "type": "panel",
       "id": "mcpAdobeBridge",
-      "label": { "default": "MCP Adobe Bridge" }
+      "label": {
+        "default": "MCP Adobe Bridge"
+      }
     }
   ]
 }

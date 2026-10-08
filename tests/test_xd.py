@@ -164,6 +164,20 @@ class XdPluginContractTests(unittest.TestCase):
         self.assertEqual(entries["mcpAdobeApply"]["type"], "command")
         self.assertEqual(entries["mcpAdobeBridge"]["type"], "panel")
 
+    def test_manifest_declares_language_independent_command_shortcuts(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        manifest = json.loads((root / "adobe-xd-plugin" / "manifest.json").read_text(encoding="utf-8"))
+        entries = {entry["id"]: entry for entry in manifest["entrypoints"]}
+        self.assertEqual(entries["mcpAdobeConnect"]["shortcut"]["win"], "Ctrl+Alt+Shift+9")
+        self.assertEqual(entries["mcpAdobeApply"]["shortcut"]["win"], "Ctrl+Alt+Shift+8")
+
+    def test_plugin_lifecycle_autoconnects_after_load(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "adobe-xd-plugin" / "main.js").read_text(encoding="utf-8")
+        self.assertIn("plugin: {", source)
+        self.assertIn("create() {", source)
+        self.assertIn("connect();", source)
+
     def test_command_handler_applies_batch_in_xd_edit_context(self) -> None:
         root = Path(__file__).resolve().parents[1]
         source = (root / "adobe-xd-plugin" / "main.js").read_text(encoding="utf-8")
