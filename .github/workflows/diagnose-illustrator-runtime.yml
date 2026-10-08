@@ -142,6 +142,49 @@ jobs:
           '@ | Set-Content -Path diag_mcp_health.py -Encoding UTF8
           uv run python diag_mcp_health.py
 
+      - name: Probe active Illustrator document read-only
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+            $uvDir=Join-Path $HOME '.local\bin'
+            if(Test-Path (Join-Path $uvDir 'uv.exe')) { $env:Path="$uvDir;$env:Path" }
+          }
+          @'
+          import asyncio
+          import json
+          from mcp import Client
+
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as client:
+                  result = await client.call_tool(
+                      "creative_read",
+                      {
+                          "application": "illustrator",
+                          "capability": "creative.document.info",
+                          "arguments": {},
+                      },
+                  )
+                  print(
+                      "DIAG_DOCUMENT_INFO=" +
+                      json.dumps(
+                          {
+                              "is_error": result.is_error,
+                              "structured": result.structured_content,
+                              "content": [str(x) for x in result.content],
+                          },
+                          ensure_ascii=False,
+                          default=str,
+                      ),
+                      flush=True,
+                  )
+          asyncio.run(main())
+          '@ | Set-Content -Path diag_document_info.py -Encoding UTF8
+          uv run python diag_document_info.py
+
       - name: Capture persistent host and CEP logs
         shell: powershell
         run: |
@@ -172,3 +215,5 @@ jobs:
 # diagnostic-trigger: identify-8081-client-renderer
 
 # diagnostic-trigger: serialized-retained-job-reconciliation
+
+# diagnostic-trigger: active-document-read-after-clean-restart
