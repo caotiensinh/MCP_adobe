@@ -384,3 +384,5 @@ jobs:
             throw "unexpected Illustrator window after visual build: $($ai.MainWindowTitle)"
           }
           Write-Host "ILLUSTRATOR_VISUAL_WINDOW=PASS PID=$($ai.Id) TITLE=$($ai.MainWindowTitle)"
+
+# visual-retry: root-cause-logging-e6e03917
