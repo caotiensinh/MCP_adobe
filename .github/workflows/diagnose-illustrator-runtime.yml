@@ -108,3 +108,5 @@ jobs:
           }
 
 # diagnostic-trigger: 2026-10-08-live-build-root-cause
+
+# diagnostic-trigger: visual-live-build-failure-98ea1a31
