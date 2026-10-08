@@ -4,6 +4,7 @@ import argparse
 import atexit
 import os
 import sys
+import time
 from dataclasses import dataclass
 from threading import Lock
 from typing import Any, Iterable, Mapping, Protocol
@@ -472,6 +473,143 @@ def build_server(
                 allow_overwrite=allow_overwrite,
             ),
         )
+
+    @mcp.tool(
+        title="Build artwork visibly step by step",
+        annotations=ToolAnnotations(
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=False,
+            open_world_hint=False,
+        ),
+    )
+    def creative_live_build(
+        application: str,
+        steps: list[dict[str, Any]],
+        step_delay_ms: int = 450,
+    ) -> dict[str, Any]:
+        """Execute an ordered visual build as separate reversible writes.
+
+        Clients should prefer this tool for multi-object drawing requests so the
+        user can watch the Adobe canvas change after each step instead of seeing
+        only the final composition. The client/LLM remains responsible for
+        translating natural-language intent into bounded capabilities/arguments.
+        """
+        if not isinstance(steps, list) or not steps:
+            raise ValueError("creative_live_build requires at least one step")
+        if len(steps) > 64:
+            raise ValueError("creative_live_build supports at most 64 steps")
+        if not isinstance(step_delay_ms, int) or isinstance(step_delay_ms, bool):
+            raise ValueError("step_delay_ms must be an integer")
+        if step_delay_ms < 0 or step_delay_ms > 3000:
+            raise ValueError("step_delay_ms must be between 0 and 3000")
+
+        info = next(
+            (item for item in current_runtime().describe() if item.application == application.strip().lower()),
+            None,
+        )
+        if info is None:
+            raise LookupError(f"no adapter registered for application: {application}")
+
+        normalized: list[tuple[str, str, dict[str, Any]]] = []
+        for index, raw in enumerate(steps, start=1):
+            if not isinstance(raw, Mapping):
+                raise ValueError(f"creative_live_build step {index} must be an object")
+            capability = raw.get("capability")
+            if not isinstance(capability, str) or not capability.strip():
+                raise ValueError(f"creative_live_build step {index} requires capability")
+            capability = capability.strip()
+            if not info.supports(capability):
+                raise LookupError(
+                    f"creative_live_build step {index} unsupported capability: {capability}"
+                )
+            if info.risk_for(capability) is not RiskClass.WRITE_REVERSIBLE:
+                raise PolicyError(
+                    "creative_live_build accepts only reversible visual writes; "
+                    f"step {index} {capability} is {info.risk_for(capability).value}"
+                )
+            arguments = raw.get("arguments", {})
+            if not isinstance(arguments, Mapping):
+                raise ValueError(f"creative_live_build step {index} arguments must be an object")
+            label = raw.get("label")
+            if label is None:
+                label = capability
+            if not isinstance(label, str) or not label.strip():
+                raise ValueError(f"creative_live_build step {index} label must be non-empty")
+            normalized.append((label.strip(), capability, dict(arguments)))
+
+        operation_id = str(uuid4())
+        require_oauth_profile_scope(
+            WRITE_SCOPE,
+            "creative_live_build",
+            application=application,
+            capability="visual-sequence",
+            operation_id=operation_id,
+        )
+        audit(
+            "creative_live_build",
+            "allowed",
+            application=application,
+            capability="visual-sequence",
+            operation_id=operation_id,
+        )
+
+        completed: list[dict[str, Any]] = []
+        try:
+            for index, (label, capability, arguments) in enumerate(normalized, start=1):
+                step_operation_id = f"{operation_id}:{index}"
+                payload = run_correlated_write(
+                    "creative_live_build",
+                    step_operation_id,
+                    application,
+                    capability,
+                    lambda capability=capability, arguments=arguments: current_runtime().write(
+                        application,
+                        capability,
+                        arguments,
+                    ),
+                )
+                completed.append(
+                    {
+                        "index": index,
+                        "label": label,
+                        "capability": capability,
+                        "outcome": payload.get("outcome", "accepted_unverified"),
+                        "operation_id": payload.get("operation_id"),
+                    }
+                )
+                if index < len(normalized) and step_delay_ms:
+                    time.sleep(step_delay_ms / 1000.0)
+        except Exception:
+            audit(
+                "creative_live_build",
+                "failed",
+                application=application,
+                capability="visual-sequence",
+                reason=f"stopped-after-step:{len(completed)}",
+                operation_id=operation_id,
+                outcome="partial" if completed else "failed",
+            )
+            raise
+
+        audit(
+            "creative_live_build",
+            "completed",
+            application=application,
+            capability="visual-sequence",
+            operation_id=operation_id,
+            outcome="completed",
+        )
+        return {
+            "ok": True,
+            "application": application,
+            "mode": "visual_live_build",
+            "operation_id": operation_id,
+            "step_delay_ms": step_delay_ms,
+            "steps_total": len(normalized),
+            "steps_completed": len(completed),
+            "steps": completed,
+        }
 
     @mcp.tool(
         title="Run an explicitly authorized high-risk Adobe write",

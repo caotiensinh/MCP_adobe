@@ -132,6 +132,7 @@ class McpServerContractTests(unittest.TestCase):
                 "creative_discover",
                 "creative_read",
                 "creative_write",
+                "creative_live_build",
                 "creative_authorized_write",
             },
         )
@@ -139,6 +140,8 @@ class McpServerContractTests(unittest.TestCase):
         self.assertTrue(tools["creative_read"].annotations.read_only_hint)
         self.assertFalse(tools["creative_write"].annotations.read_only_hint)
         self.assertFalse(tools["creative_write"].annotations.destructive_hint)
+        self.assertFalse(tools["creative_live_build"].annotations.read_only_hint)
+        self.assertFalse(tools["creative_live_build"].annotations.destructive_hint)
         self.assertTrue(tools["creative_authorized_write"].annotations.destructive_hint)
 
     def test_discover_returns_structured_capability_metadata(self) -> None:
@@ -193,6 +196,58 @@ class McpServerContractTests(unittest.TestCase):
         self.assertEqual(high_risk.structured_content["mode"], "authorized_write")
         self.assertTrue(high_risk.structured_content["allow_native_script"])
         self.assertEqual([name for name, _ in self.runtime.calls], ["read", "write", "authorized_write"])
+
+    def test_live_build_routes_reversible_steps_in_order(self) -> None:
+        async def scenario(client):
+            return await client.call_tool(
+                "creative_live_build",
+                {
+                    "application": "photoshop",
+                    "step_delay_ms": 0,
+                    "steps": [
+                        {
+                            "label": "base",
+                            "capability": "creative.document.create",
+                            "arguments": {"width": 800, "height": 600},
+                        },
+                        {
+                            "label": "second",
+                            "capability": "creative.document.create",
+                            "arguments": {"width": 640, "height": 480},
+                        },
+                    ],
+                },
+            )
+
+        result = asyncio.run(self._with_client(scenario))
+        self.assertFalse(result.is_error)
+        payload = result.structured_content
+        self.assertEqual(payload["mode"], "visual_live_build")
+        self.assertEqual(payload["steps_total"], 2)
+        self.assertEqual(payload["steps_completed"], 2)
+        self.assertEqual([step["label"] for step in payload["steps"]], ["base", "second"])
+        self.assertEqual([name for name, _ in self.runtime.calls], ["write", "write"])
+
+    def test_live_build_rejects_file_writes_before_runtime(self) -> None:
+        async def scenario(client):
+            return await client.call_tool(
+                "creative_live_build",
+                {
+                    "application": "photoshop",
+                    "step_delay_ms": 0,
+                    "steps": [
+                        {
+                            "label": "export",
+                            "capability": "creative.document.export",
+                            "arguments": {"path": "out.png"},
+                        }
+                    ],
+                },
+            )
+
+        result = asyncio.run(self._with_client(scenario))
+        self.assertTrue(result.is_error)
+        self.assertEqual(self.runtime.calls, [])
 
     def test_oauth_access_only_profile_blocks_all_writes_before_runtime(self) -> None:
         server = build_server(

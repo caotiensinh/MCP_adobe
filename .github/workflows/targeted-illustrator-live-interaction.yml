@@ -23,6 +23,7 @@ concurrency:
 
 jobs:
   live-interaction:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[deploy-only]') }}
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 10
     env:

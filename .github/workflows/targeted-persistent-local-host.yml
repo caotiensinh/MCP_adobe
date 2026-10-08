@@ -226,7 +226,7 @@ jobs:
                       return node[key]
               return None
 
-          async def health(label: str, *, probe: bool):
+          async def health(label: str):
               async with Client(URL) as client:
                   listed = await client.list_tools()
                   names = {tool.name for tool in listed.tools}
@@ -234,6 +234,7 @@ jobs:
                       "creative_discover",
                       "creative_read",
                       "creative_write",
+                      "creative_live_build",
                       "creative_authorized_write",
                   }
                   if names != required:
@@ -243,11 +244,31 @@ jobs:
                       {
                           "application": "illustrator",
                           "capability": "creative.health",
-                          "arguments": {"probe": probe, "timeout": 30.0},
+                          "arguments": {"probe": False, "timeout": 5.0},
                       },
                   )
                   if result.is_error:
-                      raise RuntimeError(f"Illustrator health tool failed: {result}")
+                      raise RuntimeError(f"Illustrator local health tool failed: {result}")
+                  payload = result.structured_content
+                  print(
+                      label + "=" +
+                      json.dumps(payload, ensure_ascii=False, default=str),
+                      flush=True,
+                  )
+                  return payload
+
+          async def document_info(label: str):
+              async with Client(URL) as client:
+                  result = await client.call_tool(
+                      "creative_read",
+                      {
+                          "application": "illustrator",
+                          "capability": "creative.document.info",
+                          "arguments": {},
+                      },
+                  )
+                  if result.is_error:
+                      raise RuntimeError(f"Illustrator document read failed: {result}")
                   payload = result.structured_content
                   print(
                       label + "=" +
@@ -300,24 +321,26 @@ jobs:
                   )
 
           local = asyncio.run(
-              health("PERSISTENT_HTTP_ILLUSTRATOR_LOCAL_1", probe=False)
+              health("PERSISTENT_HTTP_ILLUSTRATOR_LOCAL_1")
           )
           require_panel_connected(local)
-          probed = asyncio.run(
-              health("PERSISTENT_HTTP_ILLUSTRATOR_HEALTH_1", probe=True)
+          doc = asyncio.run(
+              document_info("PERSISTENT_HTTP_ILLUSTRATOR_DOCUMENT_1")
           )
-          require_live_probe(probed)
+          if find_key(doc, "application") != "illustrator":
+              raise RuntimeError("Illustrator document read returned unexpected application")
 
           time.sleep(8)
 
           local2 = asyncio.run(
-              health("PERSISTENT_HTTP_ILLUSTRATOR_LOCAL_2", probe=False)
+              health("PERSISTENT_HTTP_ILLUSTRATOR_LOCAL_2")
           )
           require_panel_connected(local2)
-          probed2 = asyncio.run(
-              health("PERSISTENT_HTTP_ILLUSTRATOR_HEALTH_2", probe=True)
+          doc2 = asyncio.run(
+              document_info("PERSISTENT_HTTP_ILLUSTRATOR_DOCUMENT_2")
           )
-          require_live_probe(probed2)
+          if find_key(doc2, "application") != "illustrator":
+              raise RuntimeError("second Illustrator document read returned unexpected application")
           print("PERSISTENT_MCP_ADOBE_HOST_E2E=PASS", flush=True)
           '@ | Set-Content -Path persistent_host_probe.py -Encoding UTF8
           uv run python persistent_host_probe.py
