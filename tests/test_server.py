@@ -255,9 +255,10 @@ class McpServerContractTests(unittest.TestCase):
 
         self.assertTrue(result.is_error)
         joined = "\n".join(captured.output)
-        self.assertIn("backend exploded", joined)
+        self.assertNotIn("backend exploded", joined)
         self.assertIn("creative.document.create", joined)
         self.assertIn("operation_id=", joined)
+        self.assertIn("cause_type=RuntimeError", joined)
 
     def test_live_build_rejects_file_writes_before_runtime(self) -> None:
         async def scenario(client):

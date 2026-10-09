@@ -21,6 +21,7 @@ _EXPECTED_TOOLS = {
     "creative_discover",
     "creative_read",
     "creative_write",
+    "creative_live_build",
     "creative_authorized_write",
 }
 _OAUTH_ENV = {

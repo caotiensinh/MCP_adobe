@@ -29,7 +29,11 @@ class TransportTests(unittest.TestCase):
 
     def test_illustrator_launcher_is_pinned(self) -> None:
         cfg = illustrator_stdio_config()
-        self.assertEqual(cfg.args, ("-y", "illustrator-mcp-server@1.10.3"))
+        self.assertEqual(cfg.args, ("-B", "-m", "illustrator_mcp.server"))
+        self.assertEqual(cfg.env["WS_HOST"], "127.0.0.1")
+        self.assertEqual(cfg.env["WS_PORT"], "8081")
+        self.assertEqual(cfg.env["TIMEOUT"], "30")
+        self.assertEqual(cfg.compatibility, "illustrator-cep")
 
     def test_structured_result_is_reused(self) -> None:
         result = SimpleNamespace(is_error=False, structured_content={"ok": True}, content=[])
