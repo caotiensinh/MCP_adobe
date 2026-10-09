@@ -15,6 +15,8 @@ jobs:
   client-adobe:
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 18
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -62,6 +64,9 @@ jobs:
           $user=[Environment]::GetEnvironmentVariable('Path','User')
           $env:Path=(@('C:\Program Files\nodejs',$machine,$user,$env:Path) | Where-Object {$_}) -join ';'
           $client='${{ matrix.client }}'
+          if($client -eq 'gemini' -and -not $env:GEMINI_API_KEY) {
+            throw 'CLIENT_E2E_BLOCKED=gemini authentication missing; set Actions secret GEMINI_API_KEY (never print secret)'
+          }
           $marker="MCP-E2E-$client-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           $url='http://127.0.0.1:8787/mcp'
           $prompt="Use Adobe MCP creative_live_build to create a NEW Photoshop 900x600 RGB document and create one text layer containing EXACTLY $marker. Do not merely claim completion. Use MCP tools. Then verify with creative_read capability creative.layer.list. Do not access other applications."
