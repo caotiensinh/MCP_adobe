@@ -20,7 +20,7 @@ def extract_payload(result):
     return data
 
 
-async def verify(url: str, marker: str) -> None:
+async def verify(url: str, marker: str | None = None) -> None:
     async with Client(url) as client:
         listed = {tool.name for tool in (await client.list_tools()).tools}
         required = {"creative_discover", "creative_read", "creative_write",
@@ -32,6 +32,9 @@ async def verify(url: str, marker: str) -> None:
         }))
         if not health.get("result"):
             raise RuntimeError("Live Photoshop health had no upstream result")
+        if marker is None:
+            print(json.dumps({"status": "PASS", "check": "real_gateway_tools_and_photoshop_health", "tool_count": len(listed)}, ensure_ascii=False), flush=True)
+            return
         layer_data = extract_payload(await client.call_tool("creative_read", {
             "application": "photoshop", "capability": "creative.layer.list", "arguments": {}
         }))
@@ -52,9 +55,11 @@ async def verify(url: str, marker: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://127.0.0.1:8787/mcp")
-    parser.add_argument("--marker", required=True)
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument("--marker")
+    modes.add_argument("--preflight", action="store_true")
     args = parser.parse_args()
-    if len(args.marker) < 14 or not args.marker.startswith("MCP-E2E-"):
+    if not args.preflight and (len(args.marker) < 14 or not args.marker.startswith("MCP-E2E-")):
         parser.error("marker must be a unique MCP-E2E-* test identifier")
     asyncio.run(verify(args.url, args.marker))
 
