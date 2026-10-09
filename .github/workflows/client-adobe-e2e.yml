@@ -1,5 +1,10 @@
 name: Claude and Gemini to real Adobe E2E
 on:
+  push:
+    branches: [feat/client-adobe-e2e-gates]
+    paths:
+      - '.github/workflows/client-adobe-e2e.yml'
+      - 'scripts/verify_client_adobe_e2e.py'
   workflow_dispatch:
     inputs:
       client:
@@ -19,7 +24,28 @@ concurrency:
   group: adobe-client-e2e-${{ github.ref }}
   cancel-in-progress: false
 jobs:
+  preflight:
+    if: github.event_name == 'push'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check E2E verifier syntax without consuming model quota
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $py=Get-Command python -ErrorAction SilentlyContinue
+          if(-not $py){throw 'Python unavailable on Windows runner'}
+          @'
+          import ast
+          from pathlib import Path
+          p=Path("scripts/verify_client_adobe_e2e.py")
+          ast.parse(p.read_text(encoding="utf-8"))
+          print("CLIENT_E2E_PREFLIGHT=PASS python syntax; no AI model called")
+          '@ | & python -
+          if($LASTEXITCODE -ne 0){throw 'Client E2E Python preflight failed'}
   client-adobe:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 18
     env:
