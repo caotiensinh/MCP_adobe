@@ -5,7 +5,7 @@ const { Rectangle, Text, Color } = scenegraph;
 
 const BRIDGE_URL = "ws://127.0.0.1:8765";
 const STATUS_LIMIT = 200;
-const BRIDGE_BUILD = "xd-one-click-v2";
+const BRIDGE_BUILD = "xd-canvas-readback-v3";
 
 let panel;
 let socket;

@@ -85,7 +85,7 @@ jobs:
           $raw=Get-Content -LiteralPath $installed -Raw
           if(-not $raw.Contains('applyPendingCommand')){ throw 'installed XD plugin does not contain command-context batch apply' }
           if(-not $raw.Contains('mcpAdobeConnect')){ throw 'installed XD plugin does not contain connect command handler' }
-          if(-not $raw.Contains('xd-one-click-v2')){ throw 'installed XD plugin does not contain expected bridge build marker' }
+          if(-not $raw.Contains('xd-canvas-readback-v3')){ throw 'installed XD plugin does not contain expected bridge build marker' }
           $manifestPath=Join-Path (Split-Path -Parent $installed) 'manifest.json'
           $manifest=Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
           if($manifest.manifestVersion -ne 4){ throw 'installed XD manifestVersion must be 4' }
@@ -202,6 +202,16 @@ jobs:
           Add-Type -AssemblyName System.Windows.Forms
           [void][XdWindowNative]::ShowWindow($xd.MainWindowHandle,9)
           if(-not [XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)){
+            throw 'failed to foreground XD for Development plugin reload'
+          }
+          Start-Sleep -Milliseconds 500
+          [System.Windows.Forms.SendKeys]::SendWait('^+r')
+          Write-Host 'XD_PLUGIN_RELOAD_REQUEST=PASS shortcut=Ctrl+Shift+R'
+          Start-Sleep -Seconds 4
+
+          Add-Type -AssemblyName System.Windows.Forms
+          [void][XdWindowNative]::ShowWindow($xd.MainWindowHandle,9)
+          if(-not [XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)){
             throw 'failed to foreground XD for MCP Connect command'
           }
           Start-Sleep -Milliseconds 500
@@ -245,7 +255,7 @@ jobs:
                   print("XD_RECONNECTED_HEALTH="+json.dumps(payload,ensure_ascii=False,default=str),flush=True)
                   if find_key(payload,"bridge")!="connected":
                       raise RuntimeError("XD bridge did not report connected")
-                  if find_key(payload,"bridge_build")!="xd-one-click-v2":
+                  if find_key(payload,"bridge_build")!="xd-canvas-readback-v3":
                       raise RuntimeError("XD loaded unexpected plugin build: "+str(find_key(payload,"bridge_build")))
                   pending=find_key(payload,"pending_count")
                   if pending not in (0, None):
