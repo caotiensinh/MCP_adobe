@@ -371,17 +371,17 @@ def build_server(
                 operation_id=operation_id,
                 outcome="failed",
             )
-            logger.exception(
-                "creative operation failed tool=%s application=%s capability=%s operation_id=%s cause=%s",
+            logger.error(
+                "creative operation failed tool=%s application=%s capability=%s operation_id=%s cause_type=%s",
                 tool_name,
                 application,
                 capability,
                 operation_id,
-                exc,
+                type(exc).__name__,
             )
             raise RuntimeError(
                 f"operation failed; operation_id={operation_id}; "
-                f"cause={type(exc).__name__}: {exc}"
+                f"cause_type={type(exc).__name__}"
             ) from None
 
         outcome = str(payload.get("outcome", "accepted_unverified"))

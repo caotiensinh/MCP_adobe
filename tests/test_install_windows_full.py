@@ -34,6 +34,7 @@ class WindowsFullBootstrapTests(unittest.TestCase):
                     "3.12",
                     "-UvCommandPath",
                     str(uv),
+                    "-SkipIllustratorBackend",
                     "-SkipPersistentHost",
                     "-OutputDir",
                     str(output),
@@ -50,6 +51,7 @@ class WindowsFullBootstrapTests(unittest.TestCase):
             self.assertIn("smoke=mcp-adobe", completed.stdout)
             self.assertIn("smoke=oauth-preflight", completed.stdout)
             self.assertIn("smoke=remote-probe", completed.stdout)
+            self.assertIn("illustrator_backend=skipped", completed.stdout)
             self.assertIn("result=PASS", completed.stdout)
 
             self.assertTrue((output / "claude-code.mcp.json").is_file())

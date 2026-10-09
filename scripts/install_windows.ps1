@@ -3,6 +3,7 @@ param(
     [string]$PythonVersion = "3.12",
     [switch]$InstallXdPlugin,
     [switch]$GenerateConfigsOnly,
+    [switch]$SkipIllustratorBackend,
     [switch]$SkipPersistentHost,
     [string]$UvCommandPath = "",
     [string]$OutputDir = ""
@@ -211,9 +212,14 @@ Write-Host "smoke=remote-probe"
 & $uvExe run --directory $RepoRoot mcp-adobe-remote-probe --help | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "mcp-adobe-remote-probe CLI smoke failed" }
 
-Write-Host "illustrator_backend=install"
-& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "install_illustrator_cep_backend.ps1") -PythonVersion $PythonVersion -UvCommandPath $uvExe
-if ($LASTEXITCODE -ne 0) { throw "Illustrator CEP backend installation failed (exit $LASTEXITCODE)" }
+if ($SkipIllustratorBackend) {
+    Write-Host "illustrator_backend=skipped"
+}
+else {
+    Write-Host "illustrator_backend=install"
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "install_illustrator_cep_backend.ps1") -PythonVersion $PythonVersion -UvCommandPath $uvExe
+    if ($LASTEXITCODE -ne 0) { throw "Illustrator CEP backend installation failed (exit $LASTEXITCODE)" }
+}
 
 if (-not $SkipPersistentHost) {
     Write-Host "local_host=install"
