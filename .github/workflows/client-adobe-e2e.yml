@@ -23,6 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Verify local gateway and CLI readiness
+        if: matrix.client == 'gemini' || vars.CLAUDE_CREDIT_READY == 'true'
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -31,10 +32,16 @@ jobs:
           $env:Path=(@('C:\Program Files\nodejs',$machine,$user,$env:Path) | Where-Object {$_}) -join ';'
           $client='${{ matrix.client }}'
           if($client -eq "gemini" -and -not (Get-Command gemini -ErrorAction SilentlyContinue)) {
-            if(-not (Get-Command npx -ErrorAction SilentlyContinue)){throw "CLIENT_E2E_BLOCKED=gemini NODE_NPX_UNAVAILABLE"}
-            Write-Host "CLIENT_BOOTSTRAP=gemini via pinned npx cache"
-            & npx -y -p "@google/gemini-cli@0.10.0" -c "gemini --version"
-            if($LASTEXITCODE -ne 0){throw "CLIENT_E2E_BLOCKED=gemini bootstrap_failed"}
+            $installRoot=Join-Path $env:RUNNER_TEMP 'adobe-gemini-cli'
+            Write-Host "CLIENT_BOOTSTRAP=gemini npm install --prefix scoped"
+            & npm.cmd install --prefix $installRoot --no-save --no-audit --no-fund "@google/gemini-cli@latest"
+            if($LASTEXITCODE -ne 0){throw "CLIENT_E2E_BLOCKED=gemini npm_install_failed"}
+            $bin=Join-Path $installRoot 'node_modules\.bin'
+            $geminiExe=Join-Path $bin 'gemini.cmd'
+            if(-not (Test-Path $geminiExe)){throw "CLIENT_E2E_BLOCKED=gemini executable_missing"}
+            $env:Path="$bin;$env:Path"
+            Add-Content -Path $env:GITHUB_PATH -Value $bin
+            & $geminiExe --version
           } elseif(-not (Get-Command $client -ErrorAction SilentlyContinue)) {
             throw "CLIENT_E2E_BLOCKED=$client CLI_NOT_INSTALLED"
           } else { & $client --version }
@@ -46,6 +53,7 @@ jobs:
           if($p.Count -eq 0){throw "CLIENT_E2E_BLOCKED=Adobe gateway 8787 not running; do not substitute mock"}
           Write-Host "CLIENT_CLI_READY=$client GATEWAY_LISTEN=1"
       - name: Run real natural-language request and verify Photoshop readback
+        if: matrix.client == 'gemini' || vars.CLAUDE_CREDIT_READY == 'true'
         shell: powershell
         timeout-minutes: 10
         run: |
@@ -59,9 +67,9 @@ jobs:
             '{"mcpServers":{"adobe-creative":{"type":"http","url":"http://127.0.0.1:8787/mcp"}}}' | Set-Content -Encoding utf8 $config
             & claude -p $prompt --mcp-config $config --strict-mcp-config --allowedTools 'mcp__adobe-creative__creative_live_build,mcp__adobe-creative__creative_read,mcp__adobe-creative__creative_discover'
           } else {
-            if(Get-Command gemini -ErrorAction SilentlyContinue) { & gemini mcp add -s project -t http adobe-creative $url } else { & npx -y -p "@google/gemini-cli@0.10.0" -c "gemini mcp add -s project -t http adobe-creative $url" }
+            & gemini mcp add -s project -t http adobe-creative $url
             if($LASTEXITCODE -ne 0){throw 'Gemini MCP registration failed'}
-            if(Get-Command gemini -ErrorAction SilentlyContinue) { & gemini -p $prompt } else { & npx -y -p "@google/gemini-cli@0.10.0" -c "gemini -p `"$prompt`"" }
+            & gemini -p $prompt
           }
           if($LASTEXITCODE -ne 0){throw "CLIENT_E2E_BLOCKED=$client client invocation failed rc=$LASTEXITCODE"}
           # Critical: do NOT trust agent prose. Fetch fresh upstream Photoshop state.
