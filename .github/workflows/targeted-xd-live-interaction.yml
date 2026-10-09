@@ -200,13 +200,54 @@ jobs:
           }
 
           # XD 57 keeps the loaded plugin module alive across Development reload.
-          # For the workflow-owned Untitled-1 test document, restart XD so the
+          # Restart only the workflow-owned Untitled-1 test document so the
           # freshly installed bridge code is loaded from process start.
-          if([string]$xd.MainWindowTitle -match '^Untitled-1 .*Adobe XD          [void][XdWindowNative]::ShowWindow($xd.MainWindowHandle,9)
+          if([string]$xd.MainWindowTitle -match '^Untitled-1 .*Adobe XD$'){
+            $oldPid=$xd.Id
+            Write-Host "XD_SAFE_TEST_RESTART_BEGIN PID=$oldPid TITLE=$($xd.MainWindowTitle)"
+            Stop-Process -Id $oldPid -Force -ErrorAction Stop
+            Start-Sleep -Seconds 2
+
+            $start=Get-StartApps -ErrorAction SilentlyContinue |
+              Where-Object {$_.Name -match '^Adobe XD$|Adobe.*XD'} |
+              Select-Object -First 1
+            if(-not $start){ throw 'Adobe XD start-app registration was not found for test restart' }
+            Start-Process explorer.exe "shell:AppsFolder\$($start.AppID)"
+
+            $deadline=(Get-Date).AddSeconds(60)
+            do {
+              Start-Sleep -Seconds 1
+              $xd=Get-XdProcess
+            } until($xd -or (Get-Date) -gt $deadline)
+            if(-not $xd){ throw 'Adobe XD did not reopen after safe test restart' }
+            Write-Host "XD_SAFE_TEST_RESTART_OPEN=PASS PID=$($xd.Id) TITLE=$($xd.MainWindowTitle)"
+
+            [void][XdWindowNative]::ShowWindow($xd.MainWindowHandle,9)
+            [void][XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
+            Start-Sleep -Milliseconds 700
+
+            if([string]$xd.MainWindowTitle -eq 'Adobe XD'){
+              $create=Find-XdByAutomationId -Process $xd -AutomationId 'sidebar-work--create'
+              Invoke-XdElement -Element $create -Label 'Create document after restart'
+              Start-Sleep -Seconds 5
+              $xd=Get-XdProcess
+              if(-not $xd -or $xd.MainWindowTitle -eq 'Adobe XD'){
+                throw 'XD did not enter test document after safe restart'
+              }
+            }
+            if([string]$xd.MainWindowTitle -notmatch '^Untitled-1 .*Adobe XD$'){
+              throw "XD safe restart opened unexpected document: $($xd.MainWindowTitle)"
+            }
+            Write-Host "XD_SAFE_TEST_RESTART_DOCUMENT=PASS TITLE=$($xd.MainWindowTitle)"
+          }
+
+          Add-Type -AssemblyName System.Windows.Forms
+          [void][XdWindowNative]::ShowWindow($xd.MainWindowHandle,9)
           if(-not [XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)){
             throw 'failed to foreground XD for MCP Connect command'
           }
           Start-Sleep -Milliseconds 500
+
           [System.Windows.Forms.SendKeys]::SendWait('^%+9')
           Write-Host 'XD_CONNECT_COMMAND_REQUEST=PASS shortcut=Ctrl+Alt+Shift+9'
 
