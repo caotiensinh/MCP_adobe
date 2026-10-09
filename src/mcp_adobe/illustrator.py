@@ -8,9 +8,9 @@ from .core import AdapterInfo, RiskClass
 from .photoshop import OperationUnknownError, UpstreamToolClient
 from .verification import capture_file_snapshot, evaluate_file_snapshot, unverified_mutation
 
-UPSTREAM_REPOSITORY = "ie3jp/illustrator-mcp-server"
-UPSTREAM_SNAPSHOT = "57c5c101a5192c61535493f39b653e6f92b8eb29"
-UPSTREAM_PACKAGE = "illustrator-mcp-server@1.10.3"
+UPSTREAM_REPOSITORY = "jinkeda/Illustrator_MCP"
+UPSTREAM_SNAPSHOT = "5d7a3edc8ebc89a0fc56b059e1311d3b2bfca815"
+UPSTREAM_PACKAGE = "illustrator-mcp==3.0.0 + CEP panel 1.0.2"
 READINESS_TTL_SECONDS = 30.0
 
 
@@ -36,6 +36,7 @@ _BINDINGS: dict[str, ToolBinding] = {
     "creative.group.list": ToolBinding("get_groups", RiskClass.READ),
     "creative.text.list": ToolBinding("list_text_frames", RiskClass.READ),
     "creative.object.find": ToolBinding("find_objects", RiskClass.READ),
+    "creative.job.status": ToolBinding("illustrator_job_status", RiskClass.READ),
     "creative.document.create": ToolBinding("create_document", RiskClass.WRITE_REVERSIBLE),
     "creative.document.open": ToolBinding("open_document", RiskClass.WRITE_REVERSIBLE),
     "creative.document.save": ToolBinding("save_document", RiskClass.FILE_WRITE),
@@ -64,16 +65,27 @@ class IllustratorAdapter:
         self._writes_enabled = writes_enabled
         self._ready_until = 0.0
 
+    def _supported_bindings(self) -> dict[str, ToolBinding]:
+        supported = getattr(self._client, "supported_legacy_tools", None)
+        if supported is None:
+            return _BINDINGS
+        return {
+            capability: binding
+            for capability, binding in _BINDINGS.items()
+            if binding.upstream_tool in supported
+        }
+
     def info(self) -> AdapterInfo:
+        bindings = self._supported_bindings()
         return AdapterInfo(
             application="illustrator",
             connected=self._client.connected,
             version=self._version,
-            common_capabilities=frozenset(_BINDINGS),
-            capability_risks={name: binding.risk for name, binding in _BINDINGS.items()},
+            common_capabilities=frozenset(bindings),
+            capability_risks={name: binding.risk for name, binding in bindings.items()},
             writes_enabled=self._writes_enabled,
-            undo_supported=True,
-            transport="mcp",
+            undo_supported="creative.undo" in bindings,
+            transport="mcp+cep-websocket",
             upstream_repository=UPSTREAM_REPOSITORY,
             upstream_snapshot=UPSTREAM_SNAPSHOT,
             readiness_probe="creative.health",
@@ -82,7 +94,22 @@ class IllustratorAdapter:
     @staticmethod
     def _translate_arguments(capability: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         if capability == "creative.health":
-            return {"limit": 1}
+            translated: dict[str, Any] = {"limit": 1}
+            if "probe" in arguments:
+                translated["probe"] = arguments["probe"]
+            if "timeout" in arguments:
+                translated["timeout"] = arguments["timeout"]
+            return translated
+        if capability == "creative.job.status":
+            if arguments.get("finalize_export") is True:
+                raise ValueError("creative.job.status is inspection-only; finalize_export is not allowed")
+            job_id = arguments.get("jobId", arguments.get("job_id"))
+            if not isinstance(job_id, str) or not job_id.strip():
+                raise ValueError("creative.job.status requires a non-empty jobId")
+            detail = arguments.get("detail", "full")
+            if detail not in {"summary", "full"}:
+                raise ValueError("creative.job.status detail must be 'summary' or 'full'")
+            return {"jobId": job_id.strip(), "detail": detail, "finalize_export": False}
         args = dict(arguments)
         if capability in {"creative.document.export", "creative.document.export_pdf"}:
             path = args.pop("path", None)
@@ -206,6 +233,10 @@ class IllustratorAdapter:
             binding = _BINDINGS[capability]
         except KeyError as exc:
             raise LookupError(f"unsupported Illustrator capability: {capability}") from exc
+        if capability not in self._supported_bindings():
+            raise LookupError(
+                f"Illustrator backend does not safely implement capability: {capability}"
+            )
 
         file_snapshot = capture_file_snapshot(arguments) if binding.risk is RiskClass.FILE_WRITE else None
         selected_uuid: str | None = None

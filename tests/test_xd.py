@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 import unittest
+from pathlib import Path
 from typing import Any, Mapping
 
 from mcp_adobe import CapabilityRegistry, OperationUnknownError, XdAdapter
@@ -25,6 +26,8 @@ class FakeXdClient:
         self.calls.append((name, dict(arguments)))
         if self.fail_timeout:
             raise TimeoutError(name)
+        if name == "xd.queue.clear":
+            return {"status": "cleared", "rejected_count": 0, "pending_count": 0}
         if name.startswith("xd.queue.") and name != "xd.queue.status":
             return {"status": "queued", "approval_required": True, "operation_id": "xd-test-1"}
         return {"status": "ok", "method": name}
@@ -36,7 +39,7 @@ class XdAdapterTests(unittest.TestCase):
         info = adapter.info()
         self.assertTrue(info.connected)
         self.assertEqual(info.application, "xd")
-        self.assertEqual(info.transport, "uxp-websocket-approval")
+        self.assertEqual(info.transport, "uxp-websocket-one-click-approval")
         self.assertFalse(info.undo_supported)
         self.assertIn("creative.context.get", info.common_capabilities)
         self.assertIn("xd.queue.rectangle_create", info.native_capabilities)
@@ -49,6 +52,52 @@ class XdAdapterTests(unittest.TestCase):
         self.assertEqual(result["context_source"], "live-document+selection")
         self.assertEqual(result["result"]["document"]["method"], "xd.document.info")
         self.assertEqual(result["result"]["selection"]["method"], "xd.selection.get")
+
+    def test_common_visual_capabilities_queue_for_one_click_approval(self) -> None:
+        client = FakeXdClient()
+        registry = CapabilityRegistry()
+        registry.register(XdAdapter(client))
+
+        rectangle = registry.execute(
+            "xd",
+            "creative.shape.rectangle",
+            {"name": "XD Card", "width": 320, "height": 180, "fill": "#112233"},
+        )
+        text_result = registry.execute(
+            "xd",
+            "creative.text.create",
+            {"name": "XD Label", "text": "MCP Adobe", "x": 40, "y": 40},
+        )
+
+        self.assertEqual(
+            [name for name, _ in client.calls],
+            [
+                "xd.health",
+                "xd.queue.rectangle_create",
+                "xd.queue.text_create",
+            ],
+        )
+        self.assertEqual(rectangle["result"]["status"], "queued")
+        self.assertTrue(rectangle["result"]["approval_required"])
+        self.assertEqual(text_result["result"]["status"], "queued")
+        self.assertTrue(text_result["result"]["approval_required"])
+
+    def test_queue_clear_maps_to_bridge_without_document_mutation(self) -> None:
+        client = FakeXdClient()
+        registry = CapabilityRegistry()
+        registry.register(XdAdapter(client))
+        result = registry.execute(
+            "xd",
+            "xd.queue.clear",
+            {"reason": "fresh live test"},
+        )
+        self.assertEqual(
+            [name for name, _ in client.calls],
+            ["xd.health", "xd.queue.clear"],
+        )
+        self.assertEqual(client.calls[1][1]["reason"], "fresh live test")
+        self.assertEqual(result["result"]["status"], "cleared")
+        self.assertEqual(result["result"]["pending_count"], 0)
 
     def test_queue_rectangle_maps_to_exact_bridge_method(self) -> None:
         client = FakeXdClient()
@@ -83,6 +132,76 @@ class XdAdapterTests(unittest.TestCase):
         adapter = XdAdapter(FakeXdClient(fail_timeout=True))
         with self.assertRaises(TimeoutError):
             adapter.execute("creative.health", {})
+
+
+class XdPluginContractTests(unittest.TestCase):
+    def test_external_manifest_uses_uxp_v4_entrypoint_contract(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        manifest = json.loads(
+            (root / "adobe-xd-plugin" / "manifest.external.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(manifest["manifestVersion"], 4)
+        self.assertEqual(manifest["id"], "com.mcpadobe.xd.bridge")
+        self.assertEqual(manifest["main"], "main.external.js")
+        self.assertEqual(manifest["host"]["app"], "XD")
+        entries = {entry["id"]: entry for entry in manifest["entrypoints"]}
+        self.assertEqual(entries["mcpAdobeConnect"]["type"], "command")
+        self.assertEqual(entries["mcpAdobeApply"]["type"], "command")
+        self.assertEqual(entries["mcpAdobeBridge"]["type"], "panel")
+
+    def test_external_entrypoint_wraps_shared_plugin_logic(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "adobe-xd-plugin" / "main.external.js").read_text(encoding="utf-8")
+        self.assertIn('require("./main.js")', source)
+        self.assertIn("entrypoints.setup(plugin)", source)
+
+    def test_manifest_exposes_official_v4_entrypoints(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        manifest = json.loads((root / "adobe-xd-plugin" / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["manifestVersion"], 4)
+        entries = {entry["id"]: entry for entry in manifest["entrypoints"]}
+        self.assertEqual(entries["mcpAdobeConnect"]["type"], "command")
+        self.assertEqual(entries["mcpAdobeApply"]["type"], "command")
+        self.assertEqual(entries["mcpAdobeBridge"]["type"], "panel")
+
+    def test_manifest_declares_language_independent_command_shortcuts(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        manifest = json.loads((root / "adobe-xd-plugin" / "manifest.json").read_text(encoding="utf-8"))
+        entries = {entry["id"]: entry for entry in manifest["entrypoints"]}
+        self.assertEqual(entries["mcpAdobeConnect"]["shortcut"]["win"], "Ctrl+Alt+Shift+9")
+        self.assertEqual(entries["mcpAdobeApply"]["shortcut"]["win"], "Ctrl+Alt+Shift+8")
+
+    def test_plugin_lifecycle_autoconnects_after_load(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "adobe-xd-plugin" / "main.js").read_text(encoding="utf-8")
+        self.assertIn("plugin: {", source)
+        self.assertIn("create() {", source)
+        self.assertIn("connect();", source)
+
+    def test_document_snapshot_exposes_real_insertion_parent_children(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "adobe-xd-plugin" / "main.js").read_text(encoding="utf-8")
+        self.assertIn("const insertionParentChildren = []", source)
+        self.assertIn("parent.children.at(i)", source)
+        self.assertIn("insertionParentChildren", source)
+
+    def test_installer_removes_only_stale_mcp_xd_external_copies(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "scripts" / "install_xd_plugin.ps1").read_text(encoding="utf-8")
+        self.assertIn("'MCPADB01','com.mcpadobe.xd.bridge'", source)
+        self.assertIn("XD_STALE_EXTERNAL_REMOVED=PASS", source)
+        self.assertNotIn("com.mcpadobe.ps24.sideloadprobe", source)
+
+    def test_command_handler_applies_batch_in_xd_edit_context(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "adobe-xd-plugin" / "main.js").read_text(encoding="utf-8")
+        self.assertIn("function connectCommand(selection, documentRoot)", source)
+        self.assertIn("function applyPendingCommand(selection, documentRoot)", source)
+        self.assertIn('require("uxp")', source)
+        self.assertIn("entrypoints.setup({", source)
+        self.assertIn("mcpAdobeConnect: connectCommand", source)
+        self.assertIn("mcpAdobeApply: applyPendingCommand", source)
+        self.assertIn("snapshot(scenegraph.selection, scenegraph.root)", source)
 
 
 class XdBridgeTests(unittest.TestCase):

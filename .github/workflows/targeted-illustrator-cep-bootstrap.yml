@@ -1,0 +1,68 @@
+name: Patch Illustrator CEP auto-bootstrap
+
+on:
+  push:
+    branches: [feat/illustrator-cep-backend]
+    paths:
+      - "scripts/ensure_illustrator_cep_bootstrap.ps1"
+      - "tests/test_illustrator_cep_bootstrap_contract.py"
+      - ".github/workflows/targeted-illustrator-cep-bootstrap.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: illustrator-cep-bootstrap-\${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  patch-bootstrap:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Contract test
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){
+            $uvDir=Join-Path $HOME '.local\bin'
+            if(Test-Path (Join-Path $uvDir 'uv.exe')){ $env:Path="$uvDir;$env:Path" }
+          }
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){ throw 'uv unavailable' }
+          uv sync
+          uv run python -m unittest tests.test_illustrator_cep_bootstrap_contract -v
+
+      - name: Patch installed CEP bundle in place
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure_illustrator_cep_bootstrap.ps1
+          if($LASTEXITCODE -ne 0){ throw "CEP bootstrap patch failed: $LASTEXITCODE" }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/ensure_illustrator_cep_bootstrap.ps1 -VerifyOnly
+          if($LASTEXITCODE -ne 0){ throw "CEP bootstrap verify failed: $LASTEXITCODE" }
+
+      - name: Report reload requirement
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $manifest=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel\CSXS\manifest.xml'
+          $manifestTime=(Get-Item -LiteralPath $manifest).LastWriteTime
+          $illustrators=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          if($illustrators.Count -eq 0){
+            Write-Host 'ILLUSTRATOR_BOOTSTRAP_RELOAD=NOT_NEEDED_APP_CLOSED'
+            exit 0
+          }
+          foreach($p in $illustrators){
+            Write-Host "ILLUSTRATOR_BOOTSTRAP_PROCESS PID=$($p.Id) START=$($p.StartTime.ToString('o')) TITLE=$($p.MainWindowTitle)"
+          }
+          Write-Host "ILLUSTRATOR_BOOTSTRAP_MANIFEST_TIME=$($manifestTime.ToString('o'))"
+          Write-Host 'ILLUSTRATOR_BOOTSTRAP_RELOAD=RESTART_ILLUSTRATOR_ONCE'

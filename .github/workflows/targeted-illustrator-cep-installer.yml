@@ -1,0 +1,138 @@
+name: Targeted Illustrator CEP installer
+
+on:
+  push:
+    branches: [feat/illustrator-cep-backend]
+    paths:
+      - "scripts/install_illustrator_cep_backend.ps1"
+      - "scripts/install_windows.ps1"
+      - "tests/test_illustrator_cep_installer_contract.py"
+      - ".github/workflows/targeted-illustrator-cep-installer.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: illustrator-cep-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  illustrator-cep-installer:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: copy
+      EXPECTED_SHA: 5d7a3edc8ebc89a0fc56b059e1311d3b2bfca815
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Provision pinned Node for isolated CEP build
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24.19.0"
+
+      - name: Verify isolated Node toolchain
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $node=(Get-Command node -ErrorAction Stop).Source
+          $npm=(Get-Command npm.cmd -ErrorAction SilentlyContinue)
+          if(-not $npm){ $npm=Get-Command npm -ErrorAction Stop }
+          Write-Host "INSTALLER_NODE=$(& $node --version)"
+          Write-Host "INSTALLER_NPM=$(& $npm.Source --version)"
+
+      - name: Contract tests
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+            $uvDir=Join-Path $HOME '.local\bin'
+            if(Test-Path (Join-Path $uvDir 'uv.exe')) { $env:Path="$uvDir;$env:Path" }
+          }
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){ throw 'uv unavailable' }
+          uv sync
+          uv run python -m unittest tests.test_illustrator_cep_installer_contract -v
+
+      - name: Require free live bridge port
+        shell: powershell
+        run: |
+          $listeners=@(Get-NetTCPConnection -State Listen -LocalPort 8081 -ErrorAction SilentlyContinue)
+          if($listeners.Count -gt 0){
+            foreach($l in $listeners){
+              $p=Get-Process -Id $l.OwningProcess -ErrorAction SilentlyContinue
+              Write-Host "PORT_8081_OCCUPIED PID=$($l.OwningProcess) PROCESS=$($p.ProcessName)"
+            }
+            throw 'Port 8081 is occupied; installer test will not disturb a live bridge.'
+          }
+          Write-Host 'INSTALLER_PORT_GUARD=PASS'
+
+      - name: Install into isolated temporary paths
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $uv=(Get-Command uv).Source
+          $node=(Get-Command node).Source
+          $npmCmd=Get-Command npm.cmd -ErrorAction SilentlyContinue
+          if($npmCmd){ $npm=$npmCmd.Source } else { $npm=(Get-Command npm -ErrorAction Stop).Source }
+          $root=Join-Path $env:RUNNER_TEMP 'mcp-adobe-illustrator-installer-test'
+          $panel=Join-Path $env:RUNNER_TEMP 'mcp-adobe-illustrator-panel-test'
+          if(Test-Path $root){ Remove-Item -Recurse -Force $root }
+          if(Test-Path $panel){ Remove-Item -Recurse -Force $panel }
+          "INSTALLER_TEST_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "INSTALLER_TEST_PANEL=$panel" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_illustrator_cep_backend.ps1 `
+            -PythonVersion 3.12 `
+            -UvCommandPath $uv `
+            -NodeCommandPath $node `
+            -NpmCommandPath $npm `
+            -InstallRoot $root `
+            -PanelTarget $panel `
+            -SkipRegistry
+          if($LASTEXITCODE -ne 0){ throw "isolated Illustrator backend installer failed: $LASTEXITCODE" }
+
+      - name: Verify isolated install matches runtime contract
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=$env:INSTALLER_TEST_ROOT
+          $panel=$env:INSTALLER_TEST_PANEL
+          $python=Join-Path $root 'venv\Scripts\python.exe'
+          $source=Join-Path $root 'source'
+          $manifest=Join-Path $panel 'CSXS\manifest.xml'
+          $metadataPath=Join-Path $root 'install-metadata.json'
+          if(-not (Test-Path $python)){ throw "installed python missing: $python" }
+          if(-not (Test-Path $manifest)){ throw "installed panel manifest missing: $manifest" }
+          if(-not (Test-Path $metadataPath)){ throw "install metadata missing: $metadataPath" }
+
+          $sha=(git -C $source rev-parse HEAD).Trim()
+          if($sha -ne $env:EXPECTED_SHA){ throw "installed source SHA mismatch: $sha" }
+          $version=(& $python -c "import importlib.metadata as m; print(m.version('illustrator-mcp'))").Trim()
+          if($version -ne '3.0.0'){ throw "installed package version mismatch: $version" }
+          $meta=Get-Content -Raw $metadataPath | ConvertFrom-Json
+          if($meta.upstream_sha -ne $env:EXPECTED_SHA){ throw "metadata SHA mismatch: $($meta.upstream_sha)" }
+          if($meta.extension_id -ne 'com.illustrator.mcp.panel'){ throw "metadata extension mismatch: $($meta.extension_id)" }
+
+          $env:MCP_ADOBE_ILLUSTRATOR_PYTHON=$python
+          uv run python -c "from mcp_adobe.mcp_stdio import illustrator_stdio_config; c=illustrator_stdio_config(); assert c.command == r'$python'; assert c.compatibility == 'illustrator-cep'; assert c.env['WS_PORT'] == '8081'; print('INSTALLER_RUNTIME_CONFIG=PASS')"
+          if($LASTEXITCODE -ne 0){ throw 'runtime config did not resolve isolated backend' }
+
+          Write-Host "INSTALLER_SHA=$sha"
+          Write-Host "INSTALLER_PACKAGE_VERSION=$version"
+          Write-Host 'ILLUSTRATOR_CEP_INSTALLER_E2E=PASS'
+
+      - name: Cleanup isolated installation
+        if: always()
+        shell: powershell
+        run: |
+          foreach($path in @($env:INSTALLER_TEST_ROOT,$env:INSTALLER_TEST_PANEL)){
+            if(-not [string]::IsNullOrWhiteSpace($path) -and (Test-Path $path)){
+              Remove-Item -Recurse -Force $path -ErrorAction SilentlyContinue
+            }
+          }
+          Write-Host 'ILLUSTRATOR_CEP_INSTALLER_CLEANUP=PASS'

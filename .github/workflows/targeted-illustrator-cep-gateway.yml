@@ -1,0 +1,303 @@
+name: Targeted Illustrator CEP gateway
+
+# Legacy isolated diagnostic only.  Production Illustrator validation runs
+# through the persistent local-host workflow because port 8081 is intentionally
+# owned continuously by that host.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: illustrator-cep-gateway-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  illustrator-cep-gateway:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 25
+    env:
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: copy
+      ILLUSTRATOR_UPSTREAM_SHA: 5d7a3edc8ebc89a0fc56b059e1311d3b2bfca815
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Targeted compatibility tests
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+            $uvDir=Join-Path $HOME '.local\bin'
+            if(Test-Path (Join-Path $uvDir 'uv.exe')) { $env:Path="$uvDir;$env:Path" }
+          }
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){ throw 'uv unavailable' }
+          uv sync
+          uv run python -m unittest discover -s tests -p 'test_illustrator*.py' -v
+
+      - name: Bootstrap pinned Illustrator CEP backend
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if(-not (Get-Command git -ErrorAction SilentlyContinue)){ throw 'git unavailable' }
+          $up=Join-Path $env:RUNNER_TEMP 'jinkeda-Illustrator_MCP-gateway'
+          $venv=Join-Path $env:RUNNER_TEMP 'jinkeda-Illustrator_MCP-gateway-venv'
+          if(Test-Path $up){ Remove-Item -Recurse -Force $up }
+          if(Test-Path $venv){ Remove-Item -Recurse -Force $venv }
+          git clone --no-checkout https://github.com/jinkeda/Illustrator_MCP.git $up
+          git -C $up fetch --depth=1 origin $env:ILLUSTRATOR_UPSTREAM_SHA
+          git -C $up checkout --detach $env:ILLUSTRATOR_UPSTREAM_SHA
+          $actual=(git -C $up rev-parse HEAD).Trim()
+          if($actual -ne $env:ILLUSTRATOR_UPSTREAM_SHA){ throw "upstream SHA mismatch: $actual" }
+          uv venv --python 3.12 $venv
+          $py=Join-Path $venv 'Scripts\python.exe'
+          uv pip install --python $py -e $up
+          if(-not (Test-Path $py)){ throw 'pinned Illustrator MCP Python missing' }
+          "MCP_ADOBE_ILLUSTRATOR_PYTHON=$py" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "PINNED_ILLUSTRATOR_MCP=$actual"
+          Write-Host "ILLUSTRATOR_BACKEND_PYTHON=$py"
+
+      - name: Require free bridge port
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $listeners=@(Get-NetTCPConnection -State Listen -LocalPort 8081 -ErrorAction SilentlyContinue)
+          if($listeners.Count -gt 0){
+            foreach($l in $listeners){
+              $p=Get-Process -Id $l.OwningProcess -ErrorAction SilentlyContinue
+              Write-Host "PORT_8081_OCCUPIED PID=$($l.OwningProcess) PROCESS=$($p.ProcessName) PATH=$($p.Path)"
+            }
+            throw 'Port 8081 is occupied; refusing blind process termination.'
+          }
+          Write-Host 'PORT_8081_FREE=PASS'
+
+      - name: Start Illustrator and verify MCP Control panel
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $aiPath='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
+          if(-not (Test-Path $aiPath)){ throw "Illustrator 2023 executable missing: $aiPath" }
+          $existing=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          if($existing.Count -eq 0){
+            $p=Start-Process -FilePath $aiPath -PassThru
+            Write-Host "ILLUSTRATOR_LAUNCHED_PID=$($p.Id)"
+          } else {
+            Write-Host "ILLUSTRATOR_ALREADY_RUNNING=$($existing.Id -join ',')"
+          }
+          $deadline=(Get-Date).AddSeconds(100)
+          do {
+            Start-Sleep -Seconds 2
+            $visible=Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1
+          } until($visible -or (Get-Date) -gt $deadline)
+          if(-not $visible){ throw 'Illustrator interactive window did not become visible within 100 seconds' }
+          Write-Host "ILLUSTRATOR_HOST=PASS PID=$($visible.Id) SESSION=$($visible.SessionId) TITLE=$($visible.MainWindowTitle)"
+          $panel='C:\Users\caodu\AppData\Roaming\Adobe\CEP\extensions\com.illustrator.mcp.panel\CSXS\manifest.xml'
+          if(-not (Test-Path $panel)){ throw "MCP Control CEP panel not found: $panel" }
+          Write-Host 'ILLUSTRATOR_CEP_PANEL_INSTALLED=PASS version=1.0.2'
+
+      - name: Official adapter live create find delete verify
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import json
+          import time
+          from collections.abc import Mapping
+
+          from mcp_adobe import CapabilityRegistry, ExecutionPolicy, IllustratorAdapter
+          from mcp_adobe.mcp_stdio import McpSubprocessToolClient, illustrator_stdio_config
+
+          PROBE_NAME = 'mcp_adobe_gateway_probe'
+          DOC_NAME = 'MCP Adobe CEP Gateway Probe'
+
+          def walk(value):
+              yield value
+              if isinstance(value, Mapping):
+                  for child in value.values():
+                      yield from walk(child)
+              elif isinstance(value, (list, tuple)):
+                  for child in value:
+                      yield from walk(child)
+
+          def dump(label, value):
+              print(label + '=' + json.dumps(value, ensure_ascii=False, default=str), flush=True)
+
+          def find_key(value, key):
+              for node in walk(value):
+                  if isinstance(node, Mapping) and key in node:
+                      return node[key]
+              return None
+
+          def query_items(value):
+              for node in walk(value):
+                  if not isinstance(node, Mapping):
+                      continue
+                  artifacts=node.get('artifacts')
+                  if isinstance(artifacts, Mapping) and isinstance(artifacts.get('items'), list):
+                      return artifacts['items']
+              processed=find_key(value, 'itemsProcessed')
+              if processed == 0:
+                  return []
+              raise RuntimeError(
+                  'query response omitted artifacts.items for a nonzero query; '
+                  f'itemsProcessed={processed}'
+              )
+
+          client=McpSubprocessToolClient(illustrator_stdio_config())
+          adapter=IllustratorAdapter(client, writes_enabled=True)
+          registry=CapabilityRegistry()
+          created_doc=False
+          try:
+              registry.register(adapter)
+              info=registry.describe()[0]
+              print(f'GATEWAY_ILLUSTRATOR_TRANSPORT={info.transport}', flush=True)
+              print(f'GATEWAY_ILLUSTRATOR_UPSTREAM={info.upstream_repository}@{info.upstream_snapshot}', flush=True)
+              print('GATEWAY_ILLUSTRATOR_CAPABILITY_COUNT='+str(len(info.common_capabilities)), flush=True)
+              assert info.transport == 'mcp+cep-websocket'
+              assert info.upstream_repository == 'jinkeda/Illustrator_MCP'
+              assert info.upstream_snapshot == '5d7a3edc8ebc89a0fc56b059e1311d3b2bfca815'
+              for absent in ('creative.document.export_pdf','creative.object.select','creative.gradient.create'):
+                  assert absent not in info.common_capabilities, absent
+
+              health=None
+              for attempt in range(1,31):
+                  try:
+                      health=registry.execute('illustrator','creative.health',{})
+                      dump(f'GATEWAY_HEALTH_{attempt}', health)
+                      break
+                  except Exception as exc:
+                      print(f'GATEWAY_HEALTH_WAIT attempt={attempt} error={type(exc).__name__}:{exc}', flush=True)
+                      time.sleep(2)
+              if health is None:
+                  raise RuntimeError('Illustrator CEP health never became ready')
+              print('GATEWAY_ILLUSTRATOR_HEALTH=PASS', flush=True)
+
+              created=registry.execute(
+                  'illustrator','creative.document.create',
+                  {'width':640,'height':420,'color_mode':'RGB','name':DOC_NAME},
+              )
+              dump('GATEWAY_DOCUMENT_CREATE', created)
+              created_doc=True
+
+              baseline=registry.execute('illustrator','creative.object.find',{'name':PROBE_NAME})
+              dump('GATEWAY_FIND_BASELINE', baseline)
+              baseline_items=query_items(baseline)
+              if len(baseline_items) != 0:
+                  raise RuntimeError(f'probe name unexpectedly exists before create: {len(baseline_items)}')
+
+              create=registry.execute(
+                  'illustrator','creative.shape.rectangle',
+                  {
+                      'id':PROBE_NAME,
+                      'name':PROBE_NAME,
+                      'x':80,'y':80,'width':180,'height':110,
+                      'fill':{'r':24,'g':119,'b':242},
+                  },
+              )
+              dump('GATEWAY_RECT_CREATE', create)
+              created_effect=find_key(create,'created')
+              if not isinstance(created_effect,list) or PROBE_NAME not in created_effect:
+                  raise RuntimeError(f'gateway create effects missing {PROBE_NAME}: {created_effect}')
+
+              found=registry.execute('illustrator','creative.object.find',{'name':PROBE_NAME})
+              dump('GATEWAY_FIND_AFTER_CREATE', found)
+              found_items=query_items(found)
+              if len(found_items) != 1:
+                  raise RuntimeError(f'live readback expected one probe item, got {len(found_items)}')
+              print('GATEWAY_BOUNDED_CREATE_READBACK=PASS', flush=True)
+
+              select_script=(
+                  "var d=app.activeDocument;d.selection=null;var hit=null;"
+                  "for(var i=0;i<d.pageItems.length;i++){if(d.pageItems[i].name==='mcp_adobe_gateway_probe'){hit=d.pageItems[i];break;}}"
+                  "if(!hit){throw new Error('probe item not found');}hit.selected=true;"
+                  "JSON.stringify({selected:d.selection.length,name:hit.name});"
+              )
+              setup_selection=client._call_tool_raw(
+                  'illustrator_execute_script',
+                  {'params': {'script':select_script,'read_only':False,'description':'Select gateway probe for official selection test'}},
+              )
+              dump('GATEWAY_SELECTION_SETUP', setup_selection)
+
+              selection=registry.execute('illustrator','creative.selection.get',{})
+              dump('GATEWAY_SELECTION_GET', selection)
+              selection_count=find_key(selection,'selectionCount')
+              if selection_count != 1:
+                  raise RuntimeError(f'official selection read expected one item, got {selection_count}')
+              selected_uuid=find_key(selection,'uuid')
+              if not isinstance(selected_uuid,str) or not selected_uuid:
+                  raise RuntimeError(f'official selection read did not expose target token: {selected_uuid}')
+              print('GATEWAY_SELECTION_READ=PASS token='+selected_uuid, flush=True)
+
+              updated=registry.execute(
+                  'illustrator','creative.selection.update',
+                  {'properties':{'opacity':61}},
+              )
+              dump('GATEWAY_SELECTION_UPDATE', updated)
+              opacity_read=client._call_tool_raw(
+                  'illustrator_execute_script',
+                  {'params': {'script':'JSON.stringify({opacity:app.activeDocument.selection[0].opacity});','read_only':True}},
+              )
+              dump('GATEWAY_SELECTION_UPDATE_READBACK', opacity_read)
+              opacity=find_key(opacity_read,'opacity')
+              if not isinstance(opacity,(int,float)) or abs(float(opacity)-61.0) > 0.01:
+                  raise RuntimeError(f'official selection update opacity mismatch: {opacity}')
+              print('GATEWAY_SELECTION_UPDATE_READBACK=PASS', flush=True)
+
+              deleted=registry.execute(
+                  'illustrator','creative.object.delete',
+                  {'uuids':[PROBE_NAME]},
+                  policy=ExecutionPolicy(allow_destructive=True),
+              )
+              dump('GATEWAY_INVERSE_DELETE', deleted)
+              deleted_effect=find_key(deleted,'deleted')
+              if not isinstance(deleted_effect,list) or PROBE_NAME not in deleted_effect:
+                  raise RuntimeError(f'gateway delete effects missing {PROBE_NAME}: {deleted_effect}')
+
+              after=registry.execute('illustrator','creative.object.find',{'name':PROBE_NAME})
+              dump('GATEWAY_FIND_AFTER_DELETE', after)
+              after_items=query_items(after)
+              if len(after_items) != 0:
+                  raise RuntimeError(f'inverse delete readback expected zero items, got {len(after_items)}')
+              print('GATEWAY_LOGICAL_ROLLBACK_READBACK=PASS', flush=True)
+              print('MCP_ADOBE_ILLUSTRATOR_CEP_GATEWAY_E2E=PASS', flush=True)
+          finally:
+              if created_doc:
+                  try:
+                      active=client._call_tool_raw(
+                          'illustrator_execute_script',
+                          {'params': {'script':'JSON.stringify({name:app.activeDocument.name});','read_only':True}},
+                      )
+                      active_name=find_key(active,'name')
+                      print('CLEANUP_ACTIVE_DOCUMENT='+str(active_name), flush=True)
+                      if active_name == DOC_NAME:
+                          closed=client._call_tool_raw(
+                              'illustrator_document',
+                              {'params': {'action':'close','save_before_close':False}},
+                          )
+                          dump('CLEANUP_DOCUMENT_CLOSE', closed)
+                      else:
+                          print('CLEANUP_DOCUMENT_CLOSE=SKIP active document changed', flush=True)
+                  except Exception as exc:
+                      print(f'CLEANUP_DOCUMENT_CLOSE=FAILED {type(exc).__name__}:{exc}', flush=True)
+              client.close()
+          '@ | Set-Content -Path illustrator_gateway_live_e2e.py -Encoding UTF8
+          uv run python illustrator_gateway_live_e2e.py
+
+      - name: Final port cleanup evidence
+        if: always()
+        shell: powershell
+        run: |
+          Start-Sleep -Seconds 2
+          $listeners=@(Get-NetTCPConnection -State Listen -LocalPort 8081 -ErrorAction SilentlyContinue)
+          if($listeners.Count -eq 0){ Write-Host 'PORT_8081_AFTER_JOB=FREE' }
+          else {
+            foreach($l in $listeners){
+              $p=Get-Process -Id $l.OwningProcess -ErrorAction SilentlyContinue
+              Write-Host "PORT_8081_REMAINS PID=$($l.OwningProcess) PROCESS=$($p.ProcessName) PATH=$($p.Path)"
+            }
+            throw 'Port 8081 remained occupied after gateway shutdown.'
+          }

@@ -1,9 +1,11 @@
 const application = require("application");
-const { Rectangle, Text, Color } = require("scenegraph");
 const { entrypoints } = require("uxp");
+const scenegraph = require("scenegraph");
+const { Rectangle, Text, Color } = scenegraph;
 
 const BRIDGE_URL = "ws://127.0.0.1:8765";
 const STATUS_LIMIT = 200;
+const BRIDGE_BUILD = "xd-canvas-readback-v3";
 
 let panel;
 let socket;
@@ -59,12 +61,25 @@ function snapshot(selection, rootNode) {
     rootChildren = rootNode && rootNode.children ? rootNode.children.length : 0;
   } catch (_) {}
 
+  const insertionParentChildren = [];
+  try {
+    const parent = selection && selection.insertionParent
+      ? selection.insertionParent
+      : null;
+    if (parent && parent.children) {
+      for (let i = 0; i < parent.children.length; i += 1) {
+        insertionParentChildren.push(nodeInfo(parent.children.at(i)));
+      }
+    }
+  } catch (_) {}
+
   latestSnapshot = {
     document: {
       rootChildren,
       insertionParent: selection && selection.insertionParent
         ? nodeInfo(selection.insertionParent)
-        : null
+        : null,
+      insertionParentChildren
     },
     selection: items
   };
@@ -93,6 +108,12 @@ function queueMutation(method, params) {
     queuedAt: Date.now()
   });
   renderStatus();
+  if (panel) {
+    const applyButton = panel.querySelector("#apply");
+    if (applyButton) {
+      try { applyButton.focus(); } catch (_) {}
+    }
+  }
   return {
     status: "queued",
     approval_required: true,
@@ -210,6 +231,26 @@ function applyPending() {
   renderStatus();
 }
 
+function clearPending(reason) {
+  const batch = pendingWrites.slice();
+  pendingWrites = [];
+  for (let i = 0; i < batch.length; i += 1) {
+    const item = batch[i];
+    rememberOperation(item.operationId, {
+      status: "rejected",
+      method: item.method,
+      rejectedAt: Date.now(),
+      reason: reason || "queue cleared"
+    });
+  }
+  renderStatus();
+  return {
+    status: "cleared",
+    rejected_count: batch.length,
+    pending_count: pendingWrites.length
+  };
+}
+
 function rejectPending() {
   const batch = pendingWrites.slice();
   pendingWrites = [];
@@ -231,16 +272,23 @@ function dispatch(method, params) {
       version: application.version,
       appLanguage: application.appLanguage,
       bridge: "connected",
-      pending_count: pendingWrites.length
+      pending_count: pendingWrites.length,
+      bridge_build: BRIDGE_BUILD
     };
   }
 
   if (method === "xd.document.info") {
+    try { snapshot(scenegraph.selection, scenegraph.root); } catch (_) {}
     return latestSnapshot.document || { rootChildren: 0, insertionParent: null };
   }
 
   if (method === "xd.selection.get") {
+    try { snapshot(scenegraph.selection, scenegraph.root); } catch (_) {}
     return { items: latestSnapshot.selection || [] };
+  }
+
+  if (method === "xd.queue.clear") {
+    return clearPending(params && params.reason ? String(params.reason) : "MCP queue reset");
   }
 
   if (method === "xd.queue.status") {
@@ -286,7 +334,8 @@ function connect() {
       type: "hello",
       application: "xd",
       version: application.version,
-      protocol: 1
+      protocol: 1,
+      bridgeBuild: BRIDGE_BUILD
     });
     renderStatus();
   };
@@ -351,10 +400,10 @@ function create() {
       <div class="mcp-row" id="pending">Pending approvals: 0</div>
       <div class="mcp-actions">
         <button id="reconnect">Reconnect</button>
-        <button id="apply" uxp-variant="cta" uxp-edit-label="Apply MCP Adobe operations">Apply pending</button>
+        <button id="apply" autofocus uxp-variant="cta" uxp-edit-label="Apply MCP Adobe operations">Apply pending</button>
         <button id="reject">Reject pending</button>
       </div>
-      <p class="mcp-note">Read requests use the latest XD panel snapshot. Write requests are queued and only applied after an explicit click, as required by the XD plugin edit lifecycle.</p>
+      <p class="mcp-note">Read requests use the latest XD panel snapshot. Write requests are queued and applied together with one explicit Apply click, as required by the XD plugin edit lifecycle.</p>
     </div>
   `;
 
@@ -380,7 +429,68 @@ function update(selection, documentRoot) {
   renderStatus();
 }
 
+function connectCommand(selection, documentRoot) {
+  snapshot(selection, documentRoot);
+  connect();
+  renderStatus();
+}
+
+function applyPendingCommand(selection, documentRoot) {
+  if (pendingWrites.length === 0) {
+    snapshot(selection, documentRoot);
+    return;
+  }
+
+  const batch = pendingWrites.slice();
+  pendingWrites = [];
+  const results = {};
+
+  try {
+    for (let i = 0; i < batch.length; i += 1) {
+      const item = batch[i];
+      results[item.operationId] = applyMutation(item, selection);
+    }
+
+    for (let i = 0; i < batch.length; i += 1) {
+      const item = batch[i];
+      rememberOperation(item.operationId, {
+        status: "applied",
+        method: item.method,
+        appliedAt: Date.now(),
+        result: results[item.operationId]
+      });
+    }
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error);
+    for (let i = 0; i < batch.length; i += 1) {
+      const item = batch[i];
+      rememberOperation(item.operationId, {
+        status: "failed",
+        method: item.method,
+        failedAt: Date.now(),
+        error: message
+      });
+    }
+    throw error;
+  } finally {
+    try { snapshot(scenegraph.selection, scenegraph.root); } catch (_) {
+      snapshot(selection, documentRoot);
+    }
+    renderStatus();
+  }
+}
+
+// Manifest v4 entrypoints are registered through UXP entrypoints.setup().
 entrypoints.setup({
+  plugin: {
+    create() {
+      connect();
+    }
+  },
+  commands: {
+    mcpAdobeConnect: connectCommand,
+    mcpAdobeApply: applyPendingCommand
+  },
   panels: {
     mcpAdobeBridge: {
       show,

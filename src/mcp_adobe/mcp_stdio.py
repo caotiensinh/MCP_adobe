@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
+from pathlib import Path
 from threading import Event, Lock, Thread
 from typing import Any, Mapping
 
@@ -17,6 +19,7 @@ class SubprocessMcpConfig:
     env: Mapping[str, str] = field(default_factory=dict)
     startup_timeout_seconds: float = 30.0
     call_timeout_seconds: float = 120.0
+    compatibility: str | None = None
 
 
 class UpstreamToolError(RuntimeError):
@@ -55,6 +58,14 @@ class McpSubprocessToolClient:
     def tool_names(self) -> frozenset[str]:
         self.start()
         return self._tool_names
+
+    @property
+    def supported_legacy_tools(self) -> frozenset[str] | None:
+        if self.config.compatibility == "illustrator-cep":
+            from .illustrator_cep import SUPPORTED_LEGACY_TOOLS
+
+            return SUPPORTED_LEGACY_TOOLS
+        return None
 
     def start(self) -> None:
         with self._lock:
@@ -141,7 +152,7 @@ class McpSubprocessToolClient:
         result = await self._client.call_tool(name, dict(arguments))
         return self._normalize_result(result)
 
-    def call_tool(self, name: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+    def _call_tool_raw(self, name: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         self.start()
         if name not in self._tool_names:
             raise LookupError(f"upstream MCP tool not found: {name}")
@@ -154,6 +165,13 @@ class McpSubprocessToolClient:
         except FutureTimeoutError as exc:
             future.cancel()
             raise TimeoutError(f"upstream MCP tool timed out: {name}") from exc
+
+    def call_tool(self, name: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        if self.config.compatibility == "illustrator-cep":
+            from .illustrator_cep import call_legacy_tool
+
+            return call_legacy_tool(self._call_tool_raw, name, arguments)
+        return self._call_tool_raw(name, arguments)
 
     def close(self) -> None:
         loop = self._loop
@@ -191,10 +209,32 @@ def photoshop_stdio_config() -> SubprocessMcpConfig:
     )
 
 
+def _default_illustrator_cep_python() -> str:
+    override = os.environ.get("MCP_ADOBE_ILLUSTRATOR_PYTHON", "").strip()
+    if override:
+        return override
+    if os.name == "nt":
+        root = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+        return str(root / "MCPAdobe" / "illustrator-mcp" / "venv" / "Scripts" / "python.exe")
+    return str(Path.home() / ".local" / "share" / "mcp-adobe" / "illustrator-mcp" / "venv" / "bin" / "python")
+
+
 def illustrator_stdio_config() -> SubprocessMcpConfig:
-    """Pinned launcher matching the audited Illustrator snapshot/package release."""
+    """Launch the audited Illustrator 3.0.0 CEP/WebSocket backend.
+
+    The upstream server intentionally lives in a dedicated Python environment:
+    it requires MCP 1.x while this gateway runs MCP 2.x. The Windows installer
+    provisions the default path; MCP_ADOBE_ILLUSTRATOR_PYTHON can override it.
+    """
     return SubprocessMcpConfig(
-        command="npx",
-        args=("-y", "illustrator-mcp-server@1.10.3"),
+        command=_default_illustrator_cep_python(),
+        args=("-B", "-m", "illustrator_mcp.server"),
+        env={
+            "WS_HOST": "127.0.0.1",
+            "WS_PORT": "8081",
+            "TIMEOUT": "30",
+        },
+        startup_timeout_seconds=90.0,
         call_timeout_seconds=180.0,
+        compatibility="illustrator-cep",
     )

@@ -1,0 +1,78 @@
+name: Diagnose persistent MCP Adobe host log
+
+on:
+  push:
+    branches: [feat/illustrator-cep-backend]
+    paths:
+      - ".github/workflows/diagnose-persistent-host-log.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diagnose-persistent-mcp-adobe-host-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - name: Read persistent host state only
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          foreach($port in @(8787,8081,8765)){
+            $listeners=@(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
+            Write-Host "DIAG_PORT_$port count=$($listeners.Count)"
+            foreach($listener in $listeners){
+              $ownerPid=$listener.OwningProcess
+              $p=Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction SilentlyContinue
+              Write-Host "DIAG_OWNER port=$port PID=$ownerPid EXE=$($p.ExecutablePath) CMD=$($p.CommandLine)"
+            }
+          }
+          $log=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\logs\local-host.log'
+          if(-not (Test-Path -LiteralPath $log)){ throw "persistent host log missing: $log" }
+          Write-Host '=== PERSISTENT HOST ERROR CONTEXT ==='
+          $stream=[System.IO.File]::Open($log,[System.IO.FileMode]::Open,[System.IO.FileAccess]::Read,[System.IO.FileShare]::ReadWrite)
+          try {
+            $memory=New-Object System.IO.MemoryStream
+            $stream.CopyTo($memory)
+            $bytes=$memory.ToArray()
+            $memory.Dispose()
+          } finally {
+            $stream.Dispose()
+          }
+          if($bytes.Length -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE){
+            $text=[System.Text.Encoding]::Unicode.GetString($bytes,2,$bytes.Length-2)
+          } elseif($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF){
+            $text=[System.Text.Encoding]::UTF8.GetString($bytes,3,$bytes.Length-3)
+          } else {
+            $oddNulls=0
+            $sample=[Math]::Min($bytes.Length,4096)
+            for($n=1;$n -lt $sample;$n+=2){ if($bytes[$n] -eq 0){ $oddNulls++ } }
+            if($oddNulls -gt ($sample/8)){
+              $text=[System.Text.Encoding]::Unicode.GetString($bytes)
+            } else {
+              $text=[System.Text.Encoding]::UTF8.GetString($bytes)
+            }
+          }
+          $lines=$text -split "\r?\n"
+          $hits=@()
+          for($i=0;$i -lt $lines.Count;$i++){
+            if($lines[$i] -match "connection_probe|Tool 'creative_read' raised|E999|unresolved|panel|heartbeat|activeRequestId|busy|UnexpectedToolError|Traceback|timeout|timed out"){
+              $hits += $i
+            }
+          }
+          if($hits.Count -eq 0){
+            Write-Host 'DIAG_NO_ERROR_HITS'
+            $start=[Math]::Max(0,$lines.Count-300)
+            for($i=$start;$i -lt $lines.Count;$i++){ Write-Host $lines[$i] }
+          } else {
+            $last=$hits[$hits.Count-1]
+            $start=[Math]::Max(0,$last-140)
+            $end=[Math]::Min($lines.Count-1,$last+100)
+            for($i=$start;$i -le $end;$i++){ Write-Host $lines[$i] }
+          }
+          Write-Host '=== END PERSISTENT HOST ERROR CONTEXT ==='

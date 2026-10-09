@@ -72,14 +72,17 @@ Installed command:
 mcp-adobe
 ```
 
-The top-level surface intentionally exposes only four policy-separated tools:
+The top-level surface intentionally exposes only five policy-separated tools:
 
 - `creative_discover` — read-only application/capability/risk discovery;
 - `creative_read` — read-class capabilities only;
-- `creative_write` — reversible/file writes only, with overwrite opt-in;
+- `creative_write` — one reversible/file write, with overwrite opt-in;
+- `creative_live_build` — an ordered sequence of reversible visual writes, paced so the user can watch the Adobe canvas change step by step;
 - `creative_authorized_write` — separate path for destructive, native-script, external-AI, and other explicitly authorized high-risk actions.
 
-A normal write cannot silently become a native-script or destructive operation.
+For multi-object drawing/composition requests, ChatGPT, Claude, and other MCP clients should prefer one `creative_live_build` call over a burst of independent `creative_write` calls. The client model translates the natural-language request into ordered reversible capabilities. When the request is for new artwork, or Illustrator has no open document, include `creative.document.create` as the first step. The default `step_delay_ms=450` keeps builds responsive; a roughly 700–1000 ms delay is useful when the user explicitly wants to watch the construction. Use `creative_write` for isolated or read-dependent edits instead.
+
+A normal write or live build cannot silently become a native-script or destructive operation.
 
 ### Local stdio
 
@@ -147,7 +150,7 @@ Exercise the packaged runtime without claiming real Adobe desktop E2E:
 uv run python scripts/smoke_mcpb.py dist/mcp-adobe-creative-gateway.mcpb --exercise-adapters
 ```
 
-The smoke test validates archive contents, starts the gateway from the extracted package, verifies the four-tool MCP surface, and discovers Photoshop/Illustrator/XD adapter metadata. Adapter `connected` state is reported as evidence but is not treated as a desktop-E2E PASS unless `--require-connected <application>` is explicitly requested. The complete packaged runtime exercise is bounded by a timeout so an upstream process cannot hang CI indefinitely.
+The smoke test validates archive contents, starts the gateway from the extracted package, verifies the five-tool MCP surface, and discovers Photoshop/Illustrator/XD adapter metadata. Adapter `connected` state is reported as evidence but is not treated as a desktop-E2E PASS unless `--require-connected <application>` is explicitly requested. The complete packaged runtime exercise is bounded by a timeout so an upstream process cannot hang CI indefinitely.
 
 ## OAuth-protected remote MCP
 
@@ -188,7 +191,7 @@ full high-risk remote surface:
 creative:access creative:write creative:high-risk
 ```
 
-`creative:access` is the recommended default. A read-only profile blocks both write tools before the Adobe runtime is invoked. The normal-write profile enables `creative_write` while keeping `creative_authorized_write` disabled. The full profile enables the high-risk route, but destructive/native-script/external-AI operations still require their existing explicit operation flags.
+`creative:access` is the recommended default. A read-only profile blocks all write-capable tools (`creative_write`, `creative_live_build`, and `creative_authorized_write`) before the Adobe runtime is invoked. The normal-write profile enables `creative_write` and `creative_live_build` while keeping `creative_authorized_write` disabled. The full profile enables the high-risk route, but destructive/native-script/external-AI operations still require their existing explicit operation flags.
 
 A token missing any scope required by the deployed profile is rejected by the MCP HTTP bearer middleware with `403 insufficient_scope` before tool execution.
 

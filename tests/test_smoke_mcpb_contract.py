@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from scripts.smoke_mcpb import EXPECTED_APPLICATIONS, _validate_discovery_contract
+from scripts.smoke_mcpb import EXPECTED_APPLICATIONS, EXPECTED_TOOLS, _validate_discovery_contract
 
 
 def _valid_payload() -> tuple[dict[str, object], dict[str, dict[str, object]]]:
@@ -29,6 +29,18 @@ def _valid_payload() -> tuple[dict[str, object], dict[str, dict[str, object]]]:
 
 
 class PackagedDiscoveryContractTests(unittest.TestCase):
+    def test_packaged_surface_requires_visual_live_build(self) -> None:
+        self.assertEqual(
+            EXPECTED_TOOLS,
+            {
+                "creative_discover",
+                "creative_read",
+                "creative_write",
+                "creative_live_build",
+                "creative_authorized_write",
+            },
+        )
+
     def test_valid_contract_reports_transport_and_readiness_separately(self) -> None:
         payload, by_name = _valid_payload()
 

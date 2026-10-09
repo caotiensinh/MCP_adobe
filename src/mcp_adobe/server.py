@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import atexit
 import os
+import sys
+import time
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Mapping, Protocol
+from typing import Any, Iterable, Mapping, Protocol
 from uuid import uuid4
 
 from mcp.server import MCPServer
@@ -24,6 +27,8 @@ from .core import AdapterInfo, CapabilityRegistry, ExecutionPolicy, PolicyError,
 from .illustrator import IllustratorAdapter
 from .mcp_stdio import McpSubprocessToolClient, illustrator_stdio_config, photoshop_stdio_config
 from .photoshop import OperationUnknownError, PhotoshopAdapter
+
+logger = logging.getLogger(__name__)
 from .xd import XdAdapter
 from .xd_bridge import XdWebSocketBridgeClient
 
@@ -85,6 +90,42 @@ class GatewayRuntime:
 
     def describe(self) -> tuple[AdapterInfo, ...]:
         return self.registry.describe()
+
+    def prewarm(
+        self,
+        applications: Iterable[str],
+        *,
+        strict: bool = False,
+    ) -> dict[str, str]:
+        """Start selected Adobe bridges before the first MCP tool call."""
+        requested: list[str] = []
+        for raw in applications:
+            name = str(raw).strip().lower()
+            if not name:
+                continue
+            names = ("photoshop", "illustrator", "xd") if name == "all" else (name,)
+            for item in names:
+                if item not in {"photoshop", "illustrator", "xd"}:
+                    raise ValueError(f"unsupported prewarm application: {item}")
+                if item not in requested:
+                    requested.append(item)
+
+        starters = {
+            "photoshop": self._photoshop_client.start,
+            "illustrator": self._illustrator_client.start,
+            "xd": self._xd_client.start,
+        }
+        results: dict[str, str] = {}
+        for application in requested:
+            try:
+                starters[application]()
+            except Exception as exc:
+                results[application] = f"error:{type(exc).__name__}:{exc}"
+                if strict:
+                    raise RuntimeError(f"failed to prewarm {application}") from exc
+            else:
+                results[application] = "started"
+        return results
 
     def _risk(self, application: str, capability: str) -> RiskClass:
         adapter = self.registry.resolve(application, capability)
@@ -330,8 +371,17 @@ def build_server(
                 operation_id=operation_id,
                 outcome="failed",
             )
+            logger.exception(
+                "creative operation failed tool=%s application=%s capability=%s operation_id=%s cause=%s",
+                tool_name,
+                application,
+                capability,
+                operation_id,
+                exc,
+            )
             raise RuntimeError(
-                f"operation failed; operation_id={operation_id}"
+                f"operation failed; operation_id={operation_id}; "
+                f"cause={type(exc).__name__}: {exc}"
             ) from None
 
         outcome = str(payload.get("outcome", "accepted_unverified"))
@@ -437,6 +487,143 @@ def build_server(
         )
 
     @mcp.tool(
+        title="Build artwork visibly step by step",
+        annotations=ToolAnnotations(
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=False,
+            open_world_hint=False,
+        ),
+    )
+    def creative_live_build(
+        application: str,
+        steps: list[dict[str, Any]],
+        step_delay_ms: int = 450,
+    ) -> dict[str, Any]:
+        """Execute an ordered visual build as separate reversible writes.
+
+        Clients should prefer this tool for multi-object drawing requests so the
+        user can watch the Adobe canvas change after each step instead of seeing
+        only the final composition. The client/LLM remains responsible for
+        translating natural-language intent into bounded capabilities/arguments.
+        """
+        if not isinstance(steps, list) or not steps:
+            raise ValueError("creative_live_build requires at least one step")
+        if len(steps) > 64:
+            raise ValueError("creative_live_build supports at most 64 steps")
+        if not isinstance(step_delay_ms, int) or isinstance(step_delay_ms, bool):
+            raise ValueError("step_delay_ms must be an integer")
+        if step_delay_ms < 0 or step_delay_ms > 3000:
+            raise ValueError("step_delay_ms must be between 0 and 3000")
+
+        info = next(
+            (item for item in current_runtime().describe() if item.application == application.strip().lower()),
+            None,
+        )
+        if info is None:
+            raise LookupError(f"no adapter registered for application: {application}")
+
+        normalized: list[tuple[str, str, dict[str, Any]]] = []
+        for index, raw in enumerate(steps, start=1):
+            if not isinstance(raw, Mapping):
+                raise ValueError(f"creative_live_build step {index} must be an object")
+            capability = raw.get("capability")
+            if not isinstance(capability, str) or not capability.strip():
+                raise ValueError(f"creative_live_build step {index} requires capability")
+            capability = capability.strip()
+            if not info.supports(capability):
+                raise LookupError(
+                    f"creative_live_build step {index} unsupported capability: {capability}"
+                )
+            if info.risk_for(capability) is not RiskClass.WRITE_REVERSIBLE:
+                raise PolicyError(
+                    "creative_live_build accepts only reversible visual writes; "
+                    f"step {index} {capability} is {info.risk_for(capability).value}"
+                )
+            arguments = raw.get("arguments", {})
+            if not isinstance(arguments, Mapping):
+                raise ValueError(f"creative_live_build step {index} arguments must be an object")
+            label = raw.get("label")
+            if label is None:
+                label = capability
+            if not isinstance(label, str) or not label.strip():
+                raise ValueError(f"creative_live_build step {index} label must be non-empty")
+            normalized.append((label.strip(), capability, dict(arguments)))
+
+        operation_id = str(uuid4())
+        require_oauth_profile_scope(
+            WRITE_SCOPE,
+            "creative_live_build",
+            application=application,
+            capability="visual-sequence",
+            operation_id=operation_id,
+        )
+        audit(
+            "creative_live_build",
+            "allowed",
+            application=application,
+            capability="visual-sequence",
+            operation_id=operation_id,
+        )
+
+        completed: list[dict[str, Any]] = []
+        try:
+            for index, (label, capability, arguments) in enumerate(normalized, start=1):
+                step_operation_id = f"{operation_id}:{index}"
+                payload = run_correlated_write(
+                    "creative_live_build",
+                    step_operation_id,
+                    application,
+                    capability,
+                    lambda capability=capability, arguments=arguments: current_runtime().write(
+                        application,
+                        capability,
+                        arguments,
+                    ),
+                )
+                completed.append(
+                    {
+                        "index": index,
+                        "label": label,
+                        "capability": capability,
+                        "outcome": payload.get("outcome", "accepted_unverified"),
+                        "operation_id": payload.get("operation_id"),
+                    }
+                )
+                if index < len(normalized) and step_delay_ms:
+                    time.sleep(step_delay_ms / 1000.0)
+        except Exception:
+            audit(
+                "creative_live_build",
+                "failed",
+                application=application,
+                capability="visual-sequence",
+                reason=f"stopped-after-step:{len(completed)}",
+                operation_id=operation_id,
+                outcome="partial" if completed else "failed",
+            )
+            raise
+
+        audit(
+            "creative_live_build",
+            "completed",
+            application=application,
+            capability="visual-sequence",
+            operation_id=operation_id,
+            outcome="completed",
+        )
+        return {
+            "ok": True,
+            "application": application,
+            "mode": "visual_live_build",
+            "operation_id": operation_id,
+            "step_delay_ms": step_delay_ms,
+            "steps_total": len(normalized),
+            "steps_completed": len(completed),
+            "steps": completed,
+        }
+
+    @mcp.tool(
         title="Run an explicitly authorized high-risk Adobe write",
         annotations=ToolAnnotations(
             read_only_hint=False,
@@ -500,6 +687,18 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=int(os.environ.get("MCP_ADOBE_PORT", "8787")))
     parser.add_argument("--path", default=os.environ.get("MCP_ADOBE_PATH", "/mcp"))
     parser.add_argument(
+        "--prewarm",
+        action="append",
+        choices=("photoshop", "illustrator", "xd", "all"),
+        default=[],
+        help="Start selected Adobe bridge(s) when the gateway starts; repeatable.",
+    )
+    parser.add_argument(
+        "--prewarm-strict",
+        action="store_true",
+        help="Exit if a requested prewarm bridge cannot be started.",
+    )
+    parser.add_argument(
         "--allow-non-loopback",
         action="store_true",
         help="Allow an OAuth-protected non-loopback bind. Prefer Secure MCP Tunnel/reverse proxy.",
@@ -553,7 +752,15 @@ def main() -> None:
         if not loopback and not oauth_config.resource_url.startswith("https://"):
             raise SystemExit("Non-loopback OAuth resource URL must use https")
 
+    runtime: GatewayRuntime | None = None
+    if args.prewarm:
+        runtime = _get_default_runtime()
+        results = runtime.prewarm(args.prewarm, strict=args.prewarm_strict)
+        for application, status in results.items():
+            print(f"mcp_adobe_prewarm {application}={status}", file=sys.stderr, flush=True)
+
     mcp = build_server(
+        runtime=runtime,
         oauth_config=oauth_config,
         token_verifier=token_verifier,
         audit_sink=audit_sink,
@@ -576,3 +783,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+# exact-head visual-build trigger: real-panel-transport

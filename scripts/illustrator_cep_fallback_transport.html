@@ -1,0 +1,222 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="../dist/CSInterface.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  "use strict";
+
+  var ENDPOINT = "ws://127.0.0.1:8081";
+  var PANEL_ID = "com.illustrator.mcp.panel";
+  var cs = new CSInterface();
+  var socket = null;
+  var retryTimer = null;
+  var heartbeatTimer = null;
+  var connectedAt = 0;
+  var busy = false;
+  var activeRequestId = null;
+
+  function heartbeat() {
+    return JSON.stringify({
+      type: "heartbeat",
+      busy: busy,
+      activeRequestId: activeRequestId,
+      uptimeMs: connectedAt ? Date.now() - connectedAt : 0,
+      capabilities: ["payload-v1"]
+    });
+  }
+
+  function send(frame) {
+    if (!socket || socket.readyState !== 1) return false;
+    socket.send(typeof frame === "string" ? frame : JSON.stringify(frame));
+    return true;
+  }
+
+  function evalHost(script, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      var settled = false;
+      var timer = window.setTimeout(function () {
+        if (!settled) {
+          settled = true;
+          reject(new Error("Illustrator evalScript timeout"));
+        }
+      }, timeoutMs || 15000);
+      cs.evalScript(script, function (raw) {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        resolve(raw);
+      });
+    });
+  }
+
+  async function collectPayload(request, descriptor) {
+    if (!descriptor || descriptor.version !== 1 || descriptor.pageBytes !== 12288 ||
+        !Number.isInteger(descriptor.byteLength) || descriptor.byteLength < 0 ||
+        descriptor.byteLength > 32 * 1024 * 1024) {
+      throw new Error("invalid payload descriptor");
+    }
+    var owner = {
+      payloadId: descriptor.payloadId,
+      sessionId: request.transport.sessionId,
+      jobId: request.jobId,
+      requestToken: request.requestToken
+    };
+    var frames = [{
+      type: "payload_descriptor",
+      id: request.id,
+      requestToken: request.requestToken,
+      descriptor: descriptor
+    }];
+    try {
+      for (var offset = 0; offset < descriptor.byteLength; offset += descriptor.pageBytes) {
+        var page = null;
+        for (var attempt = 0; attempt < 2; attempt++) {
+          try {
+            var raw = await evalHost(
+              "mcp_payload_read(" + JSON.stringify(Object.assign({}, owner, {offset: offset})) + ")",
+              15000
+            );
+            page = JSON.parse(raw);
+            if (page.payloadError) throw new Error(page.payloadError);
+            if (page.offset !== offset || page.payloadId !== descriptor.payloadId ||
+                typeof page.data !== "string" || page.data.length > 16384) {
+              throw new Error("invalid payload page");
+            }
+            break;
+          } catch (error) {
+            if (attempt === 1) throw error;
+          }
+        }
+        frames.push(Object.assign({}, page, {
+          id: request.id,
+          requestToken: request.requestToken,
+          type: "payload_chunk"
+        }));
+      }
+      return frames;
+    } finally {
+      try {
+        await evalHost("mcp_payload_release(" + JSON.stringify(owner) + ")", 5000);
+      } catch (_) {}
+    }
+  }
+
+  async function handleRequest(data) {
+    if (!data || !data.script || !data.id) return;
+    if (busy) {
+      send({
+        id: data.id,
+        requestToken: data.requestToken,
+        type: "complete",
+        error: "BUSY: fallback transport is already executing request " + activeRequestId
+      });
+      return;
+    }
+
+    busy = true;
+    activeRequestId = data.id;
+    send(heartbeat());
+    var started = Date.now();
+    try {
+      var raw = await evalHost("mcp_handle_request(" + JSON.stringify(data) + ")", 30000);
+      var parsed;
+      try { parsed = JSON.parse(raw); }
+      catch (_) { parsed = {result: raw}; }
+
+      if (data.transport) {
+        if (!parsed.payloadDescriptor) {
+          send({
+            id: data.id,
+            type: "complete",
+            command: (data.command && data.command.type) || "script",
+            requestToken: data.requestToken,
+            jobId: data.jobId,
+            connectionGeneration: data.connectionGeneration,
+            duration: Date.now() - started,
+            payloadError: parsed.payloadError,
+            error: "Payload descriptor unavailable: " + (parsed.payloadError || "host upgrade required")
+          });
+          return;
+        }
+        var frames = await collectPayload(data, parsed.payloadDescriptor);
+        for (var i = 0; i < frames.length; i++) send(frames[i]);
+      }
+
+      send({
+        id: data.id,
+        type: "complete",
+        command: (data.command && data.command.type) || "script",
+        requestToken: data.requestToken,
+        jobId: data.jobId,
+        connectionGeneration: data.connectionGeneration,
+        duration: Date.now() - started,
+        result: data.transport ? undefined : (parsed.result !== undefined ? parsed.result : parsed),
+        error: parsed.error
+      });
+    } catch (error) {
+      send({
+        id: data.id,
+        type: "complete",
+        command: (data.command && data.command.type) || "script",
+        requestToken: data.requestToken,
+        jobId: data.jobId,
+        connectionGeneration: data.connectionGeneration,
+        duration: Date.now() - started,
+        error: String(error)
+      });
+    } finally {
+      busy = false;
+      activeRequestId = null;
+      send(heartbeat());
+    }
+  }
+
+  function connect() {
+    if (socket && (socket.readyState === 0 || socket.readyState === 1)) return;
+    try {
+      socket = new WebSocket(ENDPOINT);
+    } catch (_) {
+      retryTimer = window.setTimeout(connect, 3000);
+      return;
+    }
+
+    socket.onopen = function () {
+      connectedAt = Date.now();
+      send(heartbeat());
+      if (heartbeatTimer !== null) window.clearInterval(heartbeatTimer);
+      heartbeatTimer = window.setInterval(function () { send(heartbeat()); }, 5000);
+    };
+
+    socket.onmessage = function (event) {
+      try {
+        var data = JSON.parse(event.data);
+        if (data.type === "completion_ack") return;
+        handleRequest(data);
+      } catch (_) {}
+    };
+
+    socket.onclose = function (event) {
+      if (heartbeatTimer !== null) {
+        window.clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+      socket = null;
+      if (event.code === 4001) return;
+      retryTimer = window.setTimeout(connect, 3000);
+    };
+
+    socket.onerror = function () {};
+  }
+
+  try { cs.requestOpenExtension(PANEL_ID, ""); } catch (_) {}
+  window.setTimeout(function () {
+    if (!socket || socket.readyState !== 1) connect();
+  }, 6000);
+})();
+</script>
+</body>
+</html>

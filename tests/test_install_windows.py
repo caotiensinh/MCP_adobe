@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 class WindowsInstallerTests(unittest.TestCase):
-    def test_generate_configs_only_produces_claude_and_codex_stdio_configs(self) -> None:
+    def test_generate_configs_only_produces_shared_http_host_configs(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         script = repo / "scripts" / "install_windows.ps1"
         with tempfile.TemporaryDirectory() as tmp:
@@ -45,21 +45,20 @@ class WindowsInstallerTests(unittest.TestCase):
 
             claude = json.loads(claude_path.read_text(encoding="utf-8-sig"))
             server = claude["mcpServers"]["adobe-creative"]
-            self.assertEqual(server["type"], "stdio")
-            self.assertEqual(server["command"], fake_uv)
-            self.assertEqual(server["args"][0:2], ["run", "--directory"])
-            self.assertIn("mcp-adobe", server["args"])
-            self.assertEqual(server["args"][-2:], ["--transport", "stdio"])
+            self.assertEqual(server["type"], "http")
+            self.assertEqual(server["url"], "http://127.0.0.1:8787/mcp")
+            self.assertNotIn("command", server)
+            self.assertNotIn("args", server)
 
             codex = codex_path.read_text(encoding="utf-8-sig")
             self.assertIn("[mcp_servers.adobe_creative]", codex)
-            self.assertIn('command = "C:\\\\Tools\\\\uv.exe"', codex)
-            self.assertIn('"mcp-adobe"', codex)
-            self.assertIn('"--transport", "stdio"', codex)
+            self.assertIn('url = "http://127.0.0.1:8787/mcp"', codex)
+            self.assertNotIn("command =", codex)
 
             instructions = instructions_path.read_text(encoding="utf-8-sig")
-            self.assertIn("claude mcp add --transport stdio", instructions)
-            self.assertIn("Codex:", instructions)
+            self.assertIn("claude mcp add --transport http", instructions)
+            self.assertIn("codex mcp add adobe-creative --url http://127.0.0.1:8787/mcp", instructions)
+            self.assertIn("persistent local host", instructions)
             self.assertNotIn("MCP_ADOBE_OAUTH_CLIENT_SECRET", instructions)
             self.assertNotIn("Bearer ", instructions)
 

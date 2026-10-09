@@ -66,7 +66,7 @@ Choose one scope set for the deployed endpoint:
 MCP_ADOBE_OAUTH_REQUIRED_SCOPES=creative:access
 ```
 
-Remote clients can authenticate, discover the gateway, and use read-class operations. `creative_write` and `creative_authorized_write` fail before the Adobe runtime is invoked.
+Remote clients can authenticate, discover the gateway, and use read-class operations. `creative_write`, `creative_live_build`, and `creative_authorized_write` fail before the Adobe runtime is invoked.
 
 ### Normal-write remote profile
 
@@ -74,7 +74,7 @@ Remote clients can authenticate, discover the gateway, and use read-class operat
 MCP_ADOBE_OAUTH_REQUIRED_SCOPES=creative:access creative:write
 ```
 
-This enables `creative_write` for reversible/file-write capabilities. `creative_authorized_write` remains disabled.
+This enables `creative_write` and `creative_live_build` for normal reversible work. `creative_authorized_write` remains disabled.
 
 ### Full high-risk remote profile
 
@@ -85,6 +85,15 @@ MCP_ADOBE_OAUTH_REQUIRED_SCOPES=creative:access creative:write creative:high-ris
 This enables the high-risk top-level route, but it does **not** bypass operation-level policy. Destructive/native-script/external-AI operations still require the corresponding explicit flags such as `allow_native_script=true`.
 
 Profiles are hierarchical: do not configure `creative:high-risk` without `creative:write`.
+
+### Visual multi-object requests from ChatGPT / Claude
+
+For prompts such as “draw a car”, “build this icon”, or “compose this diagram”, the client model should plan the request into ordered reversible capabilities and call `creative_live_build` once. This is the preferred interactive path because each step is sent to Adobe separately and the configured `step_delay_ms` makes the construction visible on the live canvas.
+
+If the user requested new artwork, or the target application has no open document, the first step should be `creative.document.create`. Keep later steps reversible (for example Illustrator rectangles, ellipses, paths, text, grouping, and ordinary object updates). File writes, destructive operations, native scripts, and external-AI operations are intentionally rejected by `creative_live_build` and stay on their existing explicit policy routes.
+
+The gateway does not run a second hidden LLM to interpret the prompt. ChatGPT/Claude is the planner; MCP Adobe executes the ordered plan and preserves the policy boundary. Use `creative_write` instead when the next edit must depend on a read-back from the previous step.
+
 
 The configured list is advertised by Protected Resource Metadata and is enforced by the MCP SDK's HTTP bearer middleware. A token missing any globally required scope is rejected with HTTP `403 insufficient_scope` before tool execution.
 
@@ -134,7 +143,7 @@ Boundary-only mode verifies:
 5. metadata `resource` matches the probed MCP URL;
 6. authorization-server and scope metadata are present.
 
-The probe does **not** execute `creative_read`, `creative_write`, or `creative_authorized_write`.
+The probe does **not** execute `creative_read`, `creative_write`, `creative_live_build`, or `creative_authorized_write`.
 
 To additionally verify authenticated MCP `tools/list`, provide a temporary bearer token through an environment variable rather than a command-line argument:
 
@@ -237,7 +246,8 @@ full-scope token                                -> 200 + MCP tools/list
 10. Run `mcp-adobe-remote-probe` against the public URL; when a temporary token is available, require authenticated `tools/list` before a production client is enabled.
 11. Add that HTTPS MCP URL in the supported ChatGPT MCP/custom-app flow and complete OAuth authorization.
 12. Inspect `creative_discover.oauth_policy` and the discovered tool list before enabling any write-capable workflow.
-13. Keep `creative_authorized_write` subject to explicit high-risk flags; remote OAuth authentication does not bypass gateway write policy.
+13. For visual multi-object prompts, confirm `creative_live_build` is listed and prefer it over rapid independent writes.
+14. Keep `creative_authorized_write` subject to explicit high-risk flags; remote OAuth authentication does not bypass gateway write policy.
 
 ## Local Claude / Codex / Cursor use
 

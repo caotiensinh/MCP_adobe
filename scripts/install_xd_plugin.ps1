@@ -82,6 +82,20 @@ and rerun with -DevelopFolder "<that folder>".
 $develop = Resolve-XdDevelopFolder -ExplicitPath $DevelopFolder
 $destination = Join-Path $develop 'MCPAdobeBridge'
 
+# Remove only stale MCP Adobe XD copies created by earlier loader experiments.
+# Leaving these beside the develop plugin causes two XD bridge instances to
+# race for ws://127.0.0.1:8765 (observed v3 -> v2 -> v3 within one live run).
+if($env:APPDATA){
+    $externalRoot=Join-Path $env:APPDATA 'Adobe\UXP\Plugins\External'
+    foreach($staleId in @('MCPADB01','com.mcpadobe.xd.bridge')){
+        $stalePath=Join-Path $externalRoot $staleId
+        if(Test-Path -LiteralPath $stalePath){
+            Remove-Item -LiteralPath $stalePath -Recurse -Force
+            Write-Host "XD_STALE_EXTERNAL_REMOVED=PASS ID=$staleId PATH=$stalePath"
+        }
+    }
+}
+
 Write-Host "XD develop folder: $develop"
 Write-Host "Installing bridge:   $destination"
 
@@ -92,6 +106,10 @@ New-Item -ItemType Directory -Force -Path $destination | Out-Null
 
 Copy-Item -LiteralPath (Join-Path $source 'main.js') -Destination $destination -Force
 Copy-Item -LiteralPath (Join-Path $source 'manifest.json') -Destination $destination -Force
+$debugSource=Join-Path $source 'debug.json'
+if(Test-Path -LiteralPath $debugSource){
+    Copy-Item -LiteralPath $debugSource -Destination $destination -Force
+}
 
 $manifestPath = Join-Path $destination 'manifest.json'
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
@@ -104,12 +122,22 @@ if ($PluginId) {
 }
 
 $installedManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-if ($installedManifest.manifestVersion -ne 4) {
-    throw "Unexpected XD manifestVersion: $($installedManifest.manifestVersion)"
-}
 if ($installedManifest.host.app -ne 'XD') {
     throw "Unexpected XD manifest host: $($installedManifest.host.app)"
 }
+if($installedManifest.manifestVersion -ne 4){
+    throw "XD manifestVersion must be 4, got $($installedManifest.manifestVersion)"
+}
+$entries=@($installedManifest.entrypoints)
+if($entries.Count -lt 3){
+    throw 'XD manifest is missing required v4 entrypoints.'
+}
+$connect=@($entries | Where-Object {$_.id -eq 'mcpAdobeConnect'}) | Select-Object -First 1
+$apply=@($entries | Where-Object {$_.id -eq 'mcpAdobeApply'}) | Select-Object -First 1
+$panel=@($entries | Where-Object {$_.id -eq 'mcpAdobeBridge'}) | Select-Object -First 1
+if(-not $connect -or $connect.type -ne 'command'){ throw 'XD connect command entry point missing.' }
+if(-not $apply -or $apply.type -ne 'command'){ throw 'XD apply command entry point missing.' }
+if(-not $panel -or $panel.type -ne 'panel'){ throw 'XD bridge panel entry point missing.' }
 if (-not (Test-Path (Join-Path $destination 'main.js'))) {
     throw 'XD bridge install verification failed: main.js missing.'
 }
