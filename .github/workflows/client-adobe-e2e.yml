@@ -44,6 +44,18 @@ jobs:
           print("CLIENT_E2E_PREFLIGHT=PASS python syntax; no AI model called")
           '@ | & python -
           if($LASTEXITCODE -ne 0){throw 'Client E2E Python preflight failed'}
+      - name: Read real Adobe MCP tools and Photoshop health without model
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@('C:\Program Files\nodejs',$machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){throw 'uv missing'}
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv sync failed'}
+          uv run python scripts/verify_client_adobe_e2e.py --preflight
+          if($LASTEXITCODE -ne 0){throw 'CLIENT_E2E_PREFLIGHT=FAIL real Photoshop health'}
   client-adobe:
     if: github.event_name == 'workflow_dispatch'
     runs-on: [self-hosted, Windows, X64]
