@@ -33,6 +33,9 @@ jobs:
           $user=[Environment]::GetEnvironmentVariable('Path','User')
           $env:Path=(@('C:\Program Files\nodejs',$machine,$user,$env:Path) | Where-Object {$_}) -join ';'
           $client='${{ matrix.client }}'
+          if($client -eq 'gemini' -and -not $env:GEMINI_API_KEY) {
+            throw 'CLIENT_E2E_BLOCKED=gemini Actions secret GEMINI_API_KEY missing'
+          }
           if($client -eq "gemini" -and -not (Get-Command gemini -ErrorAction SilentlyContinue)) {
             $installRoot=Join-Path $env:RUNNER_TEMP 'adobe-gemini-cli'
             Write-Host "CLIENT_BOOTSTRAP=gemini npm install --prefix scoped"
