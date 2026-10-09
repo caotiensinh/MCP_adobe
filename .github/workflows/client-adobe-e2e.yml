@@ -33,7 +33,7 @@ jobs:
           if($client -eq "gemini" -and -not (Get-Command gemini -ErrorAction SilentlyContinue)) {
             if(-not (Get-Command npx -ErrorAction SilentlyContinue)){throw "CLIENT_E2E_BLOCKED=gemini NODE_NPX_UNAVAILABLE"}
             Write-Host "CLIENT_BOOTSTRAP=gemini via pinned npx cache"
-            & npm exec --yes --package="@google/gemini-cli@0.10.0" -- gemini --version
+            & npx -y -p "@google/gemini-cli@0.10.0" -c "gemini --version"
             if($LASTEXITCODE -ne 0){throw "CLIENT_E2E_BLOCKED=gemini bootstrap_failed"}
           } elseif(-not (Get-Command $client -ErrorAction SilentlyContinue)) {
             throw "CLIENT_E2E_BLOCKED=$client CLI_NOT_INSTALLED"
@@ -59,9 +59,9 @@ jobs:
             '{"mcpServers":{"adobe-creative":{"type":"http","url":"http://127.0.0.1:8787/mcp"}}}' | Set-Content -Encoding utf8 $config
             & claude -p $prompt --mcp-config $config --strict-mcp-config --allowedTools 'mcp__adobe-creative__creative_live_build,mcp__adobe-creative__creative_read,mcp__adobe-creative__creative_discover'
           } else {
-            if(Get-Command gemini -ErrorAction SilentlyContinue) { & gemini mcp add -s project -t http adobe-creative $url } else { & npm exec --yes --package="@google/gemini-cli@0.10.0" -- gemini mcp add -s project -t http adobe-creative $url }
+            if(Get-Command gemini -ErrorAction SilentlyContinue) { & gemini mcp add -s project -t http adobe-creative $url } else { & npx -y -p "@google/gemini-cli@0.10.0" -c "gemini mcp add -s project -t http adobe-creative $url" }
             if($LASTEXITCODE -ne 0){throw 'Gemini MCP registration failed'}
-            if(Get-Command gemini -ErrorAction SilentlyContinue) { & gemini -p $prompt } else { & npm exec --yes --package="@google/gemini-cli@0.10.0" -- gemini -p $prompt }
+            if(Get-Command gemini -ErrorAction SilentlyContinue) { & gemini -p $prompt } else { & npx -y -p "@google/gemini-cli@0.10.0" -c "gemini -p `"$prompt`"" }
           }
           if($LASTEXITCODE -ne 0){throw "CLIENT_E2E_BLOCKED=$client client invocation failed rc=$LASTEXITCODE"}
           # Critical: do NOT trust agent prose. Fetch fresh upstream Photoshop state.
