@@ -1,0 +1,143 @@
+name: Claude and Gemini to real Adobe E2E
+on:
+  push:
+    branches: [feat/client-adobe-e2e-gates]
+    paths:
+      - '.github/workflows/client-adobe-e2e.yml'
+      - 'scripts/verify_client_adobe_e2e.py'
+  workflow_dispatch:
+    inputs:
+      client:
+        description: 'One client per run. Avoid exhausting quota.'
+        required: true
+        default: gemini
+        type: choice
+        options: [gemini, claude]
+      gemini_model:
+        description: 'Model with confirmed available API quota'
+        required: false
+        default: gemini-2.5-flash
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: adobe-client-e2e-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  preflight:
+    if: github.event_name == 'push'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check E2E verifier syntax without consuming model quota
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $py=Get-Command python -ErrorAction SilentlyContinue
+          if(-not $py){throw 'Python unavailable on Windows runner'}
+          @'
+          import ast
+          from pathlib import Path
+          p=Path("scripts/verify_client_adobe_e2e.py")
+          ast.parse(p.read_text(encoding="utf-8"))
+          print("CLIENT_E2E_PREFLIGHT=PASS python syntax; no AI model called")
+          '@ | & python -
+          if($LASTEXITCODE -ne 0){throw 'Client E2E Python preflight failed'}
+      - name: Read real Adobe MCP tools and Photoshop health without model
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@('C:\Program Files\nodejs',$machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){throw 'uv missing'}
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv sync failed'}
+          uv run python scripts/verify_client_adobe_e2e.py --preflight
+          if($LASTEXITCODE -ne 0){throw 'CLIENT_E2E_PREFLIGHT=FAIL real Photoshop health'}
+  client-adobe:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 18
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_CLI_TRUST_WORKSPACE: 'true'
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        client: ["${{ inputs.client }}"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify local gateway and CLI readiness
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@('C:\Program Files\nodejs',$machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          $client='${{ matrix.client }}'
+          if($client -eq 'gemini' -and -not $env:GEMINI_API_KEY) {
+            throw 'CLIENT_E2E_BLOCKED=gemini Actions secret GEMINI_API_KEY missing'
+          }
+          if($client -eq "gemini" -and -not (Get-Command gemini -ErrorAction SilentlyContinue)) {
+            $installRoot=Join-Path $env:RUNNER_TEMP 'adobe-gemini-cli'
+            Write-Host "CLIENT_BOOTSTRAP=gemini npm install --prefix scoped"
+            & npm.cmd install --prefix $installRoot --no-save --no-audit --no-fund "@google/gemini-cli@latest"
+            if($LASTEXITCODE -ne 0){throw "CLIENT_E2E_BLOCKED=gemini npm_install_failed"}
+            $bin=Join-Path $installRoot 'node_modules\.bin'
+            $geminiExe=Join-Path $bin 'gemini.cmd'
+            if(-not (Test-Path $geminiExe)){throw "CLIENT_E2E_BLOCKED=gemini executable_missing"}
+            $env:Path="$bin;$env:Path"
+            Add-Content -Path $env:GITHUB_PATH -Value $bin
+            & $geminiExe --version
+          } elseif(-not (Get-Command $client -ErrorAction SilentlyContinue)) {
+            throw "CLIENT_E2E_BLOCKED=$client CLI_NOT_INSTALLED"
+          } else { & $client --version }
+          if($LASTEXITCODE -ne 0){throw "CLIENT_E2E_BLOCKED=$client CLI_VERSION_FAILED"}
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){throw "CLIENT_E2E_BLOCKED=uv_unavailable"}
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw "uv sync failed"}
+          $p=@(Get-NetTCPConnection -State Listen -LocalPort 8787 -ErrorAction SilentlyContinue)
+          if($p.Count -eq 0){throw "CLIENT_E2E_BLOCKED=Adobe gateway 8787 not running; do not substitute mock"}
+          Write-Host "CLIENT_CLI_READY=$client GATEWAY_LISTEN=1"
+      - name: Run real natural-language request and verify Photoshop readback
+        shell: powershell
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@('C:\Program Files\nodejs',$machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          $client='${{ matrix.client }}'
+          if($client -eq 'gemini' -and -not $env:GEMINI_API_KEY) {
+            throw 'CLIENT_E2E_BLOCKED=gemini authentication missing; set Actions secret GEMINI_API_KEY (never print secret)'
+          }
+          $marker="MCP-E2E-$client-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $url='http://127.0.0.1:8787/mcp'
+          $prompt="Use Adobe MCP creative_live_build to create a NEW Photoshop 900x600 RGB document and create one text layer containing EXACTLY $marker. Do not merely claim completion. Use MCP tools. Then verify with creative_read capability creative.layer.list. Do not access other applications."
+          if($client -eq 'claude'){
+            # Avoid a stale API-key billing route overriding the Pro subscription login.
+            Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
+            Remove-Item Env:ANTHROPIC_AUTH_TOKEN -ErrorAction SilentlyContinue
+            Write-Host 'CLAUDE_AUTH_ROUTE=subscription_attempt'
+            $statusJson=& claude auth status | ConvertFrom-Json
+            if(-not $statusJson.loggedIn -or $statusJson.authMethod -ne 'claude.ai') {
+              throw 'CLIENT_E2E_BLOCKED=claude runner session is not logged into claude.ai'
+            }
+            Write-Host "CLAUDE_LOGIN=PASS authMethod=$($statusJson.authMethod) subscriptionType=$($statusJson.subscriptionType)"
+            if($LASTEXITCODE -ne 0){throw 'CLIENT_E2E_BLOCKED=claude subscription auth not available to runner user'}
+            $config=Join-Path $env:RUNNER_TEMP 'adobe-claude-mcp.json'
+            '{"mcpServers":{"adobe-creative":{"type":"http","url":"http://127.0.0.1:8787/mcp"}}}' | Set-Content -Encoding utf8 $config
+            & claude -p $prompt --mcp-config $config --strict-mcp-config --allowedTools 'mcp__adobe-creative__creative_live_build,mcp__adobe-creative__creative_read,mcp__adobe-creative__creative_discover'
+          } else {
+            & gemini.cmd mcp add -s project -t http adobe-creative $url
+            if($LASTEXITCODE -ne 0){throw 'Gemini MCP registration failed'}
+            & gemini.cmd --model '${{ inputs.gemini_model }}' -p $prompt
+          }
+          if($LASTEXITCODE -ne 0){throw "CLIENT_E2E_BLOCKED=$client client invocation failed rc=$LASTEXITCODE"}
+          # Critical: do NOT trust agent prose. Fetch fresh upstream Photoshop state.
+          uv run python scripts/verify_client_adobe_e2e.py --marker $marker
+          if($LASTEXITCODE -ne 0){throw "CLIENT_TO_ADOBE_E2E=FAIL client=$client Photoshop readback missing"}
+          Write-Host "CLIENT_TO_ADOBE_E2E=PASS client=$client marker=$marker"
