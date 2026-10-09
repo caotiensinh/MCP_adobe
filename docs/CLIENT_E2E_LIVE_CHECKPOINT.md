@@ -43,3 +43,11 @@ Lệnh ngôn ngữ tự nhiên từ **Claude Code**, **Gemini CLI** hoặc **Cha
 - Claude authentication: `claude auth status` is parsed in-memory and logs only authMethod/subscriptionType, not private email/orgId. Prior run confirmed `authMethod=claude.ai`, `subscriptionType=null`, and invocation error `Credit balance is too low`. Do not assume the runner CLI uses the same subscription entitlement shown in the desktop app.
 - Operator manual trigger: https://github.com/caotiensinh/MCP_adobe/actions/workflows/client-adobe-e2e.yml → Run workflow → branch `feat/client-adobe-e2e-gates` → client choice → Run. A PASS requires actual marker from Photoshop, not CLI exit 0 alone.
 - No credential re-login or third-party billing changes have been performed. Latest E2E success: **0/3**.
+
+## 2026-10-09 23:38 JST — independent no-model preflight PASSED
+- Workflow `client-adobe-e2e.yml` now supports **quota-free branch push** for syntax and live gateway health, while the client/model invocation job runs only on explicit `workflow_dispatch`.
+- Verified exact head `4e0a4d7ecc0c2c3aaef7ba312a91102d7b9b3721`: [run 37945528737](https://github.com/caotiensinh/MCP_adobe/actions/runs/37945528737), Windows job `113870822703` SUCCESS.
+- Runner logs: `CLIENT_E2E_PREFLIGHT=PASS python syntax; no AI model called`; then `{"status":"PASS","check":"real_gateway_tools_and_photoshop_health","tool_count":5}`.
+- Live client job was SKIPPED intentionally, **not client E2E PASS**. Current client acceptance remains 0/3. No billing, secret, or Adobe app modifications.
+- This verifier validates read-only gateway tools/list and upstream Photoshop health, not command execution by Claude/Gemini or ChatGPT.
+- Do not expose remote ChatGPT endpoint without OAuth/TLS. To make `workflow_dispatch` accessible on GitHub, this workflow needs to be on default branch; merge only the tested quota-safe infrastructure according to the repo's review policy, and keep full client acceptance conditional on separate run evidence.
