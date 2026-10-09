@@ -193,7 +193,7 @@ jobs:
               throw 'XD create action did not enter document context'
             }
             Write-Host "XD_DOCUMENT_CONTEXT=PASS PID=$($xd.Id) TITLE=$($xd.MainWindowTitle)"
-          } elseif($title -notmatch '^Untitled-1 .*Adobe XD$') {
+          } elseif($title -notmatch '^Untitled(?:-1)? .*Adobe XD$') {
             throw "BLOCKED_SAFE_XD_DOCUMENT: refusing to mutate an unknown active document: $title"
           } else {
             Write-Host "XD_DOCUMENT_CONTEXT=PASS existing-test-document TITLE=$title"
@@ -201,7 +201,7 @@ jobs:
 
           # Restart only the workflow-owned Untitled-1 test document so XD
           # loads the freshly installed plugin module from process start.
-          if([string]$xd.MainWindowTitle -match '^Untitled-1 .*Adobe XD$'){
+          if([string]$xd.MainWindowTitle -match '^Untitled(?:-1)? .*Adobe XD$'){
             $oldPid=$xd.Id
             Write-Host "XD_SAFE_TEST_RESTART_BEGIN PID=$oldPid TITLE=$($xd.MainWindowTitle)"
             Stop-Process -Id $oldPid -Force -ErrorAction Stop
@@ -248,7 +248,7 @@ jobs:
                 throw 'XD did not enter test document after safe restart'
               }
             }
-            if([string]$xd.MainWindowTitle -notmatch '^Untitled-1 .*Adobe XD$'){
+            if([string]$xd.MainWindowTitle -notmatch '^Untitled(?:-1)? .*Adobe XD$'){
               throw "XD safe restart opened unexpected document: $($xd.MainWindowTitle)"
             }
             Write-Host "XD_SAFE_TEST_RESTART_DOCUMENT=PASS TITLE=$($xd.MainWindowTitle)"
