@@ -19,7 +19,7 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        client: [claude, gemini]
+        client: ${{ fromJSON(vars.CLAUDE_CREDIT_READY == 'true' && '["gemini","claude"]' || '["gemini"]') }}
     steps:
       - uses: actions/checkout@v4
       - name: Verify local gateway and CLI readiness
@@ -58,6 +58,9 @@ jobs:
         timeout-minutes: 10
         run: |
           $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@('C:\Program Files\nodejs',$machine,$user,$env:Path) | Where-Object {$_}) -join ';'
           $client='${{ matrix.client }}'
           $marker="MCP-E2E-$client-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
           $url='http://127.0.0.1:8787/mcp'
@@ -67,9 +70,9 @@ jobs:
             '{"mcpServers":{"adobe-creative":{"type":"http","url":"http://127.0.0.1:8787/mcp"}}}' | Set-Content -Encoding utf8 $config
             & claude -p $prompt --mcp-config $config --strict-mcp-config --allowedTools 'mcp__adobe-creative__creative_live_build,mcp__adobe-creative__creative_read,mcp__adobe-creative__creative_discover'
           } else {
-            & gemini mcp add -s project -t http adobe-creative $url
+            & gemini.cmd mcp add -s project -t http adobe-creative $url
             if($LASTEXITCODE -ne 0){throw 'Gemini MCP registration failed'}
-            & gemini -p $prompt
+            & gemini.cmd -p $prompt
           }
           if($LASTEXITCODE -ne 0){throw "CLIENT_E2E_BLOCKED=$client client invocation failed rc=$LASTEXITCODE"}
           # Critical: do NOT trust agent prose. Fetch fresh upstream Photoshop state.
