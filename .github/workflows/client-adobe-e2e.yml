@@ -17,15 +17,15 @@ jobs:
     timeout-minutes: 18
     env:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_CLI_TRUST_WORKSPACE: 'true'
     strategy:
       fail-fast: false
       max-parallel: 1
       matrix:
-        client: ${{ fromJSON(vars.CLAUDE_CREDIT_READY == 'true' && '["gemini","claude"]' || '["gemini"]') }}
+        client: [gemini, claude]
     steps:
       - uses: actions/checkout@v4
       - name: Verify local gateway and CLI readiness
-        if: matrix.client == 'gemini' || vars.CLAUDE_CREDIT_READY == 'true'
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -58,7 +58,6 @@ jobs:
           if($p.Count -eq 0){throw "CLIENT_E2E_BLOCKED=Adobe gateway 8787 not running; do not substitute mock"}
           Write-Host "CLIENT_CLI_READY=$client GATEWAY_LISTEN=1"
       - name: Run real natural-language request and verify Photoshop readback
-        if: matrix.client == 'gemini' || vars.CLAUDE_CREDIT_READY == 'true'
         shell: powershell
         timeout-minutes: 10
         run: |
@@ -74,6 +73,12 @@ jobs:
           $url='http://127.0.0.1:8787/mcp'
           $prompt="Use Adobe MCP creative_live_build to create a NEW Photoshop 900x600 RGB document and create one text layer containing EXACTLY $marker. Do not merely claim completion. Use MCP tools. Then verify with creative_read capability creative.layer.list. Do not access other applications."
           if($client -eq 'claude'){
+            # Avoid a stale API-key billing route overriding the Pro subscription login.
+            Remove-Item Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
+            Remove-Item Env:ANTHROPIC_AUTH_TOKEN -ErrorAction SilentlyContinue
+            Write-Host 'CLAUDE_AUTH_ROUTE=subscription_attempt'
+            & claude auth status
+            if($LASTEXITCODE -ne 0){throw 'CLIENT_E2E_BLOCKED=claude subscription auth not available to runner user'}
             $config=Join-Path $env:RUNNER_TEMP 'adobe-claude-mcp.json'
             '{"mcpServers":{"adobe-creative":{"type":"http","url":"http://127.0.0.1:8787/mcp"}}}' | Set-Content -Encoding utf8 $config
             & claude -p $prompt --mcp-config $config --strict-mcp-config --allowedTools 'mcp__adobe-creative__creative_live_build,mcp__adobe-creative__creative_read,mcp__adobe-creative__creative_discover'
