@@ -61,12 +61,25 @@ function snapshot(selection, rootNode) {
     rootChildren = rootNode && rootNode.children ? rootNode.children.length : 0;
   } catch (_) {}
 
+  const insertionParentChildren = [];
+  try {
+    const parent = selection && selection.insertionParent
+      ? selection.insertionParent
+      : null;
+    if (parent && parent.children) {
+      for (let i = 0; i < parent.children.length; i += 1) {
+        insertionParentChildren.push(nodeInfo(parent.children.at(i)));
+      }
+    }
+  } catch (_) {}
+
   latestSnapshot = {
     document: {
       rootChildren,
       insertionParent: selection && selection.insertionParent
         ? nodeInfo(selection.insertionParent)
-        : null
+        : null,
+      insertionParentChildren
     },
     selection: items
   };

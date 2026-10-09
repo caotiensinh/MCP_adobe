@@ -178,6 +178,13 @@ class XdPluginContractTests(unittest.TestCase):
         self.assertIn("create() {", source)
         self.assertIn("connect();", source)
 
+    def test_document_snapshot_exposes_real_insertion_parent_children(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "adobe-xd-plugin" / "main.js").read_text(encoding="utf-8")
+        self.assertIn("const insertionParentChildren = []", source)
+        self.assertIn("parent.children.at(i)", source)
+        self.assertIn("insertionParentChildren", source)
+
     def test_command_handler_applies_batch_in_xd_edit_context(self) -> None:
         root = Path(__file__).resolve().parents[1]
         source = (root / "adobe-xd-plugin" / "main.js").read_text(encoding="utf-8")

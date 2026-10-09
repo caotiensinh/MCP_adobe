@@ -565,7 +565,7 @@ jobs:
           Write-Host 'XD_AUTOMATIC_APPLY_REQUEST=PASS automationId=apply'
           Start-Sleep -Seconds 4
 
-      - name: Verify applied XD composition through MCP
+      - name: Verify applied XD composition through canvas read-back
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -619,6 +619,13 @@ jobs:
                   raise RuntimeError(
                       f"XD state lost queued operations: expected={expected} actual={len(operations)}"
                   )
+              expected_names = [
+                  str(operation["expected_name"])
+                  for operation in operations
+                  if operation.get("expected_name")
+              ]
+              if len(expected_names) != expected:
+                  raise RuntimeError("XD state is missing expected node names")
 
               async with Client(URL) as client:
                   health = await call(client, "creative.health")
@@ -626,56 +633,60 @@ jobs:
                   if pending != 0:
                       raise RuntimeError(f"XD approval did not drain pending queue: {pending}")
 
-                  applied = []
-                  for operation in operations:
-                      payload = await call(
-                          client,
-                          "xd.queue.status",
-                          {"operation_id": operation["operation_id"]},
+                  document = None
+                  children = None
+                  for attempt in range(20):
+                      document = await call(client, "creative.document.info")
+                      children = find_key(document, "insertionParentChildren")
+                      if isinstance(children, list):
+                          present = {
+                              node.get("name")
+                              for node in children
+                              if isinstance(node, Mapping)
+                          }
+                          if all(name in present for name in expected_names):
+                              break
+                      await asyncio.sleep(0.25)
+
+                  if not isinstance(children, list):
+                      raise RuntimeError("XD document read-back did not expose insertionParentChildren")
+
+                  by_name = {
+                      node.get("name"): node
+                      for node in children
+                      if isinstance(node, Mapping) and isinstance(node.get("name"), str)
+                  }
+                  missing = [name for name in expected_names if name not in by_name]
+                  if missing:
+                      raise RuntimeError(
+                          "XD canvas is missing applied nodes: " +
+                          json.dumps(missing, ensure_ascii=False)
                       )
-                      bridge_status = payload.get("result") if isinstance(payload, Mapping) else None
-                      if not isinstance(bridge_status, Mapping):
-                          raise RuntimeError(
-                              f"XD operation status missing result: {operation['operation_id']}"
-                          )
-                      status = bridge_status.get("status")
-                      node = bridge_status.get("result")
-                      if status != "applied":
-                          raise RuntimeError(
-                              "XD queued operation was not applied: "
-                              f"{operation['operation_id']} status={status} "
-                              f"detail={json.dumps(bridge_status, ensure_ascii=False, default=str)}"
-                          )
-                      if not isinstance(node, Mapping):
-                          raise RuntimeError(
-                              f"XD applied operation has no node read-back: {operation['operation_id']}"
-                          )
-                      expected_name = operation.get("expected_name")
-                      actual_name = node.get("name")
+
+                  applied = []
+                  for name in expected_names:
+                      node = by_name[name]
                       guid = node.get("guid")
-                      if expected_name and actual_name != expected_name:
-                          raise RuntimeError(
-                              f"XD node name mismatch: expected={expected_name} actual={actual_name}"
-                          )
                       if not isinstance(guid, str) or not guid:
-                          raise RuntimeError(
-                              f"XD applied node has no guid: {operation['operation_id']}"
-                          )
+                          raise RuntimeError(f"XD canvas node has no guid: {name}")
                       evidence = {
-                          "operation_id": operation["operation_id"],
-                          "name": actual_name,
+                          "name": name,
                           "guid": guid,
                           "type": node.get("type"),
                           "bounds": node.get("bounds"),
                       }
                       applied.append(evidence)
                       print(
-                          "XD_OPERATION_READBACK=PASS " +
+                          "XD_CANVAS_NODE_READBACK=PASS " +
                           json.dumps(evidence, ensure_ascii=False, default=str),
                           flush=True,
                       )
 
-                  document = await call(client, "creative.document.info")
+                  if len(applied) != expected:
+                      raise RuntimeError(
+                          f"XD applied count mismatch: expected={expected} actual={len(applied)}"
+                      )
+
                   print(
                       "XD_ONE_CLICK_COMPOSITION=PASS " +
                       json.dumps(
