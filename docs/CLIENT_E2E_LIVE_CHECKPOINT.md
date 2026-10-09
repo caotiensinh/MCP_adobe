@@ -28,3 +28,11 @@ Lệnh ngôn ngữ tự nhiên từ **Claude Code**, **Gemini CLI** hoặc **Cha
 - Claude → Photoshop từ Claude CLI: BLOCKED (insufficient credit).
 - Gemini CLI → Photoshop: BLOCKED (missing CLI auth), code bootstrap PASS.
 - ChatGPT → Photoshop: BLOCKED (remote HTTPS/permissions not established).
+
+
+## 2026-10-09 follow-up: user confirmed Gemini Actions secret + Claude Pro available
+- Exact HEAD `60fd852e26fd3e606f81ba9208814a117bd24ae2` automatically started run [37937996751](https://github.com/caotiensinh/MCP_adobe/actions/runs/37937996751) with both Gemini and Claude lanes, serialized (max-parallel=1).
+- Gemini: `GEMINI_API_KEY` present and CLI genuinely contacted the Google API; **not auth missing any more**. Failed with **429 free-tier quota exhausted** on `gemini-3.8-flash` (metrics `generate_content_free_tier_requests`), also 503 temporary load errors. Client-to-Adobe E2E still NOT PASS. Do not blindly rerun the same model; inspect project rate limits / choose authorized quota tier or a model with sufficient quota.
+- Claude: after removing `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` env overrides, `claude auth status` reported `loggedIn=true`, `authMethod=claude.ai`, `apiKeySource=/login managed key`, but `subscriptionType=null`; `claude -p` still failed with **Credit balance is too low**. This does **not** prove user's Pro weekly quota is exhausted. The active runner CLI account or billing route may differ from the Pro session. Read-only evidence is insufficient to safely replace credentials. Do not purchase credits without user authorization; inspect or switch runner CLI login to the intended Pro account interactively.
+- Security: do not persist emails, org IDs, API keys, OAuth tokens, cookies, or local auth files in CI logs/artifacts or repository. Pro subscriptions and Console API billing are distinct products.
+- Acceptance remains 0/3 client paths; existing Photoshop direct MCP 2023 live baseline remains PASS.
