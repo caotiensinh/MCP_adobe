@@ -1,0 +1,422 @@
+name: Live Photoshop visual interaction
+
+on:
+  push:
+    branches: [feat/photoshop-live-interaction]
+    paths:
+      - ".github/workflows/targeted-photoshop-live-interaction.yml"
+      - "src/mcp_adobe/photoshop.py"
+      - "src/mcp_adobe/server.py"
+      - "src/mcp_adobe/mcp_stdio.py"
+      - "scripts/install_local_host.ps1"
+      - "tests/test_photoshop.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-adobe-photoshop-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  photoshop-live:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    env:
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: copy
+      PSMCP_FEEDBACK: "0"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare runtime and Photoshop tests
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+            $uvDir=Join-Path $HOME '.local\bin'
+            if(Test-Path (Join-Path $uvDir 'uv.exe')) { $env:Path="$uvDir;$env:Path" }
+          }
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){ throw 'uv unavailable' }
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){ throw "uv sync failed rc=$LASTEXITCODE" }
+          uv run python -m unittest tests.test_photoshop -v
+          if($LASTEXITCODE -ne 0){ throw "Photoshop targeted tests failed rc=$LASTEXITCODE" }
+
+      - name: Ensure interactive Photoshop is open
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+
+          function Get-Photoshop {
+            return Get-Process -Name Photoshop -ErrorAction SilentlyContinue |
+              Where-Object {$_.MainWindowHandle -ne 0} |
+              Select-Object -First 1
+          }
+
+          $ps=Get-Photoshop
+          if(-not $ps){
+            $exe=$null
+            foreach($drive in @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)){
+              foreach($pattern in @(
+                "$($drive.Root)Program Files\Adobe\Adobe Photoshop *\Photoshop.exe",
+                "$($drive.Root)Adobe\Adobe Photoshop *\Photoshop.exe",
+                "$($drive.Root)Adobe Photoshop *\Photoshop.exe"
+              )){
+                $candidate=Get-Item $pattern -ErrorAction SilentlyContinue |
+                  Sort-Object FullName -Descending |
+                  Select-Object -First 1
+                if($candidate){ $exe=$candidate.FullName; break }
+              }
+              if($exe){ break }
+            }
+            if(-not $exe){
+              $shell=New-Object -ComObject WScript.Shell
+              foreach($root in @(
+                (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),
+                (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
+              )){
+                if(-not (Test-Path $root)){ continue }
+                foreach($lnk in @(Get-ChildItem $root -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue)){
+                  if($lnk.Name -notmatch 'Photoshop'){ continue }
+                  $shortcut=$shell.CreateShortcut($lnk.FullName)
+                  if($shortcut.TargetPath -and (Test-Path $shortcut.TargetPath)){
+                    $exe=$shortcut.TargetPath
+                    break
+                  }
+                }
+                if($exe){ break }
+              }
+            }
+            if(-not $exe){ throw 'Photoshop.exe was not found' }
+            $started=Start-Process -FilePath $exe -PassThru
+            Write-Host "PHOTOSHOP_LAUNCH_REQUEST=PASS PID=$($started.Id) PATH=$exe"
+            $deadline=(Get-Date).AddSeconds(60)
+            do {
+              Start-Sleep -Seconds 1
+              $ps=Get-Photoshop
+            } until($ps -or (Get-Date) -gt $deadline)
+          }
+          if(-not $ps){ throw 'Photoshop interactive window did not become available' }
+          Write-Host "PHOTOSHOP_WINDOW=PASS PID=$($ps.Id) TITLE=$($ps.MainWindowTitle)"
+
+      - name: Refresh persistent MCP gateway
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          powershell -ExecutionPolicy Bypass -File scripts/install_local_host.ps1 -SkipStartupRegistration
+          if($LASTEXITCODE -ne 0){ throw "persistent MCP host refresh failed rc=$LASTEXITCODE" }
+          $deadline=(Get-Date).AddSeconds(45)
+          do {
+            Start-Sleep -Milliseconds 500
+            $p8787=@(Get-NetTCPConnection -State Listen -LocalPort 8787 -ErrorAction SilentlyContinue)
+          } until($p8787.Count -gt 0 -or (Get-Date) -gt $deadline)
+          if($p8787.Count -eq 0){ throw 'MCP gateway port 8787 did not become ready' }
+          Write-Host 'PHOTOSHOP_MCP_GATEWAY_8787=PASS'
+
+      - name: Require live Photoshop through MCP
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import asyncio
+          import json
+          from collections.abc import Mapping
+          from mcp import Client
+
+          URL="http://127.0.0.1:8787/mcp"
+
+          async def main():
+              async with Client(URL) as client:
+                  tools={tool.name for tool in (await client.list_tools()).tools}
+                  if "creative_live_build" not in tools:
+                      raise RuntimeError(f"creative_live_build missing: {sorted(tools)}")
+                  health=await client.call_tool(
+                      "creative_read",
+                      {"application":"photoshop","capability":"creative.health","arguments":{}},
+                  )
+                  print(
+                      "PHOTOSHOP_MCP_HEALTH="+json.dumps(
+                          {
+                              "is_error":health.is_error,
+                              "structured":health.structured_content,
+                              "content":[str(x) for x in health.content],
+                          },
+                          ensure_ascii=False,
+                          default=str,
+                      ),
+                      flush=True,
+                  )
+                  if health.is_error:
+                      raise RuntimeError(f"Photoshop MCP health failed: {health}")
+
+          asyncio.run(main())
+          '@ | Set-Content -Path photoshop_preflight.py -Encoding UTF8
+          uv run python photoshop_preflight.py
+
+      - name: Build visible Photoshop composition through MCP
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import asyncio
+          import json
+          from mcp import Client
+
+          URL="http://127.0.0.1:8787/mcp"
+          USER_REQUEST="Create a clean Photoshop title card and show me the build live."
+          STEPS=[
+              {
+                  "label":"01 document",
+                  "capability":"creative.document.create",
+                  "arguments":{"width":900,"height":600,"resolution":72,"colorMode":"RGB"},
+              },
+              {
+                  "label":"02 eyebrow",
+                  "capability":"creative.text.create",
+                  "arguments":{
+                      "text":"MCP ADOBE",
+                      "x":90,"y":100,"fontSize":28,
+                      "red":70,"green":130,"blue":255,
+                  },
+              },
+              {
+                  "label":"03 title",
+                  "capability":"creative.text.create",
+                  "arguments":{
+                      "text":"PHOTOSHOP",
+                      "x":90,"y":205,"fontSize":72,
+                      "red":245,"green":245,"blue":245,
+                  },
+              },
+              {
+                  "label":"04 subtitle",
+                  "capability":"creative.text.create",
+                  "arguments":{
+                      "text":"Live Visual Build",
+                      "x":95,"y":285,"fontSize":34,
+                      "red":180,"green":185,"blue":198,
+                  },
+              },
+              {
+                  "label":"05 route",
+                  "capability":"creative.text.create",
+                  "arguments":{
+                      "text":"ChatGPT  >  MCP  >  Photoshop",
+                      "x":95,"y":365,"fontSize":23,
+                      "red":120,"green":200,"blue":170,
+                  },
+              },
+              {
+                  "label":"06 footer",
+                  "capability":"creative.text.create",
+                  "arguments":{
+                      "text":"Step-by-step reversible edits",
+                      "x":95,"y":425,"fontSize":20,
+                      "red":155,"green":160,"blue":175,
+                  },
+              },
+          ]
+
+          async def main():
+              print("USER_REQUEST="+USER_REQUEST,flush=True)
+              async with Client(URL) as client:
+                  result=await client.call_tool(
+                      "creative_live_build",
+                      {
+                          "application":"photoshop",
+                          "steps":STEPS,
+                          "step_delay_ms":900,
+                      },
+                  )
+                  print(
+                      "PHOTOSHOP_VISUAL_BUILD_RESULT="+
+                      json.dumps(result.structured_content,ensure_ascii=False,default=str),
+                      flush=True,
+                  )
+                  if result.is_error:
+                      raise RuntimeError(f"creative_live_build failed: {result}")
+                  payload=result.structured_content
+                  if payload.get("steps_completed") != len(STEPS):
+                      raise RuntimeError(
+                          f"Photoshop visual build incomplete: {payload.get('steps_completed')}/{len(STEPS)}"
+                      )
+                  print(
+                      "PHOTOSHOP_VISUAL_BUILD=PASS "+
+                      json.dumps(
+                          {"steps":len(STEPS),"delay_ms":900},
+                          ensure_ascii=False,
+                      ),
+                      flush=True,
+                  )
+
+          asyncio.run(main())
+          '@ | Set-Content -Path photoshop_visual_build.py -Encoding UTF8
+          uv run python photoshop_visual_build.py
+
+      - name: Verify live layer move opacity and undo
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          @'
+          import asyncio
+          import json
+          from collections.abc import Mapping
+          from mcp import Client
+
+          URL="http://127.0.0.1:8787/mcp"
+          DX=40.0
+
+          def walk(value):
+              yield value
+              if isinstance(value, Mapping):
+                  for child in value.values():
+                      yield from walk(child)
+              elif isinstance(value,(list,tuple)):
+                  for child in value:
+                      yield from walk(child)
+
+          def state(value):
+              for node in walk(value):
+                  if isinstance(node,Mapping) and (
+                      "activeLayer" in node or "hasDocument" in node
+                  ):
+                      return node
+              return None
+
+          def x_of(layer):
+              bounds=layer.get("bounds") if isinstance(layer,Mapping) else None
+              if not isinstance(bounds,Mapping):
+                  raise RuntimeError(f"active layer has no bounds: {layer}")
+              if "left" in bounds:
+                  return float(bounds["left"])
+              if "x" in bounds:
+                  return float(bounds["x"])
+              raise RuntimeError(f"bounds have no left/x: {bounds}")
+
+          async def call(client,tool,capability,arguments=None):
+              result=await client.call_tool(
+                  tool,
+                  {
+                      "application":"photoshop",
+                      "capability":capability,
+                      "arguments":arguments or {},
+                  },
+              )
+              print(
+                  "PHOTOSHOP_MCP_CALL="+json.dumps(
+                      {
+                          "tool":tool,
+                          "capability":capability,
+                          "is_error":result.is_error,
+                          "structured":result.structured_content,
+                      },
+                      ensure_ascii=False,
+                      default=str,
+                  ),
+                  flush=True,
+              )
+              if result.is_error:
+                  raise RuntimeError(f"{tool}/{capability} failed: {result}")
+              return result.structured_content
+
+          async def context(client):
+              payload=await call(client,"creative_read","creative.context.get")
+              found=state(payload)
+              if not isinstance(found,Mapping):
+                  raise RuntimeError("Photoshop context omitted live state")
+              layer=found.get("activeLayer")
+              if not isinstance(layer,Mapping):
+                  raise RuntimeError("Photoshop context omitted activeLayer")
+              return found,layer
+
+          async def main():
+              async with Client(URL) as client:
+                  layers=await call(client,"creative_read","creative.layer.list")
+                  print("PHOTOSHOP_LAYER_READBACK=PASS "+json.dumps(layers,ensure_ascii=False,default=str),flush=True)
+
+                  _,baseline=await context(client)
+                  baseline_name=str(baseline.get("name"))
+                  baseline_x=x_of(baseline)
+                  baseline_opacity=float(baseline.get("opacity",100))
+                  print(
+                      f"PHOTOSHOP_ACTIVE_BASELINE=PASS name={baseline_name} x={baseline_x} opacity={baseline_opacity}",
+                      flush=True,
+                  )
+
+                  moved=await call(
+                      client,"creative_write","creative.selection.move",
+                      {"deltaX":DX,"deltaY":0},
+                  )
+                  verification=moved.get("verification") if isinstance(moved,Mapping) else None
+                  if not isinstance(verification,Mapping) or verification.get("status")!="verified":
+                      raise RuntimeError(f"Photoshop move was not verified: {moved}")
+                  _,after_move=await context(client)
+                  moved_x=x_of(after_move)
+                  if abs((moved_x-baseline_x)-DX)>0.01:
+                      raise RuntimeError(f"move readback mismatch baseline={baseline_x} moved={moved_x}")
+                  print(f"PHOTOSHOP_MOVE_READBACK=PASS dx={DX} x={moved_x}",flush=True)
+
+                  opacity=await call(
+                      client,"creative_write","creative.selection.update",
+                      {"properties":{"opacity":60}},
+                  )
+                  verification=opacity.get("verification") if isinstance(opacity,Mapping) else None
+                  if not isinstance(verification,Mapping) or verification.get("status")!="verified":
+                      raise RuntimeError(f"Photoshop opacity was not verified: {opacity}")
+                  _,after_opacity=await context(client)
+                  if abs(float(after_opacity.get("opacity"))-60)>0.01:
+                      raise RuntimeError(f"opacity readback mismatch: {after_opacity}")
+                  print("PHOTOSHOP_OPACITY_READBACK=PASS opacity=60",flush=True)
+
+                  await call(client,"creative_write","creative.undo",{"steps":1})
+                  _,undo_opacity=await context(client)
+                  if abs(float(undo_opacity.get("opacity"))-baseline_opacity)>0.01:
+                      raise RuntimeError(
+                          f"opacity undo mismatch baseline={baseline_opacity} actual={undo_opacity.get('opacity')}"
+                      )
+                  print(
+                      f"PHOTOSHOP_OPACITY_UNDO=PASS opacity={undo_opacity.get('opacity')}",
+                      flush=True,
+                  )
+
+                  await call(client,"creative_write","creative.undo",{"steps":1})
+                  _,undo_move=await context(client)
+                  undo_x=x_of(undo_move)
+                  if abs(undo_x-baseline_x)>0.01:
+                      raise RuntimeError(
+                          f"move undo mismatch baseline={baseline_x} actual={undo_x}"
+                      )
+                  print(
+                      "PHOTOSHOP_LIVE_INTERACTION=PASS "+
+                      json.dumps(
+                          {
+                              "layer":baseline_name,
+                              "baseline_x":baseline_x,
+                              "moved_x":moved_x,
+                              "restored_x":undo_x,
+                              "restored_opacity":undo_move.get("opacity"),
+                          },
+                          ensure_ascii=False,
+                      ),
+                      flush=True,
+                  )
+
+          asyncio.run(main())
+          '@ | Set-Content -Path photoshop_live_interaction.py -Encoding UTF8
+          uv run python photoshop_live_interaction.py
+
+      - name: Verify Photoshop remains interactive
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue |
+            Where-Object {$_.MainWindowHandle -ne 0} |
+            Select-Object -First 1
+          if(-not $ps){ throw 'Photoshop disappeared after MCP interaction' }
+          Write-Host "PHOTOSHOP_FINAL_WINDOW=PASS PID=$($ps.Id) TITLE=$($ps.MainWindowTitle)"
