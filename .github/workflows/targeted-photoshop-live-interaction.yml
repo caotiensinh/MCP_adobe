@@ -109,6 +109,11 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@('C:\Program Files\nodejs',$machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command npx -ErrorAction SilentlyContinue)){ throw 'npx unavailable before persistent host refresh' }
+          Write-Host "PHOTOSHOP_NPX=PASS PATH=$((Get-Command npx).Source)"
           powershell -ExecutionPolicy Bypass -File scripts/install_local_host.ps1 -SkipStartupRegistration
           if($LASTEXITCODE -ne 0){ throw "persistent MCP host refresh failed rc=$LASTEXITCODE" }
           $deadline=(Get-Date).AddSeconds(45)
@@ -153,6 +158,13 @@ jobs:
                       flush=True,
                   )
                   if health.is_error:
+                      from pathlib import Path
+                      log_path=Path.home()/"AppData"/"Local"/"MCPAdobe"/"gateway"/"logs"/"local-host.log"
+                      if log_path.exists():
+                          print("PHOTOSHOP_GATEWAY_LOG_BEGIN",flush=True)
+                          for line in log_path.read_text(encoding="utf-8",errors="replace").splitlines()[-400:]:
+                              print(line,flush=True)
+                          print("PHOTOSHOP_GATEWAY_LOG_END",flush=True)
                       raise RuntimeError(f"Photoshop MCP health failed: {health}")
 
           asyncio.run(main())
