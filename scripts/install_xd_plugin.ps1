@@ -82,6 +82,20 @@ and rerun with -DevelopFolder "<that folder>".
 $develop = Resolve-XdDevelopFolder -ExplicitPath $DevelopFolder
 $destination = Join-Path $develop 'MCPAdobeBridge'
 
+# Remove only stale MCP Adobe XD copies created by earlier loader experiments.
+# Leaving these beside the develop plugin causes two XD bridge instances to
+# race for ws://127.0.0.1:8765 (observed v3 -> v2 -> v3 within one live run).
+if($env:APPDATA){
+    $externalRoot=Join-Path $env:APPDATA 'Adobe\UXP\Plugins\External'
+    foreach($staleId in @('MCPADB01','com.mcpadobe.xd.bridge')){
+        $stalePath=Join-Path $externalRoot $staleId
+        if(Test-Path -LiteralPath $stalePath){
+            Remove-Item -LiteralPath $stalePath -Recurse -Force
+            Write-Host "XD_STALE_EXTERNAL_REMOVED=PASS ID=$staleId PATH=$stalePath"
+        }
+    }
+}
+
 Write-Host "XD develop folder: $develop"
 Write-Host "Installing bridge:   $destination"
 

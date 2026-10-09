@@ -185,6 +185,13 @@ class XdPluginContractTests(unittest.TestCase):
         self.assertIn("parent.children.at(i)", source)
         self.assertIn("insertionParentChildren", source)
 
+    def test_installer_removes_only_stale_mcp_xd_external_copies(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "scripts" / "install_xd_plugin.ps1").read_text(encoding="utf-8")
+        self.assertIn("'MCPADB01','com.mcpadobe.xd.bridge'", source)
+        self.assertIn("XD_STALE_EXTERNAL_REMOVED=PASS", source)
+        self.assertNotIn("com.mcpadobe.ps24.sideloadprobe", source)
+
     def test_command_handler_applies_batch_in_xd_edit_context(self) -> None:
         root = Path(__file__).resolve().parents[1]
         source = (root / "adobe-xd-plugin" / "main.js").read_text(encoding="utf-8")
