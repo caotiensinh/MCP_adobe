@@ -1,0 +1,65 @@
+name: Claude and Gemini to real Adobe E2E
+on:
+  push:
+    branches: [feat/client-adobe-e2e-gates]
+    paths:
+      - ".github/workflows/client-adobe-e2e.yml"
+      - "scripts/verify_client_adobe_e2e.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-client-e2e-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  client-adobe:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        client: [claude, gemini]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify local gateway and CLI readiness
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@('C:\Program Files\nodejs',$machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          $client='${{ matrix.client }}'
+          if(-not (Get-Command $client -ErrorAction SilentlyContinue)){
+            throw "CLIENT_E2E_BLOCKED=$client CLI_NOT_INSTALLED; install authenticated client CLI for same runner user"
+          }
+          & $client --version
+          if($LASTEXITCODE -ne 0){throw "CLIENT_E2E_BLOCKED=$client CLI_VERSION_FAILED"}
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){throw "CLIENT_E2E_BLOCKED=uv_unavailable"}
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw "uv sync failed"}
+          $p=@(Get-NetTCPConnection -State Listen -LocalPort 8787 -ErrorAction SilentlyContinue)
+          if($p.Count -eq 0){throw "CLIENT_E2E_BLOCKED=Adobe gateway 8787 not running; do not substitute mock"}
+          Write-Host "CLIENT_CLI_READY=$client GATEWAY_LISTEN=1"
+      - name: Run real natural-language request and verify Photoshop readback
+        shell: powershell
+        timeout-minutes: 10
+        run: |
+          $ErrorActionPreference='Stop'
+          $client='${{ matrix.client }}'
+          $marker="MCP-E2E-$client-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $url='http://127.0.0.1:8787/mcp'
+          $prompt="Use Adobe MCP creative_live_build to create a NEW Photoshop 900x600 RGB document and create one text layer containing EXACTLY $marker. Do not merely claim completion. Use MCP tools. Then verify with creative_read capability creative.layer.list. Do not access other applications."
+          if($client -eq 'claude'){
+            $config=Join-Path $env:RUNNER_TEMP 'adobe-claude-mcp.json'
+            '{"mcpServers":{"adobe-creative":{"type":"http","url":"http://127.0.0.1:8787/mcp"}}}' | Set-Content -Encoding utf8 $config
+            & claude -p $prompt --mcp-config $config --strict-mcp-config --allowedTools 'mcp__adobe-creative__creative_live_build,mcp__adobe-creative__creative_read,mcp__adobe-creative__creative_discover'
+          } else {
+            & gemini mcp add -s project -t http adobe-creative $url
+            if($LASTEXITCODE -ne 0){throw 'Gemini MCP registration failed'}
+            & gemini -p $prompt
+          }
+          if($LASTEXITCODE -ne 0){throw "CLIENT_E2E_BLOCKED=$client client invocation failed rc=$LASTEXITCODE"}
+          # Critical: do NOT trust agent prose. Fetch fresh upstream Photoshop state.
+          uv run python scripts/verify_client_adobe_e2e.py --marker $marker
+          if($LASTEXITCODE -ne 0){throw "CLIENT_TO_ADOBE_E2E=FAIL client=$client Photoshop readback missing"}
+          Write-Host "CLIENT_TO_ADOBE_E2E=PASS client=$client marker=$marker"
