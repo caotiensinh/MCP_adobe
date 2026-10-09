@@ -222,10 +222,28 @@ jobs:
             [void][XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)
             Start-Sleep -Milliseconds 700
             if([string]$xd.MainWindowTitle -eq 'Adobe XD'){
-              $create=Find-XdByAutomationId -Process $xd -AutomationId 'sidebar-work--create'
+              $create=$null
+              $createDeadline=(Get-Date).AddSeconds(20)
+              do {
+                $xd=Get-XdProcess
+                if($xd){
+                  $create=Find-XdByAutomationId -Process $xd -AutomationId 'sidebar-work--create'
+                }
+                if($create){ break }
+                Start-Sleep -Seconds 1
+              } until((Get-Date) -gt $createDeadline)
+              if(-not $create){ throw 'XD Create document control did not appear after restart' }
+
               Invoke-XdElement -Element $create -Label 'Create document after restart'
-              Start-Sleep -Seconds 5
-              $xd=Get-XdProcess
+
+              $documentDeadline=(Get-Date).AddSeconds(15)
+              do {
+                Start-Sleep -Seconds 1
+                $xd=Get-XdProcess
+              } until(
+                ($xd -and [string]$xd.MainWindowTitle -ne 'Adobe XD') -or
+                (Get-Date) -gt $documentDeadline
+              )
               if(-not $xd -or $xd.MainWindowTitle -eq 'Adobe XD'){
                 throw 'XD did not enter test document after safe restart'
               }
