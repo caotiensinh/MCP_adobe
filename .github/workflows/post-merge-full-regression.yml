@@ -1,0 +1,52 @@
+name: Post-merge full regression
+
+on:
+  push:
+    branches: [fix/post-merge-regressions]
+    paths:
+      - ".github/workflows/post-merge-full-regression.yml"
+      - "src/**"
+      - "scripts/**"
+      - "tests/**"
+      - "pyproject.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: post-merge-full-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-regression:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 20
+    env:
+      PYTHONUTF8: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.17"
+          enable-cache: false
+
+      - name: Sync
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          uv python install 3.12
+          uv sync --python 3.12
+
+      - name: Full unit and regression suite
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          uv run python -m unittest discover -s tests -v
