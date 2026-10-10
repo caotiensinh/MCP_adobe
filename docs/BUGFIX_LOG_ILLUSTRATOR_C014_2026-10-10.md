@@ -165,3 +165,10 @@ Ngày: 2026-10-10 (JST). Repo: caotiensinh/MCP_adobe; nhánh feat/canvas-region-
 - Passive postcheck: blockedAt=document, fenceJob=null, panelBusy=false, unresolved=[]. TRUSTED_PROBE_REAL_HOST=PASS and SAFE_PROBE_FENCE_RELEASE=PASS.
 - Root repair included independent interactive Task Scheduler launcher to survive GitHub runner child-process cleanup and reversible preference isolation; previous splash was hung. Original preference backup: under Adobe Illustrator 27 Settings/en_US/x64/Adobe Illustrator Prefs.mcp-backup-20261011. Do not discard backup without user approval.
 - 'blockedAt=document' only indicates no document is open in restored Illustrator session; it is NOT a failed probe or residual fence. The house drawing has NOT been restored or finished; subsequent readback/artwork acceptance is a separate scope.
+
+## 2026-10-11 00:37 JST — House document creation unknown; fail-closed
+- Actual read-only document census workflow 38063553571: Illustrator 27.4 real host probe status ok, document none_open (openCount=0), creative.document.info error (no active document).
+- New dedicated document create workflow 38063756393: preflight host ok, blocking=null, unresolved=[]; one MCP creative.document.create name MCPAdobe LIVE Two-Story Red Tile House 900x650 RGB returned is_error=true after about 33 seconds with no structured result. Do not reissue.
+- Passive reconciliation 38064033332: blockedAt=unresolved_job, blockingJob=job_40275b48de5d, panelBusy=false, no last-known document, document query skipped to prevent unsafe execution.
+- Retained job status 38064289059: job_40275b48de5d status=unknown awaitingHost=true, error [C014] missing_descriptor; host execution is not established by delivery failure; do not replay. OutcomeSource=python_timeout; requestConnectionGeneration=3; mutation effects untracked. Reconciliation unavailable because host request unresolved, not replayed.
+- Next corrective work: resolve payload descriptor / host completion of the exact in-flight create operation, then independent document readback. No house stroke has been issued during this session. Do not clear job manually or blindly create another document.
