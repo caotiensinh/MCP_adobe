@@ -132,6 +132,9 @@ jobs:
           $env:Path=([Environment]::GetEnvironmentVariable('Path','Machine')+';'+[Environment]::GetEnvironmentVariable('Path','User')+';'+$env:Path)
           uv sync --python 3.12
           if($LASTEXITCODE -ne 0){throw 'Mode1 dependency setup failed'}
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@('C:\Program Files\nodejs',$machine,$user,$env:Path) | Where-Object {$_}) -join ';'
           $nodecmd=Get-Command npx -ErrorAction SilentlyContinue
           if(-not $nodecmd){throw 'MODE1_NODE_PATH_MISSING: npx not found; do not refresh persistent host'}
           Write-Host "MODE1_NPX=PASS path=$($nodecmd.Source)"
