@@ -24,6 +24,12 @@ jobs:
             $name=if($p){$p.Name}else{'missing'}
             Write-Output "CEP_TCP state=$($c.State) owner=$name pid=$($c.OwningProcess) session=$($p.SessionId) remoteport=$($c.RemotePort)"
           }
+          $clients=@(Get-NetTCPConnection -RemotePort 8081 -ErrorAction SilentlyContinue)
+          foreach($c in $clients){
+            $p=Get-CimInstance Win32_Process -Filter "ProcessId=$($c.OwningProcess)" -ErrorAction SilentlyContinue
+            $name=if($p){$p.Name}else{'missing'}
+            Write-Output "CEP_CLIENT state=$($c.State) owner=$name pid=$($c.OwningProcess) session=$($p.SessionId)"
+          }
           $panel=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel'
           foreach($relative in @('CSXS\manifest.xml','dist\CSInterface.js','bootstrap\index.html')){
             $path=Join-Path $panel $relative
