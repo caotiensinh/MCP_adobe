@@ -17,6 +17,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
+          Write-Output "RUNNER_HOST=$env:COMPUTERNAME RUNNER_NAME=$env:RUNNER_NAME"
           $ps=@(Get-CimInstance Win32_Process -Filter "Name='CEPHtmlEngine.exe'")
           Write-Output "CEP_PROCESS_COUNT=$($ps.Count)"
           foreach($p in $ps){
