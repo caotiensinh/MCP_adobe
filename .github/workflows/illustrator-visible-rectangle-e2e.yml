@@ -1,0 +1,105 @@
+name: Illustrator visible rectangle E2E
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-visible-rectangle-e2e.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  draw:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - name: Draw one MCP rectangle then read it back from live Illustrator
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv sync failed'}
+          @'
+          import asyncio,json
+          from mcp import Client
+          URL="http://127.0.0.1:8787/mcp"
+          DOC="MCPAdobe Readback Acceptance"
+          SHAPE="MCPAdobe Live Rectangle 001"
+          def data(r,cap):
+              if r.is_error or not isinstance(r.structured_content,dict) or not r.structured_content.get("ok"):
+                  raise RuntimeError(cap+" FAILED "+str(r.content)[:800])
+              return r.structured_content
+          async def rd(c,cap,args=None):
+              return data(await c.call_tool("creative_read",{"application":"illustrator","capability":cap,"arguments":args or {}}),cap)
+          async def main():
+              async with Client(URL) as c:
+                  h=await rd(c,"creative.health",{"probe":True,"timeout":10.0})
+                  status=h["result"]["connection"]["data"]
+                  if status["execution"]["unresolvedJobs"] or not status.get("ready"):
+                      raise RuntimeError("Illustrator not ready; refusing to draw")
+                  d=await rd(c,"creative.document.info")
+                  original=d["result"]["data"]["document"]
+                  if original.get("name")!=DOC:
+                      raise RuntimeError("Unexpected active document: "+str(original.get("name")))
+                  found=await rd(c,"creative.object.find",{"name":SHAPE})
+                  # Fail closed: do not redraw if a previous attempt may have created the same named shape.
+                  if "MCPAdobe Live Rectangle 001" in json.dumps(found,default=str):
+                      raise RuntimeError("Named shape already exists; refusing duplicate")
+                  w=data(await c.call_tool("creative_write",{"application":"illustrator","capability":"creative.shape.rectangle","arguments":{"name":SHAPE,"x":180,"y":160,"width":480,"height":260,"fill":{"r":30,"g":145,"b":230}}}),"creative.shape.rectangle")
+                  print("MCP_DRAW_RESPONSE="+json.dumps(w,default=str)[:6000],flush=True)
+                  # A write ACK alone is not acceptance. Require fresh host reads.
+                  after=await rd(c,"creative.document.info")
+                  layer=after["result"]["data"]["layers"]
+                  print("POST_DRAW_LAYERS="+json.dumps(layer,default=str)[:6500],flush=True)
+                  again=await rd(c,"creative.object.find",{"name":SHAPE})
+                  print("POST_DRAW_FIND="+json.dumps(again,default=str)[:6500],flush=True)
+                  combined=json.dumps([layer,again],default=str)
+                  if SHAPE not in combined:
+                      raise RuntimeError("MCP_DRAW_READBACK=FAIL: named shape not observed")
+                  if not any(int(l.get("itemCount",0))>=1 for l in layer if isinstance(l,dict)):
+                      raise RuntimeError("MCP_DRAW_READBACK=FAIL: empty layers")
+                  print("MCP_DRAW_READBACK=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath illustrator_draw_one.py -Encoding UTF8
+          uv run python illustrator_draw_one.py
+          if($LASTEXITCODE -ne 0){throw 'Draw acceptance failed'}
+      - name: Screenshot live Illustrator screen for visual evidence
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          try {
+            Add-Type -AssemblyName System.Drawing
+            Add-Type -AssemblyName System.Windows.Forms
+            $procs=@(Get-Process Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0})
+            if($procs.Count -eq 0){Write-Output 'VISUAL_EVIDENCE=NO_WINDOW';exit 0}
+            Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class BringForward {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
+          }
+          '@
+            [BringForward]::ShowWindow($procs[0].MainWindowHandle,9)|Out-Null
+            [BringForward]::SetForegroundWindow($procs[0].MainWindowHandle)|Out-Null
+            Start-Sleep -Seconds 2
+            $bounds=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp=New-Object System.Drawing.Bitmap($bounds.Width,$bounds.Height)
+            $g=[System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($bounds.Location,[System.Drawing.Point]::Empty,$bounds.Size)
+            $file=Join-Path $env:RUNNER_TEMP 'illustrator_visible_evidence.png'
+            $bmp.Save($file,[System.Drawing.Imaging.ImageFormat]::Png)
+            $g.Dispose();$bmp.Dispose()
+            Copy-Item -LiteralPath $file -Destination (Join-Path (Get-Location) 'illustrator_visible_evidence.png') -Force
+            Write-Output 'VISUAL_EVIDENCE=CAPTURED'
+          } catch {Write-Output "VISUAL_EVIDENCE=FAIL $($_.Exception.Message)"}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: illustrator-visible-rectangle-evidence
+          path: illustrator_visible_evidence.png
+          if-no-files-found: ignore
+          retention-days: 14
