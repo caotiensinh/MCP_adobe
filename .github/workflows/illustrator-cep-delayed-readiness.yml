@@ -1,0 +1,34 @@
+name: Illustrator CEP delayed readiness and extension manifest
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-cep-delayed-readiness.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Check Illustrator UI and installed CEP manifest after startup
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Start-Sleep -Seconds 25
+          $ai=@(Get-Process Illustrator -ErrorAction SilentlyContinue)
+          $cep=@(Get-Process CEPHtmlEngine -ErrorAction SilentlyContinue)
+          Write-Output "DELAYED_ILLUSTRATOR=$($ai.Count) CEP=$($cep.Count)"
+          foreach($p in $ai){Write-Output "DELAYED_AI_PID=$($p.Id) title=$($p.MainWindowTitle)"}
+          $path=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel\CSXS\manifest.xml'
+          Write-Output "CEP_MANIFEST_EXISTS=$(Test-Path $path)"
+          if(Test-Path $path){
+            $t=[System.IO.File]::ReadAllText($path)
+            foreach($match in [regex]::Matches($t,'<Extension Id="[^"]+"|<Menu>[^<]+|<MainPath>[^<]+')){
+              Write-Output "CEP_MANIFEST_TAG=$($match.Value)"
+            }
+          }
+          $socket=@(Get-NetTCPConnection -LocalPort 8081 -State Established -ErrorAction SilentlyContinue)
+          Write-Output "DELAYED_CEP_SOCKET=$($socket.Count)"
