@@ -1,0 +1,28 @@
+name: Illustrator independent persistence acceptance
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-independent-persistence.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Verify host persists independently after previous job cleanup
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $ps=@(Get-Process Illustrator -ErrorAction SilentlyContinue)
+          $cep=@(Get-Process CEPHtmlEngine -ErrorAction SilentlyContinue)
+          Write-Output "INDEPENDENT_HOST=$env:COMPUTERNAME"
+          Write-Output "INDEPENDENT_ILLUSTRATOR_COUNT=$($ps.Count)"
+          Write-Output "INDEPENDENT_CEP_COUNT=$($cep.Count)"
+          foreach($p in $ps){Write-Output "INDEPENDENT_AI_PID=$($p.Id) title=$($p.MainWindowTitle) responding=$($p.Responding)"}
+          $socket=@(Get-NetTCPConnection -LocalPort 8081 -State Established -ErrorAction SilentlyContinue)
+          Write-Output "INDEPENDENT_CEP_SOCKET_COUNT=$($socket.Count)"
+          if($ps.Count -lt 1){throw 'Illustrator did not survive previous job'}
