@@ -22,7 +22,7 @@ jobs:
           $exe='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
           if(-not(Test-Path -LiteralPath $exe)){throw 'Illustrator executable missing'}
           $p=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
-          if($p.Count -eq 0){Start-Process -FilePath $exe; Start-Sleep -Seconds 12}
+          if($p.Count -eq 0){throw 'Illustrator is not already open. Refusing to spawn a process that Actions could kill during job cleanup.'}
           $vbs=@'
           On Error Resume Next
           Set app = CreateObject("Illustrator.Application")
