@@ -24,6 +24,13 @@ jobs:
             Write-Output ("ILLUSTRATOR_ALREADY_RUNNING={0}" -f $existing.Count)
             exit 0
           }
+          $explicit='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
+          if(Test-Path -LiteralPath $explicit){
+            $exe=$explicit
+            Write-Output 'ILLUSTRATOR_EXPLICIT_PATH=FOUND'
+          } else {
+            Write-Output 'ILLUSTRATOR_EXPLICIT_PATH=NOT_FOUND'
+          }
           $candidates=@()
           foreach($base in @($env:ProgramFiles,${env:ProgramFiles(x86)})) {
             if(-not $base){continue}
@@ -41,7 +48,7 @@ jobs:
               if($value -and (Test-Path -LiteralPath $value)){$candidates+=Get-Item -LiteralPath $value}
             }
           }
-          $exe=($candidates | Sort-Object FullName -Unique | Select-Object -First 1 -ExpandProperty FullName)
+          if(-not $exe){$exe=($candidates | Sort-Object FullName -Unique | Select-Object -First 1 -ExpandProperty FullName)}
           if(-not $exe){
             Write-Output 'ILLUSTRATOR_EXECUTABLE_DISCOVERY=NOT_FOUND'
             throw 'No Illustrator.exe was found in Adobe installation directories or App Paths registry'
