@@ -1,0 +1,44 @@
+name: Illustrator reconcile unknown document create
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-reconcile-unknown-document-create.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Passive no-mutation reconciliation after timed out create
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":False,"timeout":5}})
+                  print("RECON_HEALTH_ERROR="+str(r.is_error),flush=True)
+                  if r.is_error or not isinstance(r.structured_content,dict):
+                      print("RECON_UNKNOWN=GATEWAY_READ_FAILED",flush=True)
+                      return
+                  data=r.structured_content.get("result",{}).get("connection",{}).get("data",{})
+                  layers=data.get("layers") or {}
+                  b=data.get("blocking")
+                  print("RECON_PASSIVE="+json.dumps({"blockedAt":data.get("blockedAt"),"blocking":b,"document":layers.get("document"),"panel":layers.get("panel"),"unresolved":(data.get("execution") or {}).get("unresolvedJobs")},default=str)[:5500],flush=True)
+                  if b or (data.get("execution") or {}).get("unresolvedJobs") or (layers.get("panel") or {}).get("busy"):
+                      print("RECON_DOCUMENT_QUERY=SKIPPED_UNSAFE",flush=True)
+                      return
+                  result=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.document.info","arguments":{}})
+                  print("RECON_DOCUMENT_INFO="+json.dumps({"error":result.is_error,"structured":result.structured_content},default=str)[:9000],flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath reconcile.py -Encoding UTF8
+          uv run python reconcile.py
