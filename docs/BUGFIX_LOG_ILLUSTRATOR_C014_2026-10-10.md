@@ -156,3 +156,12 @@ Ngày: 2026-10-10 (JST). Repo: caotiensinh/MCP_adobe; nhánh feat/canvas-region-
 - Run 38062276071 inspected an Illustrator #32770 dialog with buttons Launch Illustrator and Run Diagnostics. Run 38062325181 clicked only Launch Illustrator via a verified exact button match, with no artwork mutation.
 - Separate run 38062396133: PID 7072 remains, but visible windows are AdobeSplashKit.TextWindowClass and AdobeSplashKit.GraphicWindowClass, each IsHungAppWindow=True. Illustrator is stuck in splash/initialization; CEP count and socket were zero in preceding run 38062135491.
 - Outcome: native GUI launch barrier located; Illustrator fully initialized FAIL, CEP readiness FAIL, trusted probe real response FAIL, probe_fence release FAIL. Do not attempt host writes, repeat click, or delete fence blindly. The next repair must address Adobe splash initialization/diagnostics with live host evidence before attempting trusted probe.
+
+## 2026-10-11 00:20 JST — REAL HOST RECOVERY ACCEPTANCE: PASSED
+- Runner MRCAO, Illustrator 2023, CEP host connectivity. Evidence https://github.com/caotiensinh/MCP_adobe/actions/runs/38063001170: after reversible Adobe Illustrator Prefs isolation (backup retained), GUI title 'Adobe Illustrator 2023', Illustrator PID 11844, CEP process count 18, WebSocket 8081 established=1. GUI main interface PASS.
+- Live E2E evidence https://github.com/caotiensinh/MCP_adobe/actions/runs/38063134639 job 114245286631: HOST_PREREQ AI=1 CEP=18 SOCKET=1.
+- Before: blockedAt=probe_fence, priorCompletion=true, fenceJob=job_2dde26fa6ff9, panelBusy=false.
+- Actual trusted creative.health(probe=true,timeout=30): illustrator=ok, panel=ok, blockedAt=document, document=none_open, fenceJob=null.
+- Passive postcheck: blockedAt=document, fenceJob=null, panelBusy=false, unresolved=[]. TRUSTED_PROBE_REAL_HOST=PASS and SAFE_PROBE_FENCE_RELEASE=PASS.
+- Root repair included independent interactive Task Scheduler launcher to survive GitHub runner child-process cleanup and reversible preference isolation; previous splash was hung. Original preference backup: under Adobe Illustrator 27 Settings/en_US/x64/Adobe Illustrator Prefs.mcp-backup-20261011. Do not discard backup without user approval.
+- 'blockedAt=document' only indicates no document is open in restored Illustrator session; it is NOT a failed probe or residual fence. The house drawing has NOT been restored or finished; subsequent readback/artwork acceptance is a separate scope.
