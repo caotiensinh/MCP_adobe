@@ -1,0 +1,112 @@
+name: Illustrator house scoped recovery readback
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-house-scoped-recovery.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  recover:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preflight and capture quarantined-job evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv unavailable'}
+          @'
+          import asyncio,json,pathlib
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  async def read(cap,args):
+                      r=await c.call_tool("creative_read",{"application":"illustrator","capability":cap,"arguments":args})
+                      if r.is_error or not isinstance(r.structured_content,dict):
+                          raise RuntimeError("Preflight returned no structured "+cap)
+                      return r.structured_content
+                  health=await read("creative.health",{"probe":False,"timeout":5.0})
+                  status=await read("creative.job.status",{"jobId":"job_4f06800a73dc","detail":"full"})
+                  h=health.get("result",{}).get("connection",{}).get("data",{})
+                  j=status.get("result",{}).get("data",{}).get("job",{})
+                  pathlib.Path("illustrator_pre_recovery.json").write_text(json.dumps({"health":health,"status":status},default=str,ensure_ascii=False),encoding="utf-8")
+                  print("EVIDENCE_SAVED=1",flush=True)
+                  print("PRE_HEALTH="+json.dumps({"blockedAt":h.get("blockedAt"),"execution":h.get("execution"),"panel":h.get("layers",{}).get("panel")},default=str),flush=True)
+                  print("PRE_JOB="+json.dumps({"id":j.get("jobId"),"status":j.get("status"),"awaitingHost":j.get("awaitingHost"),"effects":j.get("effects")},default=str),flush=True)
+                  if h.get("execution",{}).get("activeJob") is not None or h.get("execution",{}).get("waiting") != 0:
+                      raise RuntimeError("Active job/queue; refusing restart")
+                  panel=h.get("layers",{}).get("panel",{})
+                  if panel.get("status")!="ok" or panel.get("busy") is not False or panel.get("activeRequestId") is not None:
+                      raise RuntimeError("Panel not proven idle")
+                  if j.get("jobId")!="job_4f06800a73dc" or j.get("status")!="unknown" or j.get("awaitingHost") is not True:
+                      raise RuntimeError("Unexpected blocking job; refusing restart")
+                  print("SCOPED_RECOVERY_PREFLIGHT=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath scoped_preflight.py -Encoding UTF8
+          uv run python scoped_preflight.py
+          if($LASTEXITCODE -ne 0){throw 'Scoped preflight failed'}
+      - name: Restart only gateway listener while preserving desktop Illustrator
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $aiBefore=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" | Where-Object {$_.SessionId -eq 1})
+          if($aiBefore.Count -lt 1){throw 'Illustrator no longer running'}
+          $l=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction Stop)
+          if($l.Count -ne 1){throw 'Gateway listener not unique'}
+          $pidToStop=$l[0].OwningProcess
+          $p=Get-CimInstance Win32_Process -Filter "ProcessId=$pidToStop"
+          $cmd=[string]$p.CommandLine
+          if($cmd -notmatch 'mcp.adobe|mcp_adobe|mcp-adobe' -or $p.Name -notmatch '^(python|mcp-adobe)(w?\.exe)?$'){
+            throw "Refusing to touch unexpected 8787 owner $($p.Name)"
+          }
+          $wrapper=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\host-wrapper.pid'
+          if(-not(Test-Path -LiteralPath $wrapper)){throw 'Gateway supervisor PID file missing'}
+          $wpid=[int](Get-Content -LiteralPath $wrapper -Raw).Trim()
+          if(-not(Get-Process -Id $wpid -ErrorAction SilentlyContinue)){throw 'Gateway supervisor not alive'}
+          Write-Output "SCOPED_GATEWAY_RESTART_PID=$pidToStop"
+          Stop-Process -Id $pidToStop -Force -ErrorAction Stop
+          $deadline=(Get-Date).AddSeconds(70)
+          $newPid=0
+          do {
+            Start-Sleep -Seconds 2
+            $listen=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+            if($listen.Count -eq 1 -and $listen[0].OwningProcess -ne $pidToStop){$newPid=$listen[0].OwningProcess;break}
+          } until ((Get-Date) -gt $deadline)
+          if($newPid -eq 0){throw 'Gateway did not restart'}
+          $aiAfter=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" | Where-Object {$_.ProcessId -in $aiBefore.ProcessId})
+          if($aiAfter.Count -lt 1){throw 'Illustrator not preserved'}
+          Write-Output "GATEWAY_RESTART=PASS old=$pidToStop new=$newPid illustrator=$($aiAfter[0].ProcessId)"
+      - name: Verify real document readback without creating objects
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  h=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":True,"timeout":10.0}})
+                  print("POST_HEALTH="+json.dumps(h.structured_content,default=str)[:3200],flush=True)
+                  r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.document.info","arguments":{}})
+                  print("POST_DOC="+json.dumps(r.structured_content,default=str)[:4800],flush=True)
+                  if r.is_error or not isinstance(r.structured_content,dict) or not r.structured_content.get("ok"):
+                      raise RuntimeError("MCP_DOCUMENT_READBACK=FAIL")
+                  print("MCP_DOCUMENT_READBACK=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath scoped_readback.py -Encoding UTF8
+          uv run python scoped_readback.py
+          if($LASTEXITCODE -ne 0){throw 'Readback not proven'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: illustrator-pre-recovery-evidence
+          path: illustrator_pre_recovery.json
+          if-no-files-found: ignore
+          retention-days: 14
