@@ -1,0 +1,56 @@
+name: Illustrator visible drawing smoke test
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-visible-direct-smoke.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  draw:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Draw a visible rectangle in a new Illustrator document through COM
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $session=[System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          if($session -eq 0){throw 'Interactive desktop required'}
+          $exe='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
+          if(-not(Test-Path -LiteralPath $exe)){throw 'Illustrator executable missing'}
+          $p=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          if($p.Count -eq 0){Start-Process -FilePath $exe; Start-Sleep -Seconds 12}
+          $vbs=@'
+          On Error Resume Next
+          Set app = CreateObject("Illustrator.Application")
+          If Err.Number <> 0 Then
+            WScript.Echo "COM_CONNECT_FAIL " & Err.Description
+            WScript.Quit 2
+          End If
+          Err.Clear
+          Set doc = app.Documents.Add()
+          If Err.Number <> 0 Then
+            WScript.Echo "DOC_CREATE_FAIL " & Err.Description
+            WScript.Quit 3
+          End If
+          Err.Clear
+          Set rect = doc.PathItems.Rectangle(500,100,360,500)
+          If Err.Number <> 0 Then
+            WScript.Echo "RECT_CREATE_FAIL " & Err.Description
+            WScript.Quit 4
+          End If
+          rect.Name = "MCPAdobe_Visible_Rectangle_Smoke"
+          WScript.Echo "RECT_COUNT=" & doc.PathItems.Count
+          WScript.Echo "RECT_NAME=" & rect.Name
+          WScript.Echo "DOCUMENT_NAME=" & doc.Name
+          If doc.PathItems.Count < 1 Then WScript.Quit 5
+          app.Redraw
+          WScript.Echo "ILLUSTRATOR_VISIBLE_DRAW=PASS"
+          '@
+          $file=Join-Path $env:RUNNER_TEMP 'illustrator_visible_smoke.vbs'
+          [IO.File]::WriteAllText($file,$vbs,[Text.Encoding]::Unicode)
+          & "$env:SystemRoot\System32\cscript.exe" //Nologo $file
+          if($LASTEXITCODE -ne 0){throw "Illustrator visible smoke failed with code $LASTEXITCODE"}
