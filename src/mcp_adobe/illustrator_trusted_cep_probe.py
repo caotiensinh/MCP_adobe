@@ -3,7 +3,7 @@ import re
 
 def patch_dispatch(bundle: str) -> str:
     # Match exact deployed single command dispatch. Never patch arbitrary code.
-    pattern = r"const (\w+)=`mcp_handle_request\(\$\{JSON\.stringify\((\w+)\)\}\)`;"
+    pattern = r"(\w+)=`mcp_handle_request\(\$\{JSON\.stringify\((\w+)\)\}\)`;"
     matches = list(re.finditer(pattern, bundle))
     if len(matches) != 1:
         raise ValueError(f"Expected one dispatcher; found {len(matches)}")
