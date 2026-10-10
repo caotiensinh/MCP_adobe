@@ -1,0 +1,26 @@
+name: Illustrator failed live build log diagnosis
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/illustrator-live-log-diagnostic.yml"
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Read gateway errors after failed Illustrator live build without calling Adobe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $log=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\logs\local-host.log'
+          if(-not (Test-Path $log)){ throw 'GATEWAY_LOG_MISSING' }
+          $matches=Get-Content -Path $log -Tail 1200 -ErrorAction Stop | Where-Object {$_ -match 'creative operation failed|illustrator|Traceback|Error|Exception|unresolved|timeout' } | Select-Object -Last 90
+          foreach($line in $matches){
+            $safe=$line -replace '(?i)(token|password|secret|authorization|api[_-]?key)\s*[:=]\s*[^\s,}]+', '$1=[REDACTED]'
+            $safe=$safe -replace 'https?://\S+','[URL_REDACTED]'
+            Write-Host ("GATEWAY_DIAG "+$safe.Substring(0,[Math]::Min(500,$safe.Length)))
+          }
+          Write-Host 'GATEWAY_READONLY_LOG_INSPECTION=PASS'
