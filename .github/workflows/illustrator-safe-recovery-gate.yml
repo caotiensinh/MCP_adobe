@@ -1,0 +1,49 @@
+name: Illustrator safe recovery gate
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/illustrator-safe-recovery-gate.yml"
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify previous timed-out job and current canvas read safely
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path) | Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv sync failed'}
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  async def read(cap,args):
+                      r=await c.call_tool("creative_read",{"application":"illustrator","capability":cap,"arguments":args})
+                      if r.is_error:
+                          print("CHECK_"+cap+"=FAIL "+repr(r.content)[:250],flush=True)
+                          return None
+                      p=r.structured_content or {}
+                      print("CHECK_"+cap+"=PASS",flush=True)
+                      return p.get("result",{})
+                  state=await read("creative.job.status",{"jobId":"job_bb227cf2e04a","detail":"summary"})
+                  if state is None: raise RuntimeError("job status unreadable")
+                  job=state.get("data",{}).get("job",{})
+                  print("JOB_STATUS="+str(job.get("status"))+" AWAITING_HOST="+str(job.get("awaitingHost"))+" ERROR="+str(job.get("error"))[:200],flush=True)
+                  print("JOB_EFFECTS="+json.dumps(job.get("effects",{}),ensure_ascii=False),flush=True)
+                  doc=await read("creative.document.info",{})
+                  if doc is None:
+                      print("RECOVERY_GATE=BLOCKED: upstream document read failed; do not redraw",flush=True)
+                      return
+                  print("DOCUMENT_RESULT="+json.dumps(doc,ensure_ascii=False,default=str)[:1200],flush=True)
+                  print("RECOVERY_GATE=READABLE; no drawing attempted",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath recovery_gate.py -Encoding UTF8
+          uv run python recovery_gate.py
+          if($LASTEXITCODE -ne 0){throw 'safe recovery probe failed'}
