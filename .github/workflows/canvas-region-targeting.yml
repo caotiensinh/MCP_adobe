@@ -1,0 +1,23 @@
+name: Canvas annotation targeting tests
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - src/mcp_adobe/region_targeting.py
+      - tests/test_region_targeting.py
+      - .github/workflows/canvas-region-targeting.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  region:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run pure targeting tests with no Adobe or model calls
+        run: |
+          PYTHONPATH=src python -m unittest tests.test_region_targeting -v
