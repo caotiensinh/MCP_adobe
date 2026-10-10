@@ -63,3 +63,12 @@ E. Windows self-hosted live acceptance: khoanh đúng một target; hai target c
 - Unity UI không đồng nghĩa ba app đã có live E2E. Photoshop runtime health từng FAIL trong [run 38024708941](https://github.com/caotiensinh/MCP_adobe/actions/runs/38024708941). Illustrator, XD metadata live chưa chứng minh.
 - Workflow push chỉ chạy unit/static tests, job Windows live metadata hiện opt-in qua manual `workflow_dispatch`, tránh lặp test khi app desktop/bridge chưa sẵn sàng.
 - [CI 38025228494](https://github.com/caotiensinh/MCP_adobe/actions/runs/38025228494): 18/18 tests PASS + JS syntax PASS; Windows live job SKIPPED intentionally.
+
+
+## XD region targeting — scenegraph contract, 2026-10-10
+
+Added pure read-only `src/mcp_adobe/xd_scenegraph_targeting.py` to normalize a **complete** XD document scenegraph, flatten nested groups (global document bounds), reject stale document IDs, duplicate/missing node IDs, malformed bounds, hidden/locked nodes and excessive node counts. Integrated `normalize_snapshot(..., application="xd")` to use this format when the bridge supplies a complete snapshot. Supports region hit testing without preselecting a node **at the geometry-engine layer**.
+
+**Critical live gap:** The current XD MCP adapter exposes `creative.selection.get`, not a complete scenegraph capability. Therefore this commit **does not** make live Adobe XD support selection-free targeting. The XD UXP bridge must first produce `{document_id,complete:true,nodes:[...]}` via a safe read-only operation, with stable IDs and global document coordinates. Until then, XD remains selection-only / fail-closed. No new MCP transport, auth, or write capability has been added.
+
+Unit and JS syntax tests: [run 38025448611](https://github.com/caotiensinh/MCP_adobe/actions/runs/38025448611), 28/28 PASS; Windows live probe intentionally skipped. No three-app live acceptance claimed.
