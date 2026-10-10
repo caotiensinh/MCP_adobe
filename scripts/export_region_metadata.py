@@ -58,6 +58,9 @@ def normalize_snapshot(state: Mapping[str, Any], layers_payload: Any, applicatio
     identity = doc.get("id") or doc.get("documentId") or state.get("documentId")
     if identity is None:
         raise ValueError("Document ID unavailable: refuse stale-targeting risk")
+    if application == "xd" and isinstance(layers_payload, Mapping) and layers_payload.get("complete") is True:
+        from mcp_adobe.xd_scenegraph_targeting import normalize_xd_scenegraph
+        return normalize_xd_scenegraph(doc, layers_payload)
     raw_layers = (layers_payload.get("layers", layers_payload.get("items")) if isinstance(layers_payload, Mapping) else layers_payload)
     if application == "xd" and isinstance(layers_payload, Mapping) and not isinstance(raw_layers, list):
         selected = layers_payload.get("selection", layers_payload.get("selectedItems"))
