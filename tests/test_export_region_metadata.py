@@ -64,6 +64,26 @@ class LiveMetadataNormalizationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unsupported"):
             normalize_snapshot({}, {}, application="premiere")
 
+    def test_xd_complete_scenegraph_export(self):
+        result = normalize_snapshot(
+            {"document": {"id": "xd-scene", "width": 500, "height": 400}},
+            {"document_id": "xd-scene", "complete": True, "nodes": [
+                {"id": "rect1", "name": "Button", "bounds": {
+                    "left": 10, "top": 10, "right": 120, "bottom": 60
+                }}
+            ]},
+            application="xd",
+        )
+        self.assertEqual([x["id"] for x in result["layers"]], ["rect1"])
+
+    def test_xd_scenegraph_mismatch_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "mismatch"):
+            normalize_snapshot(
+                {"document": {"id": "current", "width": 500, "height": 400}},
+                {"document_id": "stale", "complete": True, "nodes": []},
+                application="xd",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
