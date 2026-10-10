@@ -1,0 +1,49 @@
+name: Illustrator prepare restricted CEP probe runtime
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-prepare-trusted-probe-runtime.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  prepare:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify and backup deployed bundle, no CEP restart
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $py=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\venv\Scripts\python.exe'
+          $env:PYTHONPATH=Join-Path (Get-Location) 'src'
+          @'
+          import os,pathlib,hashlib,shutil
+          from mcp_adobe.illustrator_trusted_cep_probe import patch_dispatch
+          p=pathlib.Path(os.environ["APPDATA"])/"Adobe"/"CEP"/"extensions"/"com.illustrator.mcp.panel"/"dist"/"assets"/"index.js"
+          backup=p.with_suffix(".js.before-mcp-trusted-probe.bak")
+          current=p.read_text(encoding="utf-8")
+          marker='N.command?.type==="connection_probe"'
+          if marker in current:
+              print("RESTRICTED_PROBE_ALREADY_PREPARED=PASS",flush=True)
+          else:
+              if backup.exists():
+                  if hashlib.sha256(backup.read_bytes()).hexdigest()!=hashlib.sha256(p.read_bytes()).hexdigest():
+                      raise RuntimeError("Backup differs from current bundle; refuse silent overwrite")
+              else:
+                  shutil.copy2(p,backup)
+              patched=patch_dispatch(current)
+              if patched.count(marker)!=1:raise RuntimeError("Restricted path missing or duplicated")
+              tmp=p.with_suffix(".js.mcp-pending")
+              tmp.write_text(patched,encoding="utf-8")
+              os.replace(tmp,p)
+              print("RESTRICTED_PROBE_DEPLOY_FILE=PASS",flush=True)
+          print("RESTRICTED_PROBE_BUNDLE_SHA256="+hashlib.sha256(p.read_bytes()).hexdigest(),flush=True)
+          print("CEP_RELOAD_VERIFIED=NO",flush=True)
+          print("TRUSTED_HOST_ACCEPTANCE=NOT_YET_PROVEN",flush=True)
+          '@ | Set-Content -LiteralPath prepare_cep.py -Encoding UTF8
+          & $py prepare_cep.py
+          if($LASTEXITCODE -ne 0){throw 'CEP deployment failed'}
