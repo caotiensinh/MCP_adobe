@@ -113,11 +113,11 @@ jobs:
                           break
                   else:
                       raise RuntimeError("Late callback not correlated within 50s")
-                  # On a previously observed completion, a single longer trusted probe
+                  # On a previously observed completion, a single maximal valid 30-second trusted probe
                   # can validate actual JSX host response without bypassing any fence.
                   current=state(recovered)
                   if current["blockedAt"]=="probe_fence":
-                      result=await health(c,True,45)
+                      result=await health(c,True,30)
                       print("REPAIR_LONG_PROBE="+json.dumps(state(result)),flush=True)
                   final=await health(c)
                   print("REPAIR_FINAL="+json.dumps(state(final)),flush=True)
