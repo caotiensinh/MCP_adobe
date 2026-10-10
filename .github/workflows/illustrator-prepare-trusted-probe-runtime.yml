@@ -2,7 +2,7 @@ name: Illustrator prepare restricted CEP probe runtime
 on:
   push:
     branches: [feat/canvas-region-targeting]
-    paths: [".github/workflows/illustrator-prepare-trusted-probe-runtime.yml"]
+    paths: [".github/workflows/illustrator-prepare-trusted-probe-runtime.yml", "src/mcp_adobe/illustrator_trusted_cep_probe.py"]
 permissions:
   contents: read
 concurrency:
