@@ -1,0 +1,44 @@
+name: Illustrator focused readback evidence
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-focused-readback.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  read:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect MCP health and document readback with structured evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv sync failed'}
+          @'
+          import asyncio,json
+          from mcp import Client
+          def brief(r):
+              return {"is_error":r.is_error,"structured":r.structured_content,"text":[getattr(t,"text","") for t in r.content]}
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  for cap,args in [("creative.health",{"probe":False,"timeout":5.0}),("creative.document.info",{}),("creative.job.status",{"jobId":"job_bb227cf2e04a","detail":"full"})]:
+                      try:
+                          r=await c.call_tool("creative_read",{"application":"illustrator","capability":cap,"arguments":args})
+                          data=brief(r)
+                          s=json.dumps(data,ensure_ascii=False,default=str)
+                          print("EVIDENCE_"+cap+"="+s[:6500],flush=True)
+                          if cap=="creative.document.info" and (r.is_error or not r.structured_content):
+                              print("DOCUMENT_READBACK=FAIL",flush=True)
+                      except Exception as e:
+                          print("EVIDENCE_"+cap+"_EXCEPTION="+type(e).__name__+":"+str(e)[:900],flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath focused_read.py -Encoding UTF8
+          uv run python focused_read.py
+          if($LASTEXITCODE -ne 0){throw 'probe failed'}
