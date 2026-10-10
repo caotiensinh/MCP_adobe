@@ -31,3 +31,11 @@ Ngày: 2026-10-10 (JST). Repo: caotiensinh/MCP_adobe; nhánh feat/canvas-region-
 - Recovery: https://github.com/caotiensinh/MCP_adobe/actions/runs/38049044975
 - Document readback: https://github.com/caotiensinh/MCP_adobe/actions/runs/38049197245
 - Rectangle direct MCP: https://github.com/caotiensinh/MCP_adobe/actions/runs/38049761683
+
+
+## Tái kiểm tra ngôi nhà 2 tầng mái ngói đỏ (cùng ngày)
+- Commit `190942c1235dc393b8bc58dc1831aa4f2310deae`, run https://github.com/caotiensinh/MCP_adobe/actions/runs/38050269830: workflow yêu cầu 38 bước theo thứ tự (tạo document mới, tường 2 tầng, các dải ngói đỏ, cửa sổ, cửa chính), `step_delay_ms=900` qua `creative_live_build`. Foreground preflight PASS, `creative.health` trả `ready=true`, `unresolved=[]`, Illustrator 27.4.0.
+- Khoảng 40 giây sau `LIVE_BUILD_BEGIN`, `creative_live_build` trả MCP tool error; bước vẽ FAIL. Workflow có screenshot `HOUSE_VISUAL_CAPTURE=PASS`, nhưng không xác minh nội dung hình ảnh và không thể suy ra nhà đã hoàn tất.
+- Run read-only https://github.com/caotiensinh/MCP_adobe/actions/runs/38050421486 theo commit `e7c4fa0957e19189757d253ee4df0c43f9057761` xác định job mới `job_4f06800a73dc` đã `unknown / awaitingHost=true`, `blockedAt=unresolved_job`. Vì bị quarantine, document readback vẫn không trả được. Đây là **lỗi tái phát khi vẽ dài**, không được tính PASS dù rectangle một bước PASS.
+- Không được rerun 38 bước, không reset document mù. Cần lưu journal chi tiết của job mới, xem host effects, rồi xử lý khôi phục có kiểm soát và nghiệm thu incremental có checkpoint từng nét, tránh một `creative_live_build` kéo dài nuốt mất evidence và làm kẹt job.
+- Trạng thái: nhật ký đã ghi lỗi, demo house **FAIL**, visual step-by-step **CHƯA NGHIỆM THU**.
