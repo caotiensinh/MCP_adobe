@@ -5,6 +5,8 @@ on:
     paths:
       - src/mcp_adobe/region_targeting.py
       - tests/test_region_targeting.py
+      - tests/test_region_annotation_ui.py
+      - ui/region_annotation.html
       - .github/workflows/canvas-region-targeting.yml
   workflow_dispatch:
 permissions:
@@ -20,4 +22,22 @@ jobs:
           python-version: '3.12'
       - name: Run pure targeting tests with no Adobe or model calls
         run: |
-          PYTHONPATH=src python -m unittest tests.test_region_targeting -v
+          PYTHONPATH=src python -m unittest tests.test_region_targeting tests.test_region_annotation_ui -v
+      - name: Validate browser JavaScript syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from html.parser import HTMLParser
+          class Scripts(HTMLParser):
+              def __init__(self):
+                  super().__init__(); self.scripts=[]; self.active=False
+              def handle_starttag(self, tag, attrs):
+                  if tag=='script': self.active=True
+              def handle_endtag(self, tag):
+                  if tag=='script': self.active=False
+              def handle_data(self, data):
+                  if self.active: self.scripts.append(data)
+          parser=Scripts(); parser.feed(Path('ui/region_annotation.html').read_text(encoding='utf-8'))
+          Path('/tmp/region-annotation.js').write_text('\n'.join(parser.scripts),encoding='utf-8')
+          PY
+          node --check /tmp/region-annotation.js
