@@ -25,6 +25,7 @@ _BINDINGS: dict[str, ToolBinding] = {
     "creative.document.info": ToolBinding("xd.document.info", RiskClass.READ),
     "creative.selection.get": ToolBinding("xd.selection.get", RiskClass.READ),
     "creative.scenegraph.list": ToolBinding("xd.scenegraph.snapshot", RiskClass.READ),
+    "creative.canvas.frame": ToolBinding("xd.canvas.frame", RiskClass.READ),
     "creative.shape.rectangle": ToolBinding("xd.queue.rectangle_create", RiskClass.WRITE_REVERSIBLE),
     "creative.text.create": ToolBinding("xd.queue.text_create", RiskClass.WRITE_REVERSIBLE),
     "xd.queue.status": ToolBinding("xd.queue.status", RiskClass.READ),
