@@ -5,12 +5,57 @@ fence decisions, or retry behavior. Logs only correlation-safe fields.
 """
 from __future__ import annotations
 import logging
+import json
+import os
+from pathlib import Path
 from typing import Any
 
 log = logging.getLogger("mcp_adobe.illustrator_trace")
 
 
 def install_trace(bridge_class: type) -> None:
+    # Separate upstream file: gateway parent logs do not capture every child.
+    trace_path = Path(os.environ.get("LOCALAPPDATA", ".")) / "MCPAdobe" / "illustrator-mcp" / "callback_trace.log"
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    if not any(isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", "") == str(trace_path) for h in log.handlers):
+        handler = logging.FileHandler(trace_path, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+        log.addHandler(handler)
+    log.setLevel(logging.WARNING)
+    original_handle = bridge_class._handle_message
+    if not getattr(original_handle, "_mcp_adobe_trace", False):
+        async def traced_handle(self: Any, message: str) -> Any:
+            kind = None
+            request_id = None
+            try:
+                envelope = json.loads(message)
+                kind = envelope.get("type", "complete")
+                if kind != "heartbeat":
+                    request_id = envelope.get("id")
+                    pending = self.registry.get_pending(request_id) if request_id else None
+                    log.warning(
+                        "CEP_CALLBACK kind=%s requestId=%s pending=%s tokenMatch=%s payloadError=%s descriptorPresent=%s panelBusy=%s activeRequest=%s",
+                        str(kind)[:36], str(request_id)[:48], bool(pending),
+                        bool(pending and pending.request_token == envelope.get("requestToken")),
+                        str(envelope.get("payloadError"))[:80],
+                        isinstance(envelope.get("descriptor"), dict),
+                        bool(self._panel_busy), str(self._panel_active_request)[:48],
+                    )
+            except Exception as exc:
+                log.warning("CEP_CALLBACK_PARSE_ERROR class=%s", type(exc).__name__)
+            try:
+                result = await original_handle(self, message)
+                if kind is not None and kind != "heartbeat":
+                    log.warning("CEP_CALLBACK_HANDLED kind=%s requestId=%s panelBusy=%s activeRequest=%s",
+                                str(kind)[:36], str(request_id)[:48],
+                                bool(self._panel_busy), str(self._panel_active_request)[:48])
+                return result
+            except Exception as exc:
+                log.exception("CEP_CALLBACK_EXCEPTION class=%s", type(exc).__name__)
+                raise
+        traced_handle._mcp_adobe_trace = True
+        bridge_class._handle_message = traced_handle
+
     original = bridge_class.execute_script_async
     if getattr(original, "_mcp_adobe_trace", False):
         return
