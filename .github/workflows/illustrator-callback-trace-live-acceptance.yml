@@ -1,0 +1,98 @@
+name: Illustrator callback trace live acceptance
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-callback-trace-live-acceptance.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  trace:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Backup and deploy validated upstream callback trace
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $src=Join-Path (Get-Location) 'src\mcp_adobe\illustrator_upstream_trace.py'
+          $dst=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\venv\Lib\site-packages\illustrator_mcp\_mcp_adobe_trace.py'
+          $py=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\venv\Scripts\python.exe'
+          if(-not(Test-Path $src) -or -not(Test-Path $dst)){throw 'Tracer source or existing installation missing'}
+          $backup="$dst.callback_v1.bak"
+          if(-not(Test-Path $backup)){Copy-Item -LiteralPath $dst -Destination $backup -ErrorAction Stop}
+          Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
+          & $py -m py_compile $dst
+          if($LASTEXITCODE -ne 0){Copy-Item $backup $dst -Force;throw 'Tracer invalid; restored backup'}
+          Write-Output 'CALLBACK_TRACE_DEPLOY=PASS'
+      - name: Restart only gateway under supervisor preserving Illustrator
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $ai=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" | Where-Object {$_.SessionId -eq 1})
+          if($ai.Count -lt 1){throw 'Illustrator window absent'}
+          $listener=@(Get-NetTCPConnection -LocalPort 8787 -State Listen)
+          if($listener.Count -ne 1){throw 'Gateway not unique'}
+          $oldId=$listener[0].OwningProcess
+          $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$oldId"
+          if($owner.Name -ne 'python.exe' -or $owner.CommandLine -notmatch 'mcp-adobe.exe'){throw 'Gateway ownership not proven'}
+          $super=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\host-wrapper.pid'
+          if(-not(Test-Path $super)){throw 'Missing supervisor PID'}
+          $superPid=[int](Get-Content $super -Raw).Trim()
+          if(-not(Get-Process -Id $superPid -ErrorAction SilentlyContinue)){throw 'Supervisor absent'}
+          Stop-Process -Id $oldId -Force
+          $deadline=(Get-Date).AddSeconds(90)
+          $newId=0
+          do{
+            Start-Sleep -Seconds 2
+            $l=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+            if($l.Count -eq 1 -and $l[0].OwningProcess -ne $oldId){$newId=$l[0].OwningProcess;break}
+          }until((Get-Date)-gt $deadline)
+          if($newId -eq 0){throw 'Gateway restart timeout'}
+          if(-not(Get-Process -Id $ai[0].ProcessId -ErrorAction SilentlyContinue)){throw 'Illustrator changed'}
+          Write-Output "CALLBACK_GATEWAY_RESTART=PASS old=$oldId new=$newId"
+      - name: Execute one bounded read-only health probe and inspect callback log
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv unavailable'}
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  h=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":False,"timeout":5}})
+                  p=h.structured_content
+                  if h.is_error or not isinstance(p,dict):
+                      print("HEALTH_TRANSPORT_FAIL",flush=True)
+                      return
+                  d=p.get("result",{}).get("connection",{}).get("data",{})
+                  b=d.get("blocking") or {}
+                  panel=d.get("layers",{}).get("panel") or {}
+                  print("BEFORE_PROBE="+json.dumps({"blockedAt":d.get("blockedAt"),"priorCompletionObserved":b.get("priorCompletionObserved"),"panelBusy":panel.get("busy"),"activeRequest":panel.get("activeRequestId"),"unresolved":d.get("execution",{}).get("unresolvedJobs")}),flush=True)
+                  safe_idle=(panel.get("busy") is False and panel.get("activeRequestId") is None
+                             and not d.get("execution",{}).get("unresolvedJobs"))
+                  safe_fence=(d.get("blockedAt")=="probe_fence" and b.get("priorCompletionObserved") is True)
+                  safe_unblocked=(d.get("blockedAt") in (None,"document") and not b)
+                  if safe_idle and (safe_fence or safe_unblocked):
+                      r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":True,"timeout":5}})
+                      print("READ_ONLY_PROBE_RESULT="+json.dumps({"error":r.is_error,"structured":r.structured_content},default=str)[:2800],flush=True)
+                  else:
+                      print("READ_ONLY_PROBE_SKIPPED=unsafe_or_no_fence",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath one_probe.py -Encoding UTF8
+          uv run python one_probe.py
+          Start-Sleep -Seconds 2
+          $log=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\callback_trace.log'
+          if(-not(Test-Path $log)){throw 'CALLBACK_TRACE_LOG_MISSING'}
+          $hits=@(Get-Content -LiteralPath $log -Tail 100 -ErrorAction Stop)
+          foreach($line in ($hits | Select-Object -Last 60)){Write-Output "CALLBACK_TRACE_LINE $line"}
+          $events=@($hits|Where-Object {$_ -match 'CEP_CALLBACK|HOST_TRACE'})
+          Write-Output "CALLBACK_TRACE_EVENT_COUNT=$($events.Count)"
+          if($events.Count -lt 1){throw 'CALLBACK_TRACE_NO_REAL_EVENTS'}
+          Write-Output 'CALLBACK_LOG_ACCEPTANCE=PASS'

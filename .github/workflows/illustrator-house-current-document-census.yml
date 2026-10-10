@@ -1,0 +1,45 @@
+name: Illustrator house current document census
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-house-current-document-census.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read current Illustrator document and all live layer objects without mutations
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv sync failed'}
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  for cap,arg in [("creative.health",{"probe":True,"timeout":10.0}),("creative.document.info",{})]:
+                      try:
+                          r=await c.call_tool("creative_read",{"application":"illustrator","capability":cap,"arguments":arg})
+                          p=r.structured_content
+                          print("READBACK_"+cap+"="+json.dumps({"error":r.is_error,"payload":p},default=str)[:16000],flush=True)
+                          if cap=="creative.document.info" and isinstance(p,dict):
+                              d=p.get("result",{}).get("data",{})
+                              print("HOUSE_DOC_NAME="+str(d.get("document",{}).get("name")),flush=True)
+                              layers=d.get("layers",[])
+                              print("HOUSE_ITEM_COUNT="+str(sum(int(x.get("itemCount",0)) for x in layers)),flush=True)
+                              print("HOUSE_ITEM_NAMES="+json.dumps([[y.get("name") for y in x.get("items",[])] for x in layers]),flush=True)
+                      except Exception as e:
+                          print("READBACK_EXCEPTION_"+cap+"="+repr(e),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath house_readback.py -Encoding UTF8
+          uv run python house_readback.py
+          if($LASTEXITCODE -ne 0){throw 'readback failed'}

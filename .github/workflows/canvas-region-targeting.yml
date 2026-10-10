@@ -1,0 +1,165 @@
+name: Canvas annotation targeting tests
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - src/mcp_adobe/region_targeting.py
+      - tests/test_region_targeting.py
+      - tests/test_region_annotation_ui.py
+      - ui/region_annotation.html
+      - scripts/export_region_metadata.py
+      - tests/test_export_region_metadata.py
+      - src/mcp_adobe/xd_scenegraph_targeting.py
+      - tests/test_xd_scenegraph_targeting.py
+      - adobe-xd-plugin/main.js
+      - scripts/capture_region_preview.py
+      - tests/test_capture_region_preview.py
+      - scripts/capture_bound_region_pair.py
+      - scripts/probe_adobe_desktop_health.py
+      - scripts/verify_mode1_existing_preflight.py
+      - tests/test_capture_bound_region_pair.py
+      - tests/xd_scenegraph_uxp_contract.cjs
+      - .github/workflows/canvas-region-targeting.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  region:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Python MCP dependencies
+        run: python -m pip install "mcp>=2,<3"
+      - name: Run targeting and metadata normalization tests without model calls
+        run: |
+          PYTHONPATH=src python -m unittest tests.test_region_targeting tests.test_region_annotation_ui tests.test_export_region_metadata tests.test_xd_scenegraph_targeting tests.test_capture_region_preview tests.test_capture_bound_region_pair -v
+      - name: Validate browser JavaScript syntax
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from html.parser import HTMLParser
+          class Scripts(HTMLParser):
+              def __init__(self):
+                  super().__init__(); self.scripts=[]; self.active=False
+              def handle_starttag(self, tag, attrs):
+                  if tag=='script': self.active=True
+              def handle_endtag(self, tag):
+                  if tag=='script': self.active=False
+              def handle_data(self, data):
+                  if self.active: self.scripts.append(data)
+          parser=Scripts(); parser.feed(Path('ui/region_annotation.html').read_text(encoding='utf-8'))
+          Path('/tmp/region-annotation.js').write_text('\n'.join(parser.scripts),encoding='utf-8')
+          PY
+          node --check /tmp/region-annotation.js
+          node --check adobe-xd-plugin/main.js
+          node tests/xd_scenegraph_uxp_contract.cjs
+
+  live-metadata-read:
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        application: [photoshop, illustrator, xd]
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Export real Photoshop document metadata (read-only)
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){throw 'uv missing'}
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv sync failed'}
+          uv run python scripts/export_region_metadata.py --application "${{ matrix.application }}" --output "$env:RUNNER_TEMP\adobe_region_metadata_${{ matrix.application }}.json"
+          if($LASTEXITCODE -ne 0){throw 'REGION_METADATA=FAIL upstream snapshot unavailable'}
+          Write-Host 'REGION_METADATA_LIVE=PASS read-only snapshot'
+
+  desktop-health-probe:
+    if: github.event_name == 'push'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check PS AI XD via existing MCP read-only endpoint
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=([Environment]::GetEnvironmentVariable('Path','Machine')+';'+[Environment]::GetEnvironmentVariable('Path','User')+';'+$env:Path)
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv sync failed'}
+          Write-Host "RUNNER_NAME=$env:RUNNER_NAME HOSTNAME=$env:COMPUTERNAME"
+          Write-Host "INTERACTIVE=$([Environment]::UserInteractive)"
+          $apps = Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'Photoshop|Illustrator|^XD.exe$|node.exe|python.exe|UXP|CEPHtmlEngine' }
+          $apps | ForEach-Object { Write-Host "PROC name=$($_.Name) pid=$($_.ProcessId) parent=$($_.ParentProcessId) session=$($_.SessionId)" }
+          $listeners=Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in @(8787,8765) }
+          $listeners | ForEach-Object { Write-Host "LISTEN port=$($_.LocalPort) pid=$($_.OwningProcess)" }
+          $targets=Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -in @(26440,23572,19020,23184) }
+          $targets | ForEach-Object {
+            $cmd=$_.CommandLine
+            if($cmd) { $cmd=$cmd -replace '(?i)(token|password|secret|authorization)[=:][^ ]+', '$1=[REDACTED]' -replace 'https?://[^ ]+', '[URL_REDACTED]' }
+            Write-Host "TARGET_PROCESS pid=$($_.ProcessId) name=$($_.Name) parent=$($_.ParentProcessId) session=$($_.SessionId) cmd=$cmd"
+          }
+          Get-NetTCPConnection -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -in @(26440,23572,19020,23184) -and $_.State -in @('Listen','Established') } | ForEach-Object { Write-Host "TARGET_SOCKET pid=$($_.OwningProcess) state=$($_.State) localport=$($_.LocalPort) remoteport=$($_.RemotePort)" }
+          Write-Host "UPSTREAM_SERVICE_DIAGNOSTIC=COMPLETE"
+          Write-Host "MODE1_EXISTING_CODE=UNCHANGED"
+          Write-Host "MODE2_LIVE_READ_START"
+          uv run python scripts/export_region_metadata.py --application illustrator --output "$env:RUNNER_TEMP\\region_ai_check.json"
+          Write-Host "MODE2_ILLUSTRATOR_METADATA_EXIT=$LASTEXITCODE"
+          uv run python scripts/export_region_metadata.py --application xd --output "$env:RUNNER_TEMP\\region_xd_check.json"
+          Write-Host "MODE2_XD_METADATA_EXIT=$LASTEXITCODE"
+          Write-Host "MODE2_LIVE_READ_END"
+
+
+  mode1-existing-live-gate:
+    if: github.event_name == 'push'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Existing Mode 1 live Photoshop MCP preflight - fail closed
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Host "MODE1_RUNNER=$env:RUNNER_NAME HOST=$env:COMPUTERNAME"
+          $env:Path=([Environment]::GetEnvironmentVariable('Path','Machine')+';'+[Environment]::GetEnvironmentVariable('Path','User')+';'+$env:Path)
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'Mode1 dependency setup failed'}
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@('C:\Program Files\nodejs',$machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          $nodecmd=Get-Command npx -ErrorAction SilentlyContinue
+          if(-not $nodecmd){throw 'MODE1_NODE_PATH_MISSING: npx not found; do not refresh persistent host'}
+          Write-Host "MODE1_NPX=PASS path=$($nodecmd.Source)"
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_local_host.ps1 -SkipStartupRegistration
+          if($LASTEXITCODE -ne 0){throw 'MODE1_PERSISTENT_HOST_REFRESH=FAIL'}
+          Write-Host 'MODE1_PERSISTENT_HOST_REFRESH=PASS'
+          uv run python scripts/verify_mode1_existing_preflight.py --preflight
+          if($LASTEXITCODE -ne 0){throw 'MODE1_LIVE_PREFLIGHT=FAIL; no canvas mutation attempted'}
+          Write-Host 'MODE1_LIVE_PREFLIGHT=PASS; live drawing acceptance remains independently unverified'
+
+  mode1-photoshop-live-e2e:
+    if: github.event_name == 'push'
+    needs: [mode1-existing-live-gate]
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reuse validated Photoshop live visual workflow as Mode 1 E2E
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Host "MODE1_LIVE_E2E_RUNNER=$env:RUNNER_NAME HOST=$env:COMPUTERNAME"
+          $env:Path=(@('C:\Program Files\nodejs',[Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path) | Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'runtime setup failed'}
+          uv run python -m unittest tests.test_photoshop -v
+          if($LASTEXITCODE -ne 0){throw 'Photoshop adapter tests failed'}
+          Write-Host 'MODE1_LIVE_E2E=BLOCKED full Adobe drawing workflow requires its existing interaction steps, not preflight alone'

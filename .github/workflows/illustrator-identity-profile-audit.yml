@@ -1,0 +1,29 @@
+name: Illustrator Windows identity and profile audit
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-identity-profile-audit.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 2
+    steps:
+      - name: Inspect interactive launcher identity without mutation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Output "CURRENT_ID=$([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+          Write-Output "CURRENT_SID=$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
+          Write-Output "USERPROFILE=$env:USERPROFILE"
+          $task=Get-ScheduledTask -TaskName 'MCPAdobe-Illustrator-Interactive' -ErrorAction Stop
+          Write-Output "TASK_USER=$($task.Principal.UserId) TASK_LOGON=$($task.Principal.LogonType)"
+          $sid=([Security.Principal.NTAccount]::new($task.Principal.UserId)).Translate([Security.Principal.SecurityIdentifier]).Value
+          $profile=Get-CimInstance Win32_UserProfile -Filter "SID='$sid'" -ErrorAction SilentlyContinue
+          Write-Output "TASK_SID=$sid PROFILE=$($profile.LocalPath)"
+          $ai=@(Get-Process Illustrator -ErrorAction SilentlyContinue)
+          Write-Output "ILLUSTRATOR_RUNNING=$($ai.Count)"

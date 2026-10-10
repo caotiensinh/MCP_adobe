@@ -1,0 +1,60 @@
+name: Illustrator two-gate live verification
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-two-gate-live-verification.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Validate MRCAO GUI and passive fence; no host mutation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Output "HOST=$env:COMPUTERNAME RUNNER=$env:RUNNER_NAME"
+          $ai=@(Get-Process Illustrator -ErrorAction SilentlyContinue)
+          $cep=@(Get-Process CEPHtmlEngine -ErrorAction SilentlyContinue)
+          Write-Output "ILLUSTRATOR_COUNT=$($ai.Count) CEP_COUNT=$($cep.Count)"
+          if($ai.Count -eq 0 -or $cep.Count -eq 0){
+            Write-Output 'TRUSTED_PROBE=FAIL_HOST_ABSENT'
+            Write-Output 'PROBE_FENCE_RELEASE=NOT_PROVEN'
+            exit 0
+          }
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          $uv=Get-Command uv -ErrorAction Stop
+          $root=Join-Path $env:RUNNER_TEMP 'mcp-adobe-verification'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  async def check(probe):
+                      r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":probe,"timeout":5}})
+                      p=r.structured_content
+                      if r.is_error or not isinstance(p,dict):
+                          return {"error":True}
+                      d=p.get("result",{}).get("connection",{}).get("data",{})
+                      b=d.get("blocking") or {}
+                      return {"error":False,"ready":d.get("ready"),"blockedAt":d.get("blockedAt"),
+                              "priorCompletionObserved":b.get("priorCompletionObserved"),
+                              "panelBusy":d.get("layers",{}).get("panel",{}).get("busy"),
+                              "illustratorStatus":d.get("layers",{}).get("illustrator",{}).get("status")}
+                  before=await check(False)
+                  print("PRECHECK="+json.dumps(before),flush=True)
+                  if before.get("panelBusy") is True or before.get("priorCompletionObserved") is False:
+                      print("TRUSTED_PROBE=SKIPPED_UNSAFE",flush=True)
+                  else:
+                      result=await check(True)
+                      print("TRUSTED_PROBE_RESULT="+json.dumps(result),flush=True)
+                  after=await check(False)
+                  print("FENCE_AFTER="+json.dumps(after),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath (Join-Path $root 'probe.py') -Encoding UTF8
+          uv run --with mcp python (Join-Path $root 'probe.py')

@@ -1,0 +1,40 @@
+name: Illustrator CEP transport diagnostics
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-cep-bridge-diagnostics.yml"]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Inspect package versions, CEP logs and host state without writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          $root=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp'
+          $exe=Join-Path $root 'venv\Scripts\python.exe'
+          if(Test-Path $exe){
+            & $exe -c "import illustrator_mcp,inspect;from illustrator_mcp.execution import coordinator;from illustrator_mcp import websocket_bridge;print('UPSTREAM_COORDINATOR_FILE='+inspect.getfile(coordinator));print('UPSTREAM_BRIDGE_FILE='+inspect.getfile(websocket_bridge))"
+          }
+          $base=Join-Path $env:APPDATA 'Adobe\CEP\logs'
+          foreach($dir in @($base,(Join-Path $env:LOCALAPPDATA 'MCPAdobe'))){
+            if(-not(Test-Path $dir)){continue}
+            Get-ChildItem -LiteralPath $dir -Recurse -File -ErrorAction SilentlyContinue |
+              Where-Object {$_.Extension -in @('.log','.txt') -and $_.LastWriteTime -gt (Get-Date).AddHours(-3)} |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 12 |
+              ForEach-Object {
+                Write-Output ("RECENT_LOG name="+$_.Name+" size="+$_.Length+" last="+$_.LastWriteTime.ToString('o'))
+                if($_.Length -le 2000000){
+                  foreach($line in @(Get-Content -LiteralPath $_.FullName -Tail 30 -ErrorAction SilentlyContinue)){
+                    $safe=[string]$line
+                    $safe=$safe -replace '(?i)(token|password|secret|authorization|api[_-]?key)\s*[:=]\s*[^\s,}]+','$1=[REDACTED]'
+                    if($safe.Length -gt 420){$safe=$safe.Substring(0,420)}
+                    if($safe -match 'exception|error|timeout|probe|fence|payload|descriptor|callback|WebSocket|complet'){Write-Output ("LOG "+$safe)}
+                  }
+                }
+              }
+          }
+          Write-Output "CEP_DIAGNOSTIC=COMPLETE"

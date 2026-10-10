@@ -1,0 +1,38 @@
+name: Illustrator reversible preference isolation
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-reversible-preference-isolation.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Backup precise Illustrator preferences and attempt one fresh GUI launch
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'Incorrect machine'}
+          if(@(Get-Process Illustrator -ErrorAction SilentlyContinue).Count -ne 0){throw 'Host must be stopped to protect settings'}
+          $root=Join-Path $env:APPDATA 'Adobe\Adobe Illustrator 27 Settings'
+          $matches=@(Get-ChildItem $root -Recurse -File -Filter 'Adobe Illustrator Prefs' -ErrorAction SilentlyContinue)
+          Write-Output "PREF_MATCH_COUNT=$($matches.Count)"
+          if($matches.Count -ne 1){throw 'Cannot determine unique prefs file'}
+          $pref=$matches[0]
+          $backup="$($pref.FullName).mcp-backup-20261011"
+          if(Test-Path $backup){throw 'One-time backup already exists; avoid retry without reconciliation'}
+          Copy-Item -LiteralPath $pref.FullName -Destination $backup -ErrorAction Stop
+          Rename-Item -LiteralPath $pref.FullName -NewName ($pref.Name+'.mcp-isolated-20261011') -ErrorAction Stop
+          Write-Output "PREF_ISOLATION=PASS backup=$backup"
+          Start-ScheduledTask -TaskName 'MCPAdobe-Illustrator-Interactive'
+          Start-Sleep -Seconds 40
+          $a=@(Get-Process Illustrator -ErrorAction SilentlyContinue)
+          $c=@(Get-Process CEPHtmlEngine -ErrorAction SilentlyContinue)
+          Write-Output "ISOLATED_BOOT_AI=$($a.Count) CEP=$($c.Count)"
+          foreach($p in $a){Write-Output "ISOLATED_BOOT_PID=$($p.Id) mainTitle=$($p.MainWindowTitle) responding=$($p.Responding)"}
+          Write-Output 'PREF_RESTORE_PATH_RETAINED=YES'

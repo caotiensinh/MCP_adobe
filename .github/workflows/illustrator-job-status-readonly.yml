@@ -1,0 +1,33 @@
+name: Illustrator unresolved job inspection
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/illustrator-job-status-readonly.yml"
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read status of unresolved Illustrator job, no mutations
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path) | Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv setup failed'}
+          @'
+          import asyncio, json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.job.status","arguments":{"jobId":"job_bb227cf2e04a","detail":"full"}})
+                  print("ILLUSTRATOR_JOB_STATUS_IS_ERROR="+str(r.is_error),flush=True)
+                  print("ILLUSTRATOR_JOB_STATUS_RESULT="+json.dumps(r.structured_content if r.structured_content is not None else [getattr(x,"text","") for x in r.content],default=str,ensure_ascii=False)[:5500],flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -Path illustrator_unresolved_inspect.py -Encoding UTF8
+          uv run python illustrator_unresolved_inspect.py
+          if($LASTEXITCODE -ne 0){throw 'Unresolved status inspection failed'}

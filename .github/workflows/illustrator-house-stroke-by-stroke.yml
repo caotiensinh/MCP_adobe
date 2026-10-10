@@ -1,0 +1,99 @@
+name: Illustrator real house incremental strokes
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-house-stroke-by-stroke.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  real-house:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Draw sloped-roof house one upstream MCP stroke at a time
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'dependency sync failed'}
+          @'
+          import asyncio, json, time
+          from mcp import Client
+          DOC="MCPAdobe House Roof Polygon - LIVE 02"
+          def poly(name,points,fill,closed=True):
+              return (name,"creative.path.create",{"name":name,"points":points,"closed":closed,"fill":{"r":fill[0],"g":fill[1],"b":fill[2]}})
+          def rect(name,x,y,w,h,rgb):
+              return (name,"creative.shape.rectangle",{"name":name,"x":x,"y":y,"width":w,"height":h,"fill":{"r":rgb[0],"g":rgb[1],"b":rgb[2]}})
+          # Full roof triangle has genuine sloped sides; narrow tile paths follow the sloped surface.
+          S=[
+          rect("01 House Main Structure",175,288,540,332,(246,226,194)),
+          rect("02 First-Floor Base",175,440,540,180,(237,214,176)),
+          rect("03 Floor Division",170,433,550,11,(124,91,70)),
+          poly("04 Red Tile Sloped Roof",[[136,291],[445,87],[754,291]],(175,50,38)),
+          poly("05 Roof Red Ridge",[[435,82],[445,72],[455,82]],(119,32,27)),
+          poly("06 Roof Left Edge",[[136,291],[445,87]],(122,37,31),False),
+          poly("07 Roof Right Edge",[[445,87],[754,291]],(122,37,31),False),
+          rect("08 Floor-2 Left Window Frame",244,327,116,91,(80,57,49)),
+          rect("09 Floor-2 Left Blue Glass",252,335,100,75,(128,204,227)),
+          rect("10 Floor-2 Left Mullion",300,335,5,75,(246,240,224)),
+          rect("11 Floor-2 Right Window Frame",535,327,116,91,(80,57,49)),
+          rect("12 Floor-2 Right Blue Glass",543,335,100,75,(128,204,227)),
+          rect("13 Floor-2 Right Mullion",591,335,5,75,(246,240,224)),
+          rect("14 Floor-1 Left Window Frame",232,478,124,98,(80,57,49)),
+          rect("15 Floor-1 Left Glass",240,486,108,82,(128,204,227)),
+          rect("16 Floor-1 Left Mullion",291,486,5,82,(246,240,224)),
+          rect("17 Front Door Frame",416,468,93,152,(85,61,48)),
+          rect("18 Brown Front Door",424,477,77,143,(140,91,59)),
+          rect("19 Brass Door Knob",480,555,9,9,(219,179,59)),
+          rect("20 Floor-1 Right Window Frame",552,478,124,98,(80,57,49)),
+          rect("21 Floor-1 Right Glass",560,486,108,82,(128,204,227)),
+          rect("22 Floor-1 Right Mullion",611,486,5,82,(246,240,224)),
+          rect("23 Ground",105,620,680,9,(86,113,77))
+          ]
+          # Tile rows are visibly distinct diagonal strokes, each new MCP mutation.
+          for i,y in enumerate([145,178,212,245,278]):
+              dx=(y-87)*309/204
+              S.append(poly("Tile Row %02d"%i,[[445-dx,y],[445+dx,y]],(224,130,110),False))
+          def normalize(res):
+              if res.is_error or not isinstance(res.structured_content,dict) or not res.structured_content.get("ok"):
+                  raise RuntimeError(str(res.content)[:750])
+              return res.structured_content
+          async def read(c,cap,args=None):
+              return normalize(await c.call_tool("creative_read",{"application":"illustrator","capability":cap,"arguments":args or {}}))
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  health=await read(c,"creative.health",{"probe":True,"timeout":10})
+                  h=health["result"]["connection"]["data"]
+                  print("STROKE_PREFLIGHT="+json.dumps({"ready":h["ready"],"blocking":h["blockedAt"],"unresolved":h["execution"]["unresolvedJobs"]}),flush=True)
+                  if h["execution"]["unresolvedJobs"] or h["layers"]["illustrator"].get("status")!="ok":
+                      raise RuntimeError("Host is not safe; no drawing permitted")
+                  doc=await read(c,"creative.document.info")
+                  print("CURRENT_DOC="+str(doc["result"]["data"]["document"].get("name")),flush=True)
+                  # No modifications to old partial house; create a distinct document.
+                  cr=normalize(await c.call_tool("creative_write",{"application":"illustrator","capability":"creative.document.create","arguments":{"width":900,"height":700,"color_mode":"RGB","name":DOC}}))
+                  print("NEW_DOC="+str(cr.get("result",{}).get("data",{}).get("name")),flush=True)
+                  for i,(name,cap,args) in enumerate(S,1):
+                      print("LIVE_STROKE_START="+str(i)+"/"+str(len(S))+" "+name,flush=True)
+                      r=normalize(await c.call_tool("creative_write",{"application":"illustrator","capability":cap,"arguments":args}))
+                      result=r.get("result",{})
+                      if result.get("execution")!="succeeded" or result.get("verification",{}).get("status")=="failed":
+                          raise RuntimeError("Upstream stroke outcome not proven: "+name)
+                      print("LIVE_STROKE_ACK="+str(i)+" "+name,flush=True)
+                      # Read from Illustrator each step; do not submit an opaque 38-step batch.
+                      after=await read(c,"creative.document.info")
+                      actual=after["result"]["data"]
+                      count=sum(int(l.get("itemCount",0)) for l in actual.get("layers",[]))
+                      print("LIVE_STROKE_READBACK="+str(i)+" itemCount="+str(count),flush=True)
+                      if count<i:
+                          raise RuntimeError("Host item count unexpectedly below stroke index "+str(i))
+                      await asyncio.sleep(0.6)
+                  print("HOUSE_LIVE_UPSTREAM_STROKES_PASS="+str(len(S)),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath real_house_strokes.py -Encoding UTF8
+          uv run python real_house_strokes.py
+          if($LASTEXITCODE -ne 0){throw 'Live house did not pass'}

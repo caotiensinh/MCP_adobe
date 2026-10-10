@@ -1,0 +1,415 @@
+name: Mode1 Illustrator live E2E on MRCAO
+
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/mode1-illustrator-live-acceptance.yml"
+      - "src/mcp_adobe/illustrator.py"
+      - "src/mcp_adobe/illustrator_cep.py"
+      - "src/mcp_adobe/server.py"
+      - "scripts/install_local_host.ps1"
+      - "scripts/ensure_illustrator_cep_bootstrap.ps1"
+      - "tests/test_illustrator_cep_bootstrap_contract.py"
+      - "scripts/illustrator_cep_fallback_transport.html"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-adobe-illustrator-runtime-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  live-interaction:
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[deploy-only]') }}
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: copy
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare local MCP client runtime
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+            $uvDir=Join-Path $HOME '.local\bin'
+            if(Test-Path (Join-Path $uvDir 'uv.exe')) { $env:Path="$uvDir;$env:Path" }
+          }
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){ throw 'uv unavailable' }
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){ throw "uv sync failed rc=$LASTEXITCODE" }
+
+      - name: Require clean persistent Illustrator transport
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $session=[System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          Write-Host "ILLUSTRATOR_RUNNER_SESSION=$session INTERACTIVE=$([Environment]::UserInteractive)"
+          $processes=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" -ErrorAction SilentlyContinue)
+          foreach($p in $processes){Write-Host "ILLUSTRATOR_PROCESS pid=$($p.ProcessId) session=$($p.SessionId)"}
+          $candidate=@($processes | Where-Object { $_.SessionId -eq $session } | Select-Object -First 1)
+          if($candidate.Count -eq 0){throw 'ILLUSTRATOR_NOT_RUNNING: open desktop session required; do not spawn or modify app'}
+          $ai=Get-Process -Id $candidate[0].ProcessId -ErrorAction Stop
+          $ws=@(Get-NetTCPConnection -State Established -LocalPort 8081 -ErrorAction SilentlyContinue)
+          if($ws.Count -eq 0){ throw 'Illustrator CEP panel is not connected to port 8081' }
+          Write-Host "ILLUSTRATOR_VISUAL_PREFLIGHT_PROCESS=PASS PID=$($ai.Id) TITLE=$($ai.MainWindowTitle)"
+          Write-Host "ILLUSTRATOR_VISUAL_PREFLIGHT_WS=PASS connections=$($ws.Count)"
+
+          @'
+          import asyncio
+          import json
+          from collections.abc import Mapping
+          from mcp import Client
+
+          URL = "http://127.0.0.1:8787/mcp"
+
+          def walk(value):
+              yield value
+              if isinstance(value, Mapping):
+                  for child in value.values():
+                      yield from walk(child)
+              elif isinstance(value, (list, tuple)):
+                  for child in value:
+                      yield from walk(child)
+
+          def connection_state(value):
+              for node in walk(value):
+                  if (
+                      isinstance(node, Mapping)
+                      and isinstance(node.get("execution"), Mapping)
+                      and "unresolvedJobs" in node["execution"]
+                      and isinstance(node.get("layers"), Mapping)
+                  ):
+                      return node
+              return None
+
+          async def main():
+              async with Client(URL) as client:
+                  listed = await client.list_tools()
+                  names = {tool.name for tool in listed.tools}
+                  if "creative_live_build" not in names:
+                      raise RuntimeError(
+                          "persistent gateway has not loaded creative_live_build: " +
+                          json.dumps(sorted(names))
+                      )
+                  result = await client.call_tool(
+                      "creative_read",
+                      {
+                          "application": "illustrator",
+                          "capability": "creative.health",
+                          "arguments": {"probe": False, "timeout": 5.0},
+                      },
+                  )
+                  if result.is_error:
+                      raise RuntimeError(f"local health failed: {result}")
+                  state = connection_state(result.structured_content)
+                  if not isinstance(state, Mapping):
+                      raise RuntimeError("health response omitted connection state")
+                  panel = state["layers"].get("panel")
+                  execution = state.get("execution")
+                  if not isinstance(panel, Mapping) or panel.get("status") not in {"ok", "degraded"}:
+                      raise RuntimeError("CEP panel is not healthy: " + json.dumps(panel, default=str))
+                  if execution.get("unresolvedJobs"):
+                      raise RuntimeError(
+                          "refusing visual build with unresolved jobs: " +
+                          json.dumps(execution, default=str)
+                      )
+                  if state.get("blocking"):
+                      raise RuntimeError(
+                          "refusing visual build with a coordinator blocker: " +
+                          json.dumps(state.get("blocking"), default=str)
+                      )
+                  print(
+                      "ILLUSTRATOR_VISUAL_PREFLIGHT_MCP=PASS " +
+                      json.dumps(
+                          {
+                              "panel": panel.get("status"),
+                              "connectionGeneration": execution.get("connectionGeneration"),
+                              "unresolvedJobs": execution.get("unresolvedJobs"),
+                          },
+                          ensure_ascii=False,
+                      ),
+                      flush=True,
+                  )
+
+          asyncio.run(main())
+          '@ | Set-Content -Path illustrator_visual_preflight.py -Encoding UTF8
+          uv run python illustrator_visual_preflight.py
+
+      - name: Build a car visibly through one MCP live-build request
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type @"
+          using System;
+          using System.Runtime.InteropServices;
+          public static class MCPAdobeWindow {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+          }
+          "@
+          $ai=Get-Process -Name Illustrator -ErrorAction Stop |
+            Where-Object {$_.MainWindowHandle -ne 0} |
+            Select-Object -First 1
+          [MCPAdobeWindow]::ShowWindow($ai.MainWindowHandle,9) | Out-Null
+          [MCPAdobeWindow]::SetForegroundWindow($ai.MainWindowHandle) | Out-Null
+          Write-Host "ILLUSTRATOR_VISUAL_FOREGROUND=PASS PID=$($ai.Id) TITLE=$($ai.MainWindowTitle)"
+          @'
+          import asyncio
+          import json
+          from collections.abc import Mapping
+          from mcp import Client
+
+          URL = "http://127.0.0.1:8787/mcp"
+          USER_REQUEST = "Hãy vẽ một chiếc ô tô và cho tôi thấy quá trình dựng hình trực tiếp."
+          DELAY_MS = 1000
+
+          STEPS = [
+              {
+                  "label": "00 document",
+                  "capability": "creative.document.create",
+                  "arguments": {
+                      "width": 900,
+                      "height": 600,
+                      "color_mode": "RGB",
+                      "name": "ChatGPT MCP Visual Live Build",
+                  },
+              },
+              {
+                  "label": "01 clean canvas",
+                  "capability": "creative.shape.rectangle",
+                  "arguments": {
+                      "name": "Live Build Background",
+                      "x": 80, "y": 145, "width": 680, "height": 330,
+                      "fill": {"r": 250, "g": 250, "b": 250},
+                  },
+              },
+              {
+                  "label": "02 road",
+                  "capability": "creative.shape.rectangle",
+                  "arguments": {
+                      "name": "Live Car Road",
+                      "x": 100, "y": 390, "width": 640, "height": 55,
+                      "fill": {"r": 70, "g": 74, "b": 82},
+                  },
+              },
+              {
+                  "label": "03 body",
+                  "capability": "creative.shape.rectangle",
+                  "arguments": {
+                      "name": "Live Car Body",
+                      "x": 155, "y": 280, "width": 540, "height": 115,
+                      "fill": {"r": 214, "g": 52, "b": 65},
+                  },
+              },
+              {
+                  "label": "04 roof",
+                  "capability": "creative.shape.rectangle",
+                  "arguments": {
+                      "name": "Live Car Roof",
+                      "x": 295, "y": 205, "width": 285, "height": 90,
+                      "fill": {"r": 188, "g": 42, "b": 56},
+                  },
+              },
+              {
+                  "label": "05 left window",
+                  "capability": "creative.shape.rectangle",
+                  "arguments": {
+                      "name": "Live Car Window Left",
+                      "x": 320, "y": 220, "width": 100, "height": 56,
+                      "fill": {"r": 142, "g": 207, "b": 235},
+                  },
+              },
+              {
+                  "label": "06 right window",
+                  "capability": "creative.shape.rectangle",
+                  "arguments": {
+                      "name": "Live Car Window Right",
+                      "x": 447, "y": 220, "width": 105, "height": 56,
+                      "fill": {"r": 142, "g": 207, "b": 235},
+                  },
+              },
+              {
+                  "label": "07 left wheel",
+                  "capability": "creative.shape.ellipse",
+                  "arguments": {
+                      "name": "Live Car Wheel Left",
+                      "x": 205, "y": 350, "width": 92, "height": 92,
+                      "fill": {"r": 31, "g": 33, "b": 38},
+                  },
+              },
+              {
+                  "label": "08 right wheel",
+                  "capability": "creative.shape.ellipse",
+                  "arguments": {
+                      "name": "Live Car Wheel Right",
+                      "x": 555, "y": 350, "width": 92, "height": 92,
+                      "fill": {"r": 31, "g": 33, "b": 38},
+                  },
+              },
+              {
+                  "label": "09 left hub",
+                  "capability": "creative.shape.ellipse",
+                  "arguments": {
+                      "name": "Live Car Hub Left",
+                      "x": 231, "y": 376, "width": 40, "height": 40,
+                      "fill": {"r": 190, "g": 193, "b": 198},
+                  },
+              },
+              {
+                  "label": "10 right hub",
+                  "capability": "creative.shape.ellipse",
+                  "arguments": {
+                      "name": "Live Car Hub Right",
+                      "x": 581, "y": 376, "width": 40, "height": 40,
+                      "fill": {"r": 190, "g": 193, "b": 198},
+                  },
+              },
+              {
+                  "label": "11 headlight",
+                  "capability": "creative.shape.ellipse",
+                  "arguments": {
+                      "name": "Live Car Headlight",
+                      "x": 665, "y": 305, "width": 26, "height": 26,
+                      "fill": {"r": 255, "g": 225, "b": 92},
+                  },
+              },
+              {
+                  "label": "12 tail light",
+                  "capability": "creative.shape.rectangle",
+                  "arguments": {
+                      "name": "Live Car Tail Light",
+                      "x": 158, "y": 307, "width": 18, "height": 28,
+                      "fill": {"r": 255, "g": 120, "b": 70},
+                  },
+              },
+          ]
+
+          def walk(value):
+              yield value
+              if isinstance(value, Mapping):
+                  for child in value.values():
+                      yield from walk(child)
+              elif isinstance(value, (list, tuple)):
+                  for child in value:
+                      yield from walk(child)
+
+          def find_connection(value):
+              for node in walk(value):
+                  if (
+                      isinstance(node, Mapping)
+                      and isinstance(node.get("execution"), Mapping)
+                      and "unresolvedJobs" in node["execution"]
+                      and isinstance(node.get("layers"), Mapping)
+                  ):
+                      return node
+              return None
+
+          async def main():
+              print("USER_REQUEST=" + USER_REQUEST, flush=True)
+              print(
+                  "ILLUSTRATOR_VISUAL_PLAN=" +
+                  json.dumps(
+                      {
+                          "mode": "creative_live_build",
+                          "steps": [step["label"] for step in STEPS],
+                          "step_delay_ms": DELAY_MS,
+                      },
+                      ensure_ascii=False,
+                  ),
+                  flush=True,
+              )
+              async with Client(URL) as client:
+                  result = await client.call_tool(
+                      "creative_live_build",
+                      {
+                          "application": "illustrator",
+                          "steps": STEPS,
+                          "step_delay_ms": DELAY_MS,
+                      },
+                  )
+                  if result.is_error:
+                      raise RuntimeError(f"creative_live_build failed: {result}")
+                  payload = result.structured_content
+                  print(
+                      "ILLUSTRATOR_VISUAL_LIVE_BUILD_RESULT=" +
+                      json.dumps(payload, ensure_ascii=False, default=str),
+                      flush=True,
+                  )
+                  if not isinstance(payload, Mapping):
+                      raise RuntimeError("creative_live_build returned no structured payload")
+                  if payload.get("mode") != "visual_live_build":
+                      raise RuntimeError("creative_live_build returned unexpected mode")
+                  if payload.get("steps_completed") != len(STEPS):
+                      raise RuntimeError(
+                          f"visual build incomplete: {payload.get('steps_completed')}/{len(STEPS)}"
+                      )
+                  labels = [
+                      node.get("label")
+                      for node in payload.get("steps", [])
+                      if isinstance(node, Mapping)
+                  ]
+                  if labels != [step["label"] for step in STEPS]:
+                      raise RuntimeError("visual build step order changed")
+
+                  health = await client.call_tool(
+                      "creative_read",
+                      {
+                          "application": "illustrator",
+                          "capability": "creative.health",
+                          "arguments": {"probe": False, "timeout": 5.0},
+                      },
+                  )
+                  if health.is_error:
+                      raise RuntimeError(f"post-build local health failed: {health}")
+                  state = find_connection(health.structured_content)
+                  if not isinstance(state, Mapping):
+                      raise RuntimeError("post-build health omitted connection state")
+                  execution = state.get("execution")
+                  if execution.get("unresolvedJobs"):
+                      raise RuntimeError(
+                          "visual build left unresolved jobs: " +
+                          json.dumps(execution, default=str)
+                      )
+                  print(
+                      "ILLUSTRATOR_USER_REQUEST_VISUAL_BUILD=PASS " +
+                      json.dumps(
+                          {
+                              "request": USER_REQUEST,
+                              "steps": len(STEPS),
+                              "delay_ms": DELAY_MS,
+                              "document": "current-active-document",
+                          },
+                          ensure_ascii=False,
+                      ),
+                      flush=True,
+                  )
+
+          asyncio.run(main())
+          '@ | Set-Content -Path illustrator_visual_live_build.py -Encoding UTF8
+          uv run python illustrator_visual_live_build.py
+
+      - name: Verify Illustrator remained interactive
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $ai=Get-Process -Name Illustrator -ErrorAction SilentlyContinue |
+            Where-Object {$_.MainWindowHandle -ne 0} |
+            Select-Object -First 1
+          if(-not $ai){ throw 'Illustrator disappeared after visual build' }
+          $ws=@(Get-NetTCPConnection -State Established -LocalPort 8081 -ErrorAction SilentlyContinue)
+          if($ws.Count -eq 0){ throw 'CEP WebSocket disappeared after visual build' }
+          Write-Host "ILLUSTRATOR_VISUAL_WINDOW=PASS PID=$($ai.Id) TITLE=$($ai.MainWindowTitle) WS=$($ws.Count)"
+
+# visual-retry: root-cause-logging-e6e03917
+
+# visual-live-build-trigger: real-panel-transport-bca6e208

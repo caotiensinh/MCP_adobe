@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MCP Adobe · Khoanh vùng chỉnh sửa · PS / AI / XD</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#e8edf5;background:#101620}*{box-sizing:border-box}
+body{margin:0;padding:20px}.layout{display:grid;grid-template-columns:minmax(300px,1fr) 330px;gap:18px;max-width:1300px;margin:auto}
+section{background:#192333;border:1px solid #344359;border-radius:12px;padding:16px}
+h1{font-size:20px}h2{font-size:16px}p,.help{color:#abb9ca;font-size:13px;line-height:1.5}
+#canvas{position:relative;overflow:hidden;display:inline-block;max-width:100%;line-height:0;border:2px solid #596e8c;cursor:crosshair;touch-action:none}
+#preview{max-width:100%;height:auto;display:block;user-select:none;pointer-events:none}
+#selection{position:absolute;display:none;border:2px dashed #ffc857;background:#ffc85728;pointer-events:none}
+label{display:block;font-size:13px;margin:12px 0 5px}input,textarea,button,select{font:inherit;border-radius:7px;padding:9px;color:#e8edf5;background:#253247;border:1px solid #51627c}
+input,textarea,select{width:100%}button{cursor:pointer;margin-top:10px}button:disabled{opacity:.4;cursor:not-allowed}
+#candidate-list button{display:block;width:100%;text-align:left}#candidate-list button.active{border-color:#ffc857;background:#39445b}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#0c1521;padding:10px;border-radius:8px;font-size:12px}
+small{color:#a7b5c7}.row{display:flex;gap:8px;align-items:center}@media(max-width:850px){.layout{grid-template-columns:1fr}}
+</style></head>
+<body>
+<main class="layout">
+<section><h1>Khoanh vùng chỉnh sửa · Photoshop / Illustrator / XD</h1><p>Chọn preview của tài liệu Adobe và kéo chuột để khoanh. Không tự thực hiện thao tác ghi; bạn duyệt đối tượng trước khi đưa yêu cầu cho AI.</p>
+<label for="preview-file">Ảnh preview từ Adobe (chỉ hiển thị cục bộ)</label><input type="file" id="preview-file" accept="image/png,image/jpeg,image/webp">
+<p class="help">Kích thước preview phải tương ứng với toàn bộ document không xoay, không cắt. Layer bounds lấy từ Adobe.</p>
+<div id="canvas"><img id="preview" alt="Xem trước document" draggable="false"><div id="selection"></div></div>
+<div class="row"><button id="clear">Xóa vùng khoanh</button><small id="status" aria-live="polite">Chưa có ảnh preview.</small></div>
+</section>
+<section>
+<h2>Nhận diện và chỉnh sửa có kiểm soát</h2>
+<label for="metadata-file">Nạp metadata JSON đã xuất trực tiếp từ Adobe</label><input id="metadata-file" type="file" accept=".json,application/json">
+<label for="meta">Metadata JSON từ PS / AI / XD (document_identity, width, height, layers)</label>
+<textarea id="meta" rows="10" spellcheck="false" placeholder='{"document_identity":"doc-123","width":900,"height":600,"layers":[{"id":1,"name":"Heading","bounds":{"left":100,"top":80,"right":500,"bottom":160}}]}'></textarea>
+<button id="detect">Xác định layer trong vùng khoanh</button>
+<p class="help">Preview phải có cùng tỉ lệ khung hình với metadata. Sau khi đổi preview hoặc metadata, phải xác định lại đối tượng.</p>
+<div id="candidate-list" aria-live="polite"></div>
+<label for="request">Yêu cầu AI</label>
+<textarea id="request" rows="3" placeholder="Đổi chữ này sang màu đỏ."></textarea>
+<button id="build" disabled>Tạo yêu cầu chỉnh sửa</button>
+<p class="help">Chỉ tạo JSON thao tác để chuyển tới agent MCP hiện có. Không gọi API hoặc thực thi Adobe trực tiếp trong trang này.</p>
+<label for="payload">Nội dung gửi agent</label><pre id="payload">Chưa có yêu cầu.</pre>
+<button id="copy" disabled>Sao chép yêu cầu JSON</button>
+</section></main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+let drag=null,selection=null,choice=null,meta=null,candidates=[];
+const validApps=['photoshop','illustrator','xd'];
+function validatePreviewMetadata(doc){const img=$('preview');if(!img.naturalWidth||!img.naturalHeight)throw Error('Chưa có preview.');const expected=doc.width/doc.height, actual=img.naturalWidth/img.naturalHeight;if(!Number.isFinite(expected)||expected<=0||Math.abs(actual-expected)>0.002)throw Error('Preview không khớp tỉ lệ document. Không thể định vị an toàn.');if(doc.coordinate_frame && doc.coordinate_frame.space==='artboard_union' && !doc.preview_frame_verified)throw Error('XD cần xác nhận preview chính xác của toàn bộ artboard union.');}
+
+$('metadata-file').addEventListener('change',async()=>{const file=$('metadata-file').files?.[0];if(!file)return;try{const obj=JSON.parse(await file.text());if(!["photoshop","illustrator","xd"].includes(obj.application)||!obj.document_identity||!(obj.width>0&&obj.height>0)||!Array.isArray(obj.layers))throw Error('Metadata không hợp lệ.');$('meta').value=JSON.stringify(obj,null,2);reset();$('status').textContent='Đã nạp metadata từ '+file.name+'. Khoanh vùng và xác định layer.';}catch(err){$('status').textContent='Lỗi metadata: '+err.message;}});
+$('preview-file').addEventListener('change',()=>{
+ const file=$('preview-file').files?.[0];if(!file)return;reset();
+ const url=URL.createObjectURL(file);const img=$('preview');
+ img.onload=()=>{URL.revokeObjectURL(url);reset();$('status').textContent='Kéo chuột khoanh vùng cần sửa.';};
+ img.src=url;
+});
+function reset(){selection=null;choice=null;candidates=[];$('selection').style.display='none';$('candidate-list').replaceChildren();$('build').disabled=true;$('copy').disabled=true;$('payload').textContent='Chưa có yêu cầu.';}
+$('clear').addEventListener('click',reset);
+$('meta').addEventListener('input',reset);
+function point(e){const r=$('preview').getBoundingClientRect();return {x:Math.max(0,Math.min(r.width,e.clientX-r.left)),y:Math.max(0,Math.min(r.height,e.clientY-r.top))};}
+function draw(){if(!selection)return;const r=$('preview').getBoundingClientRect();Object.assign($('selection').style,{display:'block',left:(selection.left/r.width*100)+'%',top:(selection.top/r.height*100)+'%',width:((selection.right-selection.left)/r.width*100)+'%',height:((selection.bottom-selection.top)/r.height*100)+'%'});}
+$('canvas').addEventListener('pointerdown',e=>{if(!$('preview').naturalWidth)return;reset();const p=point(e);drag=p;selection={left:p.x,right:p.x,top:p.y,bottom:p.y};$('canvas').setPointerCapture(e.pointerId);});
+$('canvas').addEventListener('pointermove',e=>{if(!drag)return;const p=point(e);selection={left:Math.min(drag.x,p.x),right:Math.max(drag.x,p.x),top:Math.min(drag.y,p.y),bottom:Math.max(drag.y,p.y)};draw();});
+$('canvas').addEventListener('pointerup',()=>{drag=null;if(selection&&((selection.right-selection.left)<3||(selection.bottom-selection.top)<3)){reset();$('status').textContent='Vùng khoanh quá nhỏ.';}});
+$('canvas').addEventListener('pointercancel',()=>{drag=null;reset();});
+function boundsRegion(){if(!selection)throw Error('Hãy khoanh một vùng trên preview.');const img=$('preview');if(!img.naturalWidth)throw Error('Chưa có ảnh preview.');const rect=img.getBoundingClientRect();if(!rect.width||!rect.height)throw Error('Kích thước preview không hợp lệ.');return {left:selection.left/rect.width*meta.width,top:selection.top/rect.height*meta.height,right:selection.right/rect.width*meta.width,bottom:selection.bottom/rect.height*meta.height};}
+function overlap(a,b){return Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left))*Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top));}
+$('detect').addEventListener('click',()=>{
+ try{
+  meta=JSON.parse($('meta').value);if(!["photoshop","illustrator","xd"].includes(meta.application)||!meta.document_identity||!(meta.width>0&&meta.height>0)||!Array.isArray(meta.layers))throw Error('Metadata thiếu document_identity, width/height hoặc layers.');
+  validatePreviewMetadata(meta);const r=boundsRegion();choice=null;$('build').disabled=true;$('candidate-list').replaceChildren();
+  const area=(r.right-r.left)*(r.bottom-r.top);if(area<=0)throw Error('Vùng khoanh không hợp lệ.');
+  candidates=meta.layers.filter(l=>l&&l.visible!==false&&l.locked!==true&&l.background!==true&&l.bounds).map(l=>({...l,coverage:overlap(r,l.bounds)/area})).filter(l=>l.coverage>=.1).sort((a,b)=>b.coverage-a.coverage);
+  if(!candidates.length){$('status').textContent='Không tìm thấy layer. Cần xác minh vùng raster hoặc layer bounds.';return;}
+  for(const l of candidates){const b=document.createElement('button');b.textContent=(l.name||'Layer')+' • ID '+l.id+' • '+Math.round(l.coverage*100)+'% vùng';b.addEventListener('click',()=>{choice=l;$('candidate-list').querySelectorAll('button').forEach(x=>x.classList.remove('active'));b.classList.add('active');$('build').disabled=false;});$('candidate-list').append(b);}
+  $('status').textContent='Đã tìm '+candidates.length+' layer. Chọn đúng đối tượng trước khi tạo yêu cầu.';
+ }catch(err){$('status').textContent='Lỗi: '+err.message;}
+});
+$('build').addEventListener('click',()=>{
+ if(!choice||!meta||!selection)return;try{validatePreviewMetadata(meta);}catch(err){$('status').textContent=err.message;reset();return;}const request=$('request').value.trim();if(!request){$('status').textContent='Nhập yêu cầu ngắn cần sửa.';return;}
+ const result={schema:'mcp-adobe-region-request/v1',intent:'review_then_edit',application:meta.application,document_identity:meta.document_identity,document_dimensions:{width:meta.width,height:meta.height},preview_dimensions:{width:$('preview').naturalWidth,height:$('preview').naturalHeight},coordinate_frame:meta.coordinate_frame||null,selected_region:boundsRegion(),selected_layer:{id:choice.id,name:choice.name,bounds:choice.bounds},user_instruction:request,requires_live_document_identity_check:true,requires_live_layer_readback:true,requires_preview_revision_check:true,execute_automatically:false};
+ $('payload').textContent=JSON.stringify(result,null,2);$('copy').disabled=false;$('status').textContent='JSON đã tạo; agent phải kiểm tra lại document/layer trước khi sửa.';
+});
+$('copy').addEventListener('click',()=>navigator.clipboard.writeText($('payload').textContent).then(()=>$('status').textContent='Đã sao chép JSON.').catch(()=>$('status').textContent='Không thể sao chép; chọn và copy JSON thủ công.'));
+</script>
+</body></html>

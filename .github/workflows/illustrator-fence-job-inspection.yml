@@ -1,0 +1,32 @@
+name: Illustrator exact trusted fence job inspection
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-fence-job-inspection.yml"]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read exact trusted-probe job status without replaying any host call
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as client:
+                  r=await client.call_tool("creative_read",{"application":"illustrator","capability":"creative.job.status","arguments":{"jobId":"host_330bf6bcfce64d448dfa1a6a26ffadeb","detail":"full"}})
+                  p=r.structured_content
+                  print("FENCE_JOB_STATUS_ERROR="+str(r.is_error),flush=True)
+                  print("FENCE_JOB_STATUS="+json.dumps(p,default=str)[:13500],flush=True)
+                  if r.is_error or not isinstance(p,dict): raise RuntimeError("Job status unavailable")
+          asyncio.run(main())
+          '@ | Set-Content -Path inspect_fence.py -Encoding UTF8
+          uv run python inspect_fence.py

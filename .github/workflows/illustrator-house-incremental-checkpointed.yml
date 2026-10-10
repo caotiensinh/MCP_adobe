@@ -1,0 +1,172 @@
+name: Illustrator house incremental checkpointed drawing
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-house-incremental-checkpointed.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  live-house:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bring actual Illustrator to foreground and check transport
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $ai=Get-Process Illustrator -ErrorAction Stop | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1
+          if(-not $ai){throw 'Illustrator desktop window missing'}
+          $tcp=@(Get-NetTCPConnection -LocalPort 8081 -State Established -ErrorAction SilentlyContinue)
+          if($tcp.Count -eq 0){throw 'CEP websocket missing'}
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class HouseWindow {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int n);
+          }
+          '@
+          [HouseWindow]::ShowWindow($ai.MainWindowHandle,9)|Out-Null
+          [HouseWindow]::SetForegroundWindow($ai.MainWindowHandle)|Out-Null
+          Write-Output "HOUSE_WINDOW_FOREGROUND pid=$($ai.Id)"
+      - name: Stream each house stroke to Illustrator via creative_live_build
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv sync failed'}
+          @'
+          import asyncio,json
+          from mcp import Client
+          DOC="MCPAdobe LIVE Two-Story Red Tile House"
+          def rect(label,x,y,w,h,r,g,b):
+              return {"label":label,"capability":"creative.shape.rectangle","arguments":{"name":label,"x":x,"y":y,"width":w,"height":h,"fill":{"r":r,"g":g,"b":b}}}
+          STEPS=[{"label":"00 new separate house document","capability":"creative.document.create","arguments":{"width":900,"height":650,"color_mode":"RGB","name":DOC}}]
+          STEPS += [
+           rect("01 ground baseline",90,572,715,7,88,115,80),
+           rect("02 left wall edge",204,271,8,298,93,78,66),
+           rect("03 right wall edge",679,271,8,298,93,78,66),
+           rect("04 first floor wall",212,425,467,140,244,220,178),
+           rect("05 second floor wall",212,277,467,148,248,230,198),
+           rect("06 between floor beam",202,417,490,10,124,89,66),
+           rect("07 roof bottom red eave",174,270,544,18,151,39,32),
+           rect("08 roof tile layer lower",200,248,495,23,177,42,33),
+           rect("09 roof tile layer 2",224,226,448,23,183,47,35),
+           rect("10 roof tile layer 3",248,204,402,23,194,48,36),
+           rect("11 roof tile layer 4",273,182,354,23,199,51,35),
+           rect("12 roof tile layer 5",296,160,306,23,205,57,41),
+           rect("13 roof tile layer 6",320,138,259,23,203,49,37),
+           rect("14 roof tile layer 7",344,116,212,23,190,44,34),
+           rect("15 roof ridge tiles",370,98,160,20,155,35,31),
+           rect("16 roof ridge cap",397,85,106,13,125,33,29),
+           rect("17 floor 2 left window frame",270,317,109,85,99,69,47),
+           rect("18 floor 2 left glass",279,326,91,67,125,195,222),
+           rect("19 floor 2 left vertical mullion",323,326,5,67,250,248,241),
+           rect("20 floor 2 right window frame",517,317,109,85,99,69,47),
+           rect("21 floor 2 right glass",526,326,91,67,125,195,222),
+           rect("22 floor 2 right mullion",570,326,5,67,250,248,241),
+           rect("23 floor 1 left window frame",261,455,103,82,100,76,55),
+           rect("24 floor 1 left glass",269,463,87,66,131,202,221),
+           rect("25 floor 1 left mullion",311,463,5,66,249,249,243),
+           rect("26 front door frame",409,442,85,123,92,60,45),
+           rect("27 front door inset",417,450,69,115,148,91,58),
+           rect("28 front door middle",452,450,5,115,91,57,39),
+           rect("29 left door knob",444,510,8,8,238,201,87),
+           rect("30 floor 1 right window frame",535,455,103,82,100,76,55),
+           rect("31 floor 1 right glass",543,463,87,66,131,202,221),
+           rect("32 floor 1 right mullion",585,463,5,66,249,249,243),
+           rect("33 roof tile red joint A",300,181,6,19,123,30,26),
+           rect("34 roof tile red joint B",385,203,6,19,123,30,26),
+           rect("35 roof tile red joint C",480,225,6,19,123,30,26),
+           rect("36 roof tile red joint D",590,248,6,19,123,30,26),
+           rect("37 front doorstep",398,565,106,12,125,126,124)
+          ]
+          def checked(r,cap):
+              p=r.structured_content
+              if r.is_error or not isinstance(p,dict) or not p.get("ok"):
+                  raise RuntimeError(cap+" error "+str(r.content)[:500])
+              return p
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  h=checked(await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":True,"timeout":10}}),"health")
+                  state=h["result"]["connection"]["data"]
+                  print("LIVE_PREFLIGHT="+json.dumps({"ready":state.get("ready"),"unresolved":state["execution"]["unresolvedJobs"],"illustrator":state["layers"]["illustrator"]}),flush=True)
+                  if state["execution"]["unresolvedJobs"] or state["layers"]["illustrator"].get("status")!="ok":
+                      raise RuntimeError("Illustrator cannot execute safely")
+                  print("HOUSE_INCREMENTAL_BEGIN step_count="+str(len(STEPS))+" delay_ms=1300",flush=True)
+                  previous=0
+                  for idx,step in enumerate(STEPS):
+                      # Every stroke is a distinct MCP call; readback checkpoints prevent blind replay.
+                      cap=step["capability"]
+                      print("HOUSE_STEP_START="+json.dumps({"index":idx,"label":step["label"],"capability":cap}),flush=True)
+                      w=checked(await c.call_tool("creative_write",{"application":"illustrator","capability":cap,"arguments":step["arguments"]}),cap)
+                      print("HOUSE_STEP_ACK="+json.dumps({"index":idx,"label":step["label"],"job":w.get("result",{}).get("jobId"),"execution":w.get("result",{}).get("execution")},default=str),flush=True)
+                      read=checked(await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.document.info","arguments":{}}),"document.info")
+                      info=read["result"]["data"]
+                      count=sum(int(x.get("itemCount",0)) for x in info.get("layers",[]))
+                      names=[item.get("name") for layer in info.get("layers",[]) for item in layer.get("items",[])]
+                      print("HOUSE_STEP_READBACK="+json.dumps({"index":idx,"count":count,"names":names},default=str),flush=True)
+                      if info["document"].get("name")!=DOC:
+                          raise RuntimeError("Document changed mid-build")
+                      if idx==0:
+                          if count != 0:
+                              raise RuntimeError("New house document not empty")
+                      elif count != previous+1 or step["arguments"].get("name") not in names:
+                          raise RuntimeError("Checkpoint mismatch after "+step["label"])
+                      previous=count
+                      await asyncio.sleep(1.3)
+                  print("HOUSE_INCREMENTAL_STEPS_COMPLETED="+str(len(STEPS)),flush=True)
+                  d=checked(await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.document.info","arguments":{}}),"document.info")
+                  data=d["result"]["data"]
+                  print("LIVE_HOUSE_DOC="+json.dumps(data["document"],default=str),flush=True)
+                  count=sum(int(l.get("itemCount",0)) for l in data.get("layers",[]))
+                  print("LIVE_HOUSE_ITEM_COUNT="+str(count),flush=True)
+                  if data["document"].get("name")!=DOC or count < len(STEPS)-1:
+                      raise RuntimeError("House readback mismatch")
+                  print("LIVE_HOUSE_INCREMENTAL_DRAW=PASS",flush=True)
+          asyncio.run(main())
+          
+          '@ | Set-Content -LiteralPath house_live.py -Encoding UTF8
+          uv run python house_live.py
+          if($LASTEXITCODE -ne 0){throw 'House drawing failed'}
+      - name: Capture completed Illustrator canvas screenshot
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          try {
+            Add-Type -AssemblyName System.Drawing
+            Add-Type -AssemblyName System.Windows.Forms
+            $ai=Get-Process Illustrator -ErrorAction Stop | Where-Object {$_.MainWindowHandle -ne 0} | Select-Object -First 1
+            if(-not $ai){throw 'No Illustrator window'}
+            Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class HouseForeground {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
+          }
+          '@
+            [HouseForeground]::ShowWindow($ai.MainWindowHandle,9)|Out-Null
+            [HouseForeground]::SetForegroundWindow($ai.MainWindowHandle)|Out-Null
+            Start-Sleep -Seconds 2
+            $r=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $b=New-Object System.Drawing.Bitmap($r.Width,$r.Height)
+            $g=[System.Drawing.Graphics]::FromImage($b)
+            $g.CopyFromScreen($r.Location,[System.Drawing.Point]::Empty,$r.Size)
+            $b.Save((Join-Path (Get-Location) 'illustrator_house_final.png'),[System.Drawing.Imaging.ImageFormat]::Png)
+            $g.Dispose();$b.Dispose()
+            Write-Output 'HOUSE_VISUAL_CAPTURE=PASS'
+          } catch {Write-Output "HOUSE_VISUAL_CAPTURE=FAIL $($_.Exception.Message)"}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: illustrator-two-story-house-live-evidence
+          path: illustrator_house_final.png
+          if-no-files-found: ignore
+          retention-days: 14

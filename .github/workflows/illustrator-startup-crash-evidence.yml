@@ -1,0 +1,38 @@
+name: Illustrator startup crash evidence bounded
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-startup-crash-evidence.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Inspect Adobe startup logs and Windows Error Reporting metadata
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          $since=(Get-Date).AddHours(-1)
+          foreach($root in @(
+            (Join-Path $env:LOCALAPPDATA 'CrashDumps'),
+            (Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\WER\ReportArchive'),
+            (Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\WER\ReportQueue'),
+            (Join-Path $env:APPDATA 'Adobe\Adobe Illustrator 27 Settings'),
+            (Join-Path $env:LOCALAPPDATA 'Adobe\OOBE')
+          )){
+            Write-Output "CRASH_ROOT_EXISTS=$root : $(Test-Path $root)"
+            if(Test-Path $root){
+              $recent=@(Get-ChildItem -LiteralPath $root -File -Recurse -ErrorAction SilentlyContinue |
+                Where-Object {$_.LastWriteTime -ge $since -and $_.FullName -match 'Illustrator|Adobe|CEP|crash|log' } |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 15)
+              foreach($f in $recent){
+                Write-Output "CRASH_FILE name=$($f.Name) bytes=$($f.Length) modified=$($f.LastWriteTime.ToString('o'))"
+              }
+            }
+          }
+          Write-Output 'CRASH_METADATA_SCAN_COMPLETE'

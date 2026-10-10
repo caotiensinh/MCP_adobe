@@ -85,6 +85,65 @@ function snapshot(selection, rootNode) {
   };
 }
 
+// Read-only scenegraph snapshot. All node bounds are global canvas coordinates.
+// This never calls application.editDocument and never changes selection.
+function xdScenegraphSnapshot() {
+  const root = scenegraph.root;
+  if (!root || !root.guid) {
+    throw new Error("XD root has no stable identity; scenegraph unavailable");
+  }
+  const visited = {};
+  let count = 0;
+  function walk(node, depth) {
+    if (++count > 20000 || depth > 100) throw new Error("XD scenegraph limit exceeded");
+    const id = node && node.guid;
+    if (!id || visited[id]) throw new Error("XD scenegraph missing/duplicate guid");
+    visited[id] = true;
+    let bounds;
+    try {
+      const b = node.globalBounds;
+      if (b && Number.isFinite(b.x) && Number.isFinite(b.y) &&
+          Number.isFinite(b.width) && Number.isFinite(b.height) &&
+          b.width > 0 && b.height > 0) {
+        bounds = {left:b.x, top:b.y, right:b.x+b.width, bottom:b.y+b.height};
+      }
+    } catch (_) {}
+    const children = [];
+    if (node.children) {
+      for (let i=0; i<node.children.length; i++) children.push(walk(node.children.at(i),depth+1));
+    }
+    return {id, name:node.name || "", type:node.constructor && node.constructor.name || "SceneNode",
+      visible:node.visible !== false, locked:node.locked === true,
+      bounds: bounds || null, children};
+  }
+  const nodes = [];
+  for (let i=0; i<root.children.length; i++) nodes.push(walk(root.children.at(i),0));
+  return {document_id:String(root.guid), complete:true, coordinate_space:"global",
+    nodes, node_count:count};
+}
+
+// A document-coordinate frame derived from artboards, not desktop pixels.
+// The preview must be a full-frame image of this rectangle.
+function xdCanvasFrame() {
+  const root=scenegraph.root;
+  if(!root || !root.guid || !root.children)throw new Error("XD root unavailable");
+  let left=Infinity,top=Infinity,right=-Infinity,bottom=-Infinity,count=0;
+  for(let i=0;i<root.children.length;i++){
+    const node=root.children.at(i);
+    if(!node || !node.guid)continue;
+    const type=node.constructor && node.constructor.name || "";
+    if(type!=="Artboard")continue;
+    const b=node.globalBounds;
+    if(!b || ![b.x,b.y,b.width,b.height].every(Number.isFinite) || b.width<=0 || b.height<=0)continue;
+    count++;
+    left=Math.min(left,b.x);top=Math.min(top,b.y);
+    right=Math.max(right,b.x+b.width);bottom=Math.max(bottom,b.y+b.height);
+  }
+  if(!count)throw new Error("XD artboard frame unavailable");
+  return {document_id:String(root.guid),coordinate_space:"global",
+    left,top,right,bottom,width:right-left,height:bottom-top,artboard_count:count};
+}
+
 function rememberOperation(operationId, value) {
   operationStatus[operationId] = value;
   operationOrder.push(operationId);
@@ -280,6 +339,14 @@ function dispatch(method, params) {
   if (method === "xd.document.info") {
     try { snapshot(scenegraph.selection, scenegraph.root); } catch (_) {}
     return latestSnapshot.document || { rootChildren: 0, insertionParent: null };
+  }
+
+  if (method === "xd.canvas.frame") {
+    return xdCanvasFrame();
+  }
+
+  if (method === "xd.scenegraph.snapshot") {
+    return xdScenegraphSnapshot();
   }
 
   if (method === "xd.selection.get") {

@@ -1,0 +1,71 @@
+name: Illustrator restored trusted probe E2E
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-restored-trusted-probe-e2e.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify actual Illustrator host probe and probe fence safely
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $ai=@(Get-Process Illustrator -ErrorAction SilentlyContinue)
+          $cep=@(Get-Process CEPHtmlEngine -ErrorAction SilentlyContinue)
+          $sock=@(Get-NetTCPConnection -LocalPort 8081 -State Established -ErrorAction SilentlyContinue)
+          Write-Output "HOST_PREREQ AI=$($ai.Count) CEP=$($cep.Count) SOCKET=$($sock.Count)"
+          if($ai.Count -ne 1 -or $cep.Count -lt 1 -or $sock.Count -lt 1){throw 'Host not ready for probe'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def health(client,probe=False):
+              r=await client.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":probe,"timeout":30}})
+              if r.is_error:
+                  print("HEALTH_TOOL_ERROR="+str(r.content)[:400],flush=True)
+                  return None
+              raw=r.structured_content
+              if not isinstance(raw,dict):return None
+              return raw.get("result",{}).get("connection",{}).get("data",{})
+          def extract(d):
+              if d is None:return None
+              b=d.get("blocking") or {}
+              layers=d.get("layers") or {}
+              return {"ready":d.get("ready"),"blockedAt":d.get("blockedAt"),
+                      "illustrator":(layers.get("illustrator") or {}).get("status"),
+                      "document":(layers.get("document") or {}).get("status"),
+                      "panel":(layers.get("panel") or {}).get("status"),
+                      "panelBusy":(layers.get("panel") or {}).get("busy"),
+                      "priorCompletion":b.get("priorCompletionObserved"),
+                      "fenceJob":b.get("jobId"),"unresolved":(d.get("execution") or {}).get("unresolvedJobs")}
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  before=await health(c)
+                  print("E2E_BEFORE="+json.dumps(extract(before)),flush=True)
+                  if before is None:raise RuntimeError("Cannot read health")
+                  x=extract(before)
+                  if x["panelBusy"] or x["unresolved"] or x["priorCompletion"] is False:
+                      raise RuntimeError("UNSAFE_PROBE_ADMISSION")
+                  probed=await health(c,True)
+                  print("E2E_TRUSTED="+json.dumps(extract(probed)),flush=True)
+                  final=await health(c)
+                  print("E2E_AFTER="+json.dumps(extract(final)),flush=True)
+                  if probed is None or extract(probed)["illustrator"]!="ok":
+                      raise RuntimeError("TRUSTED_HOST_NOT_PROVEN")
+                  if final is None or extract(final)["fenceJob"] is not None or final.get("blockedAt")=="probe_fence":
+                      raise RuntimeError("PROBE_FENCE_NOT_RELEASED")
+                  print("TRUSTED_PROBE_REAL_HOST=PASS",flush=True)
+                  print("SAFE_PROBE_FENCE_RELEASE=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath verify_trusted.py -Encoding UTF8
+          uv run python verify_trusted.py
+          if($LASTEXITCODE -ne 0){throw 'Trusted probe acceptance failed'}

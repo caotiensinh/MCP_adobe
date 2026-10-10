@@ -1,0 +1,33 @@
+name: Illustrator upstream tracer import acceptance
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-tracer-import-acceptance.yml"]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Confirm upstream tracer import, without invoking Illustrator
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $py=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\venv\Scripts\python.exe'
+          @'
+          from illustrator_mcp.websocket_bridge import WebSocketBridge
+          from illustrator_mcp.execution import get_coordinator
+          from pathlib import Path
+          import inspect
+          obj=WebSocketBridge.execute_script_async
+          print("TRACE_WRAPPED="+str(bool(getattr(obj,"_mcp_adobe_trace",False))),flush=True)
+          print("TRACE_METHOD_MODULE="+str(obj.__module__),flush=True)
+          print("TRACE_SOURCE="+str(Path(inspect.getfile(obj))),flush=True)
+          coord=get_coordinator()
+          print("FENCE_INIT="+str(coord.probe_fence),flush=True)
+          if not getattr(obj,"_mcp_adobe_trace",False):
+              raise RuntimeError("Trace not installed on loaded class")
+          '@ | Set-Content -LiteralPath inspect_import.py -Encoding UTF8
+          & $py inspect_import.py
+          if($LASTEXITCODE -ne 0){throw 'Trace import check failed'}

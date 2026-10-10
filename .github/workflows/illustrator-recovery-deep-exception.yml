@@ -1,0 +1,38 @@
+name: Illustrator recovery deep MCP exception
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-recovery-deep-exception.yml"]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detailed raw and routed tool exception evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          @'
+          import asyncio,json,traceback
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  for name,args in [
+                      ("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":False,"timeout":5}}),
+                      ("creative_read",{"application":"illustrator","capability":"creative.job.status","arguments":{"jobId":"job_4f06800a73dc","detail":"full"}}),
+                      ("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":True,"timeout":5}}),
+                      ("creative_read",{"application":"illustrator","capability":"creative.document.info","arguments":{}}),
+                  ]:
+                      try:
+                          r=await c.call_tool(name,args)
+                          print("RAW_MCP_RESULT="+json.dumps({"cap":args["capability"],"error":r.is_error,"structured":r.structured_content,"content":[getattr(t,"text",str(t)) for t in r.content]},default=str)[:12500],flush=True)
+                      except Exception as exc:
+                          print("RAW_MCP_EXCEPTION="+repr(exc)+"\n"+traceback.format_exc()[-4000:],flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath recovery_deep.py -Encoding UTF8
+          uv run python recovery_deep.py

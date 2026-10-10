@@ -1,0 +1,169 @@
+name: Illustrator trusted probe race recovery acceptance
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-trusted-probe-race-recovery.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  trace:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Backup and deploy validated upstream callback trace
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $src=Join-Path (Get-Location) 'src\mcp_adobe\illustrator_upstream_trace.py'
+          $dst=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\venv\Lib\site-packages\illustrator_mcp\_mcp_adobe_trace.py'
+          $py=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\venv\Scripts\python.exe'
+          if(-not(Test-Path $src) -or -not(Test-Path $dst)){throw 'Tracer source or existing installation missing'}
+          $backup="$dst.callback_v1.bak"
+          if(-not(Test-Path $backup)){Copy-Item -LiteralPath $dst -Destination $backup -ErrorAction Stop}
+          Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
+          & $py -m py_compile $dst
+          if($LASTEXITCODE -ne 0){Copy-Item $backup $dst -Force;throw 'Tracer invalid; restored backup'}
+          Write-Output 'CALLBACK_TRACE_DEPLOY=PASS'
+      - name: Backup and extend read-only trusted probe timeout schema
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $py=Join-Path $env:LOCALAPPDATA 'MCPAdobe\\illustrator-mcp\\venv\\Scripts\\python.exe'
+          @'
+          import pathlib, shutil, py_compile
+          root=pathlib.Path.home()/"AppData"/"Local"/"MCPAdobe"/"illustrator-mcp"/"venv"/"Lib"/"site-packages"/"illustrator_mcp"/"tools"
+          target=root/"connection.py"
+          backup=root/"connection.py.mcp-adobe-timeout-original.bak"
+          old=target.read_text(encoding="utf-8")
+          before="default=5.0, gt=0, le=30,"
+          after="default=5.0, gt=0, le=60,"
+          if after in old:
+              print("READONLY_PROBE_SCHEMA_ALREADY_PATCHED=PASS",flush=True)
+          else:
+              if old.count(before)!=1: raise RuntimeError("Unexpected schema, refusing mutation")
+              if backup.exists(): raise RuntimeError("Backup mismatch, manual reconciliation required")
+              shutil.copy2(target,backup)
+              try:
+                  target.write_text(old.replace(before,after),encoding="utf-8")
+                  py_compile.compile(str(target),doraise=True)
+              except BaseException:
+                  shutil.copy2(backup,target)
+                  raise
+              print("READONLY_PROBE_SCHEMA_EXTENDED=PASS",flush=True)
+          '@ | Set-Content -LiteralPath patch_trusted_timeout.py -Encoding UTF8
+          & $py patch_trusted_timeout.py
+          if($LASTEXITCODE -ne 0){throw 'Trusted timeout patch failed'}
+      - name: Restart only gateway under supervisor preserving Illustrator
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $ai=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" | Where-Object {$_.SessionId -eq 1})
+          if($ai.Count -lt 1){throw 'Illustrator window absent'}
+          $listener=@(Get-NetTCPConnection -LocalPort 8787 -State Listen)
+          if($listener.Count -ne 1){throw 'Gateway not unique'}
+          $oldId=$listener[0].OwningProcess
+          $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$oldId"
+          if($owner.Name -ne 'python.exe' -or $owner.CommandLine -notmatch 'mcp-adobe.exe'){throw 'Gateway ownership not proven'}
+          $super=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\host-wrapper.pid'
+          if(-not(Test-Path $super)){throw 'Missing supervisor PID'}
+          $superPid=[int](Get-Content $super -Raw).Trim()
+          if(-not(Get-Process -Id $superPid -ErrorAction SilentlyContinue)){throw 'Supervisor absent'}
+          Stop-Process -Id $oldId -Force
+          $deadline=(Get-Date).AddSeconds(90)
+          $newId=0
+          do{
+            Start-Sleep -Seconds 2
+            $l=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+            if($l.Count -eq 1 -and $l[0].OwningProcess -ne $oldId){$newId=$l[0].OwningProcess;break}
+          }until((Get-Date)-gt $deadline)
+          if($newId -eq 0){throw 'Gateway restart timeout'}
+          if(-not(Get-Process -Id $ai[0].ProcessId -ErrorAction SilentlyContinue)){throw 'Illustrator changed'}
+          Write-Output "CALLBACK_GATEWAY_RESTART=PASS old=$oldId new=$newId"
+      - name: Verify late callback correlation and bounded trusted probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv sync failed'}
+          @'
+          import asyncio,json
+          from mcp import Client
+          URL="http://127.0.0.1:8787/mcp"
+          async def health(c, probe=False, timeout=5):
+              r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":probe,"timeout":timeout}})
+              p=r.structured_content
+              if r.is_error or not isinstance(p,dict):
+                  print("HEALTH_TOOL_ERROR="+str(r.content)[:350],flush=True)
+                  return None
+              return p.get("result",{}).get("connection",{}).get("data",{})
+          def state(d):
+              if d is None:return None
+              b=d.get("blocking") or {}
+              panel=d.get("layers",{}).get("panel") or {}
+              return {"blockedAt":d.get("blockedAt"),"ready":d.get("ready"),
+                      "request":b.get("requestId"),"priorCompletion":b.get("priorCompletionObserved"),
+                      "panelBusy":panel.get("busy"),"activeRequest":panel.get("activeRequestId"),
+                      "unresolved":d.get("execution",{}).get("unresolvedJobs")}
+          async def main():
+              async with Client(URL) as c:
+                  before=await health(c)
+                  print("REPAIR_BEFORE="+json.dumps(state(before)),flush=True)
+                  if before is None:raise RuntimeError("Gateway health unavailable")
+                  b=before.get("blocking") or {}
+                  panel=before.get("layers",{}).get("panel") or {}
+                  if panel.get("busy") or panel.get("activeRequestId") is not None or before.get("execution",{}).get("unresolvedJobs"):
+                      raise RuntimeError("Cannot safely probe while host busy")
+                  if before.get("blockedAt")=="probe_fence" and not b.get("priorCompletionObserved"):
+                      print("WAITING_FOR_EXISTING_LATE_CALLBACK",flush=True)
+                  elif before.get("blockedAt") in (None,"document") or (before.get("blockedAt")=="probe_fence" and b.get("priorCompletionObserved")):
+                      # First call can time out because CEP evalScript takes >5 sec.
+                      result=await health(c,True,5)
+                      print("REPAIR_FIRST_PROBE="+json.dumps(state(result)),flush=True)
+                  else:
+                      raise RuntimeError("Blocked by unrelated host condition")
+                  # Do not dispatch during unresolved callback: poll passive health only.
+                  recovered=None
+                  for i in range(10):
+                      await asyncio.sleep(5)
+                      recovered=await health(c)
+                      print("REPAIR_POLL="+json.dumps({"i":i,"state":state(recovered)}),flush=True)
+                      if recovered is None:continue
+                      sb=state(recovered)
+                      if sb["blockedAt"]=="probe_fence" and sb["priorCompletion"] and not sb["panelBusy"]:
+                          print("LATE_CALLBACK_CORRELATED=PASS",flush=True)
+                          break
+                      if sb["blockedAt"] in (None,"document") and not sb["panelBusy"]:
+                          print("HOST_ALREADY_UNBLOCKED",flush=True)
+                          break
+                  else:
+                      raise RuntimeError("Late callback not correlated within 50s")
+                  # On a previously observed completion, a single 45-second trusted probe after reviewed schema extension
+                  # can validate actual JSX host response without bypassing any fence.
+                  current=state(recovered)
+                  if current["blockedAt"]=="probe_fence":
+                      result=await health(c,True,45)
+                      print("REPAIR_LONG_PROBE="+json.dumps(state(result)),flush=True)
+                  final=await health(c)
+                  print("REPAIR_FINAL="+json.dumps(state(final)),flush=True)
+                  if final is None or final.get("blockedAt") not in (None,"document"):
+                      raise RuntimeError("PROBE_FENCE_NOT_CLEARED")
+                  print("PROBE_FENCE_RECOVERY=PASS",flush=True)
+                  r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.document.info","arguments":{}})
+                  print("DOCUMENT_READBACK="+json.dumps({"error":r.is_error,"structured":r.structured_content},default=str)[:3500],flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath accept_repair.py -Encoding UTF8
+          uv run python accept_repair.py
+          if($LASTEXITCODE -ne 0){throw 'Repair acceptance failed'}
+      - name: Export upstream callback diagnostics
+        if: always()
+        shell: powershell
+        run: |
+          $src=Join-Path $env:LOCALAPPDATA 'MCPAdobe\\illustrator-mcp\\callback_trace.log'
+          if(Test-Path $src){
+            Get-Content $src -Tail 80 | ForEach-Object {Write-Output "CORRELATED_CALLBACK $_"}
+          }
