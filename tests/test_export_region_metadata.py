@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from scripts.export_region_metadata import normalize_snapshot
+from scripts.export_region_metadata import normalize_snapshot, normalize_xd_canvas_snapshot
 
 
 class LiveMetadataNormalizationTests(unittest.TestCase):
@@ -82,6 +82,27 @@ class LiveMetadataNormalizationTests(unittest.TestCase):
                 {"document": {"id": "current", "width": 500, "height": 400}},
                 {"document_id": "stale", "complete": True, "nodes": []},
                 application="xd",
+            )
+
+    def test_xd_global_bounds_rebased_to_artboard_frame(self):
+        value = normalize_xd_canvas_snapshot(
+            {"document_id": "xd-1", "complete": True, "nodes": [
+                {"id": "node-1", "name": "Button", "bounds": {
+                    "left": -80, "top": 70, "right": 20, "bottom": 120
+                }}
+            ]},
+            {"document_id": "xd-1", "left": -100, "top": 50,
+             "width": 400, "height": 300},
+        )
+        self.assertEqual(value["width"], 400)
+        self.assertEqual(value["layers"][0]["bounds"],
+                         {"left": 20.0, "top": 20.0, "right": 120.0, "bottom": 70.0})
+
+    def test_xd_frame_document_mismatch_blocks(self):
+        with self.assertRaisesRegex(ValueError, "mismatch"):
+            normalize_xd_canvas_snapshot(
+                {"document_id": "old", "complete": True, "nodes": []},
+                {"document_id": "new", "left": 0, "top": 0, "width": 100, "height": 100},
             )
 
 
