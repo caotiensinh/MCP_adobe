@@ -151,15 +151,6 @@ async def capture(url: str, application: str = "photoshop") -> dict[str, Any]:
         if application == "xd":
             frame = await read("creative.canvas.frame")
             return normalize_xd_canvas_snapshot(layers, frame)
-        if application == "xd":
-            # XD context.get combines document and selection; scenegraph is a separate read-only bridge call.
-            document = state.get("document", state) if isinstance(state, Mapping) else {}
-            if isinstance(document, Mapping) and "result" in document:
-                document = unwrap(document["result"])
-            if isinstance(document, Mapping) and document.get("id") is None:
-                document = dict(document)
-                document["id"] = layers.get("document_id") if isinstance(layers, Mapping) else None
-            state = {"document": document}
         return normalize_snapshot(state, layers, application=application)
 
 
