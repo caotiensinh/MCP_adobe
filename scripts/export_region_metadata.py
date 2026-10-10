@@ -126,9 +126,9 @@ def payload(result: Any) -> Any:
         for block in result.content or []:
             message = getattr(block, "text", "")
             if isinstance(message, str):
-                message = re.sub(r"(?i)(token|password|secret|authorization|api[_-]?key)\\s*[:=]\\s*[^\\s,}]+", r"\\1=[REDACTED]", message)
-                message = re.sub(r"https?://\\S+", "[URL_REDACTED]", message)
-                hints.append(message[:350].replace("\\n", " "))
+                message = re.sub(r"(?i)(token|password|secret|authorization|api[_-]?key)\s*[:=]\s*[^\s,}]+", r"\1=[REDACTED]", message)
+                message = re.sub(r"https?://\S+", "[URL_REDACTED]", message)
+                hints.append(message[:350].replace("\n", " "))
         raise RuntimeError(f"Adobe MCP read rejected; content_block_types={kinds}; hints={hints[:2]}")
     value = result.structured_content
     if value is None:
