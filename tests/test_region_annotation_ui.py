@@ -52,6 +52,17 @@ class CanvasUiTests(unittest.TestCase):
         self.assertIn("URL.createObjectURL(file)", self.html)
         self.assertIn("URL.revokeObjectURL(url)", self.html)
 
+    def test_preview_guard_blocks_unverified_xd_frame(self):
+        js = "".join(self.view.scripts)
+        self.assertIn("function validatePreviewMetadata(doc)", js)
+        self.assertIn("preview_frame_verified", js)
+        self.assertIn("Preview không khớp tỉ lệ", js)
+        self.assertIn("requires_preview_revision_check:true", js)
+
+    def test_metadata_edit_invalidates_selection(self):
+        js = "".join(self.view.scripts)
+        self.assertIn("$('meta').addEventListener('input',reset)", js)
+
 
 if __name__ == "__main__":
     unittest.main()
