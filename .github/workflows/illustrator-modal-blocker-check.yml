@@ -1,4 +1,4 @@
-name: Illustrator recovered GUI window inspection
+name: Illustrator post-launch dialog verification
 on:
   push:
     branches: [feat/canvas-region-targeting]
