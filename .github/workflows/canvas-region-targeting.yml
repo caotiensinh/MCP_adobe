@@ -108,3 +108,11 @@ jobs:
           }
           Get-NetTCPConnection -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -in @(26440,23572,19020,23184) -and $_.State -in @('Listen','Established') } | ForEach-Object { Write-Host "TARGET_SOCKET pid=$($_.OwningProcess) state=$($_.State) localport=$($_.LocalPort) remoteport=$($_.RemotePort)" }
           Write-Host "UPSTREAM_SERVICE_DIAGNOSTIC=COMPLETE"
+          Write-Host "MODE1_EXISTING_CODE=UNCHANGED"
+          Write-Host "MODE2_LIVE_READ_START"
+          uv run python scripts/export_region_metadata.py --application illustrator --output "$env:RUNNER_TEMP\\region_ai_check.json"
+          Write-Host "MODE2_ILLUSTRATOR_METADATA_EXIT=$LASTEXITCODE"
+          uv run python scripts/export_region_metadata.py --application xd --output "$env:RUNNER_TEMP\\region_xd_check.json"
+          Write-Host "MODE2_XD_METADATA_EXIT=$LASTEXITCODE"
+          Write-Host "MODE2_LIVE_READ_END"
+
