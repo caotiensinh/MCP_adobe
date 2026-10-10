@@ -1,0 +1,19 @@
+name: Illustrator recovery safety unit
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - "src/mcp_adobe/illustrator_recovery.py"
+      - "tests/test_illustrator_recovery.py"
+      - ".github/workflows/illustrator-recovery-safety-unit.yml"
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --python 3.12
+      - run: uv run pytest -q tests/test_illustrator_recovery.py
