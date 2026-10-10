@@ -1,0 +1,43 @@
+name: Illustrator installed trace and fence evidence
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-installed-trace-evidence.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Inspect installed trace and focused gateway errors (read only)
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          $root=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\venv\Lib\site-packages\illustrator_mcp'
+          $trace=Join-Path $root '_mcp_adobe_trace.py'
+          $bridge=Join-Path $root 'websocket_bridge.py'
+          Write-Output "INSTALLED_TRACE_EXISTS=$(Test-Path $trace)"
+          Write-Output "BRIDGE_TRACE_FOOTER=$([bool]((Get-Content $bridge -Tail 7 -ErrorAction SilentlyContinue) -match 'MCP_ADOBE_TRACE_V1_BEGIN'))"
+          foreach($p in @((Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\logs\local-host.log'))){
+            if(-not(Test-Path $p)){continue}
+            $file=Get-Item $p
+            Write-Output "TRACE_LOG_TIME=$($file.LastWriteTime.ToString('o')) size=$($file.Length)"
+            $lines=@(Get-Content $p -Tail 500 -ErrorAction SilentlyContinue)
+            $matched=@($lines|Where-Object {$_ -match 'HOST_TRACE|PROBE_FENCE|payload_descriptor|missing_descriptor|Exception|Traceback|failed'})
+            Write-Output "TRACE_MATCHED_COUNT=$($matched.Count)"
+            foreach($line in ($matched|Select-Object -Last 70)){
+              $safe=([string]$line) -replace '(?i)(Bearer\s+)\S+','$1[REDACTED]'
+              $safe=$safe -replace '(?i)(token|password|secret|authorization|api[_-]?key)\s*[:=]\s*[^\s,}]+','$1=[REDACTED]'
+              if($safe.Length -gt 550){$safe=$safe.Substring(0,550)}
+              Write-Output "TRACE_LOG $safe"
+            }
+          }
+          foreach($port in @(8787,8081)){
+            foreach($l in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)){
+              Write-Output "PORT_OWNERSHIP port=$port pid=$($l.OwningProcess)"
+            }
+          }
