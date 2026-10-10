@@ -52,6 +52,20 @@ class XdScenegraphTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "limit"):
             flatten_scenegraph({"complete": True, "nodes": [node("a"), node("b")]}, max_nodes=1)
 
+    def test_xd_adapter_scenegraph_is_read_only(self):
+        from mcp_adobe import XdAdapter
+        class FakeClient:
+            connected = True
+            def call_tool(self, name, args):
+                if name != "xd.scenegraph.snapshot":
+                    raise AssertionError(name)
+                return {"document_id": "test", "complete": True, "nodes": []}
+        adapter = XdAdapter(FakeClient())
+        self.assertIn("creative.scenegraph.list", adapter.info().common_capabilities)
+        result = adapter.execute("creative.scenegraph.list", {})
+        self.assertEqual(result["outcome"], "read")
+        self.assertEqual(result["bridge_method"], "xd.scenegraph.snapshot")
+
 
 if __name__ == "__main__":
     unittest.main()
