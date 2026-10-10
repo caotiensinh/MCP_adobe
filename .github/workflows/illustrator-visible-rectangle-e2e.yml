@@ -44,8 +44,27 @@ jobs:
                   if original.get("name")!=DOC:
                       raise RuntimeError("Unexpected active document: "+str(original.get("name")))
                   found=await rd(c,"creative.object.find",{"name":SHAPE})
-                  # Fail closed: do not redraw if a previous attempt may have created the same named shape.
-                  if "MCPAdobe Live Rectangle 001" in json.dumps(found,default=str):
+                  # Query echo contains the requested name; only host artifacts count as objects.
+                  def artifacts(value):
+                      if isinstance(value,dict):
+                          art=value.get("artifacts")
+                          if isinstance(art,dict) and isinstance(art.get("items"),list):
+                              return art["items"]
+                          for child in value.values():
+                              got=artifacts(child)
+                              if got is not None:
+                                  return got
+                      elif isinstance(value,list):
+                          for child in value:
+                              got=artifacts(child)
+                              if got is not None:
+                                  return got
+                      return None
+                  existing=artifacts(found)
+                  print("PREEXISTING_ARTIFACTS="+json.dumps(existing,default=str)[:1500],flush=True)
+                  if existing is None:
+                      raise RuntimeError("Cannot establish absence of existing shape; refusing mutation")
+                  if any(isinstance(x,dict) and x.get("name")==SHAPE for x in existing):
                       raise RuntimeError("Named shape already exists; refusing duplicate")
                   w=data(await c.call_tool("creative_write",{"application":"illustrator","capability":"creative.shape.rectangle","arguments":{"name":SHAPE,"x":180,"y":160,"width":480,"height":260,"fill":{"r":30,"g":145,"b":230}}}),"creative.shape.rectangle")
                   print("MCP_DRAW_RESPONSE="+json.dumps(w,default=str)[:6000],flush=True)
@@ -55,9 +74,9 @@ jobs:
                   print("POST_DRAW_LAYERS="+json.dumps(layer,default=str)[:6500],flush=True)
                   again=await rd(c,"creative.object.find",{"name":SHAPE})
                   print("POST_DRAW_FIND="+json.dumps(again,default=str)[:6500],flush=True)
-                  combined=json.dumps([layer,again],default=str)
-                  if SHAPE not in combined:
-                      raise RuntimeError("MCP_DRAW_READBACK=FAIL: named shape not observed")
+                  items=artifacts(again)
+                  if items is None or not any(isinstance(x,dict) and x.get("name")==SHAPE for x in items):
+                      raise RuntimeError("MCP_DRAW_READBACK=FAIL: matching host artifact not observed")
                   if not any(int(l.get("itemCount",0))>=1 for l in layer if isinstance(l,dict)):
                       raise RuntimeError("MCP_DRAW_READBACK=FAIL: empty layers")
                   print("MCP_DRAW_READBACK=PASS",flush=True)
