@@ -47,6 +47,11 @@ jobs:
           node --check /tmp/region-annotation.js
 
   live-metadata-read:
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        application: [photoshop, illustrator, xd]
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 6
     steps:
@@ -61,6 +66,6 @@ jobs:
           if(-not (Get-Command uv -ErrorAction SilentlyContinue)){throw 'uv missing'}
           uv sync --python 3.12
           if($LASTEXITCODE -ne 0){throw 'uv sync failed'}
-          uv run python scripts/export_region_metadata.py --output "$env:RUNNER_TEMP\adobe_region_metadata.json"
+          uv run python scripts/export_region_metadata.py --application "${{ matrix.application }}" --output "$env:RUNNER_TEMP\adobe_region_metadata_${{ matrix.application }}.json"
           if($LASTEXITCODE -ne 0){throw 'REGION_METADATA=FAIL upstream snapshot unavailable'}
           Write-Host 'REGION_METADATA_LIVE=PASS read-only snapshot'
