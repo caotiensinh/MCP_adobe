@@ -16,6 +16,7 @@ on:
       - tests/test_capture_region_preview.py
       - scripts/capture_bound_region_pair.py
       - scripts/probe_adobe_desktop_health.py
+      - scripts/verify_mode1_existing_preflight.py
       - tests/test_capture_bound_region_pair.py
       - tests/xd_scenegraph_uxp_contract.cjs
       - .github/workflows/canvas-region-targeting.yml
@@ -116,3 +117,21 @@ jobs:
           Write-Host "MODE2_XD_METADATA_EXIT=$LASTEXITCODE"
           Write-Host "MODE2_LIVE_READ_END"
 
+
+  mode1-existing-live-gate:
+    if: github.event_name == 'push'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Existing Mode 1 live Photoshop MCP preflight - fail closed
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Host "MODE1_RUNNER=$env:RUNNER_NAME HOST=$env:COMPUTERNAME"
+          $env:Path=([Environment]::GetEnvironmentVariable('Path','Machine')+';'+[Environment]::GetEnvironmentVariable('Path','User')+';'+$env:Path)
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'Mode1 dependency setup failed'}
+          uv run python scripts/verify_mode1_existing_preflight.py --preflight
+          if($LASTEXITCODE -ne 0){throw 'MODE1_LIVE_PREFLIGHT=FAIL; no canvas mutation attempted'}
+          Write-Host 'MODE1_LIVE_PREFLIGHT=PASS; live drawing acceptance remains independently unverified'
