@@ -15,6 +15,7 @@ on:
       - scripts/capture_region_preview.py
       - tests/test_capture_region_preview.py
       - scripts/capture_bound_region_pair.py
+      - scripts/probe_adobe_desktop_health.py
       - tests/test_capture_bound_region_pair.py
       - tests/xd_scenegraph_uxp_contract.cjs
       - .github/workflows/canvas-region-targeting.yml
@@ -79,3 +80,19 @@ jobs:
           uv run python scripts/export_region_metadata.py --application "${{ matrix.application }}" --output "$env:RUNNER_TEMP\adobe_region_metadata_${{ matrix.application }}.json"
           if($LASTEXITCODE -ne 0){throw 'REGION_METADATA=FAIL upstream snapshot unavailable'}
           Write-Host 'REGION_METADATA_LIVE=PASS read-only snapshot'
+
+  desktop-health-probe:
+    if: github.event_name == 'push'
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check PS AI XD via existing MCP read-only endpoint
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=([Environment]::GetEnvironmentVariable('Path','Machine')+';'+[Environment]::GetEnvironmentVariable('Path','User')+';'+$env:Path)
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv sync failed'}
+          uv run python scripts/probe_adobe_desktop_health.py
+          if($LASTEXITCODE -ne 0){throw 'desktop probe failed'}
