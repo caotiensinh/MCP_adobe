@@ -27,6 +27,7 @@ small{color:#a7b5c7}.row{display:flex;gap:8px;align-items:center}@media(max-widt
 </section>
 <section>
 <h2>Nhận diện và chỉnh sửa có kiểm soát</h2>
+<label for="metadata-file">Nạp metadata JSON đã xuất trực tiếp từ Adobe</label><input id="metadata-file" type="file" accept=".json,application/json">
 <label for="meta">Metadata JSON từ Adobe (document_identity, width, height, layers)</label>
 <textarea id="meta" rows="10" spellcheck="false" placeholder='{"document_identity":"doc-123","width":900,"height":600,"layers":[{"id":1,"name":"Heading","bounds":{"left":100,"top":80,"right":500,"bottom":160}}]}'></textarea>
 <button id="detect">Xác định layer trong vùng khoanh</button>
@@ -42,6 +43,7 @@ small{color:#a7b5c7}.row{display:flex;gap:8px;align-items:center}@media(max-widt
 'use strict';
 const $=id=>document.getElementById(id);
 let drag=null,selection=null,choice=null,meta=null,candidates=[];
+$('metadata-file').addEventListener('change',async()=>{const file=$('metadata-file').files?.[0];if(!file)return;try{const obj=JSON.parse(await file.text());if(!obj.document_identity||!(obj.width>0&&obj.height>0)||!Array.isArray(obj.layers))throw Error('Metadata không hợp lệ.');$('meta').value=JSON.stringify(obj,null,2);reset();$('status').textContent='Đã nạp metadata từ '+file.name+'. Khoanh vùng và xác định layer.';}catch(err){$('status').textContent='Lỗi metadata: '+err.message;}});
 $('preview-file').addEventListener('change',()=>{
  const file=$('preview-file').files?.[0];if(!file)return;
  const url=URL.createObjectURL(file);const img=$('preview');
