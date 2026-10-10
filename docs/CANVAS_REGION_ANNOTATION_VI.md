@@ -81,3 +81,10 @@ Unit and JS syntax tests: [run 38025448611](https://github.com/caotiensinh/MCP_a
 - [Run 38027209235](https://github.com/caotiensinh/MCP_adobe/actions/runs/38027209235): Python unit tests **29/29 PASS** and a Node VM contract test invoking real UXP dispatch with a mocked scenegraph **PASS**. JS syntax PASS.
 - Limitations: actual XD plugin installation/interactive desktop live read not yet tested; current XD document.info snapshot may not expose stable document dimensions, so metadata export can still correctly fail closed. Need define an artboard/preview coordinate frame with origin, document identity and synchronized preview before real region editing.
 - No claim of Photoshop, Illustrator, or XD live region-edit E2E; PR must stay separate from main until acceptance.
+
+
+## 2026-10-10 — XD artboard coordinate frame
+- Implemented `xd.canvas.frame` read-only UXP dispatch; it computes the bounding union of root Artboards in global document coordinates, including negative offsets. It rejects an XD document without measurable artboards; never guesses Windows/screen pixels or writes to document.
+- Added adapter `creative.canvas.frame` as an XD read-only capability through the five existing MCP tools, without changing MCP transport, OAuth or WebSocket connection.
+- `scripts/export_region_metadata.py --application xd` now reads `creative.scenegraph.list` + `creative.canvas.frame`, confirms matching document ID and rebases node `globalBounds` to the artboard-union origin. Metadata includes `coordinate_frame`. **Preview must represent the same complete artboard-union frame**, or targeting is not safe.
+- [Run 38027331897](https://github.com/caotiensinh/MCP_adobe/actions/runs/38027331897): 31/31 Python tests PASS, Node VM plugin-dispatch test PASS, no-network/no-write static checks PASS. Real XD live UXP acceptance still unproven.
