@@ -149,3 +149,10 @@ Ngày: 2026-10-10 (JST). Repo: caotiensinh/MCP_adobe; nhánh feat/canvas-region-
 - Run 38062087275 from separate job: INDEPENDENT_ILLUSTRATOR_COUNT=1, PID 7072 responding=True; confirms persistence beyond previous workflow. INDEPENDENT_CEP_COUNT=0 and socket=0.
 - Run 38062135491 after another 25-second delay: DELAYED_ILLUSTRATOR=1 CEP=0, PID 7072 title empty, installed manifest confirms MCP Control extension and bootstrap but no CEP socket. The Illustrator desktop process is stable; CEP panel is not loaded or host initialization not finished.
 - Acceptance: persistent Illustrator process PASS; trusted probe real host response FAIL/UNTESTED; safe probe_fence release FAIL/UNTESTED. Do not report trusted probe PASS. Next isolate why Illustrator main window title remains empty / CEP panel cannot open, then probe only after live connection.
+
+## 2026-10-11 00:08 JST — GUI bootstrap blocker isolated on MRCAO
+- GitHub Actions process cleanup killed initial Illustrator PID 16680 (run 38061893989 vs separate run 38061964385).
+- Task Scheduler interactive task MCPAdobe-Illustrator-Interactive created and launched Illustrator; verified persistent PID 7072 in separate job 38062087275, so host lifetime is now PASS.
+- Run 38062276071 inspected an Illustrator #32770 dialog with buttons Launch Illustrator and Run Diagnostics. Run 38062325181 clicked only Launch Illustrator via a verified exact button match, with no artwork mutation.
+- Separate run 38062396133: PID 7072 remains, but visible windows are AdobeSplashKit.TextWindowClass and AdobeSplashKit.GraphicWindowClass, each IsHungAppWindow=True. Illustrator is stuck in splash/initialization; CEP count and socket were zero in preceding run 38062135491.
+- Outcome: native GUI launch barrier located; Illustrator fully initialized FAIL, CEP readiness FAIL, trusted probe real response FAIL, probe_fence release FAIL. Do not attempt host writes, repeat click, or delete fence blindly. The next repair must address Adobe splash initialization/diagnostics with live host evidence before attempting trusted probe.
