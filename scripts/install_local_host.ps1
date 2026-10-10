@@ -143,6 +143,10 @@ try {
     $runnerTemplate = @'
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Continue"
+# Preserve the Node/npm toolchain for lazy Photoshop MCP startup in persistent sessions.
+$machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$env:Path = (@("C:\Program Files\nodejs", $machinePath, $userPath, $env:Path) | Where-Object { $_ }) -join ";"
 $gateway = Join-Path $PSScriptRoot "venv\Scripts\mcp-adobe.exe"
 $logDir = Join-Path $PSScriptRoot "logs"
 New-Item -ItemType Directory -Path $logDir -Force | Out-Null
