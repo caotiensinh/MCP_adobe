@@ -26,6 +26,8 @@ jobs:
           p=pathlib.Path(os.environ["APPDATA"])/"Adobe"/"CEP"/"extensions"/"com.illustrator.mcp.panel"/"dist"/"assets"/"index.js"
           backup=p.with_suffix(".js.before-mcp-trusted-probe.bak")
           current=p.read_text(encoding="utf-8")
+          i=current.find('mcp_handle_request')
+          print('BUNDLE_DISPATCH_CONTEXT='+repr(current[max(0,i-90):i+100]),flush=True)
           marker='N.command?.type==="connection_probe"'
           if marker in current:
               print("RESTRICTED_PROBE_ALREADY_PREPARED=PASS",flush=True)
