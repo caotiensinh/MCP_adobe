@@ -100,3 +100,16 @@ Ngày: 2026-10-10 (JST). Repo: caotiensinh/MCP_adobe; nhánh feat/canvas-region-
 - New run https://github.com/caotiensinh/MCP_adobe/actions/runs/38054646823 (commit `518d021c114b435b6f7a5c90aa1a816587c82d01`): `INSTALLED_TRACE_EXISTS=True`, `BRIDGE_TRACE_FOOTER=True`, gateway PID 17796 at 8787, upstream Python PID 3276 at 8081; no `HOST_TRACE` lines found in last 500 local-host log lines. Lack of matching lines does not prove wrapper absent or host healthy.
 - New run https://github.com/caotiensinh/MCP_adobe/actions/runs/38054705565 (commit `0dfa44f12fb809c1463b9c03aa5e3bff5987132b`): fresh upstream package import confirms `WebSocketBridge.execute_script_async._mcp_adobe_trace=True` and method defined in `illustrator_mcp._mcp_adobe_trace`. `FENCE_INIT=None` reflects a **separate newly imported Python process**, not the live gateway/upstream state; do NOT use it to clear the live fence.
 - Next: instrument actual gateway/upstream logging sink or run a gated read-only production trace. Preserve host callback evidence and never use unproven reset to replay old shapes.
+
+
+## 2026-10-10 22:27 JST — real upstream callback-trace acceptance (task 01)
+- Tracer update commits `6e7ff55cae7c10fe4702d22433729f3e87c5b583`, `8a56906c143eda5af6cb957c2b1ebfd24623afd3`: dedicated `%LOCALAPPDATA%\MCPAdobe\illustrator-mcp\callback_trace.log` records only safe metadata, including CEP inbound envelope kind/requestId/token match, wrapper return/error and fence state.
+- Workflow `.github/workflows/illustrator-callback-trace-live-acceptance.yml`, corrected safety condition commit `6cb499cd3323081c66a918547e50fa8f3c95fe59`; run https://github.com/caotiensinh/MCP_adobe/actions/runs/38055560577 **SUCCESS for log instrumentation, not for probe/readback**.
+- Installation/backup PASS, gateway restarted (old PID 14516 → new 2012), Illustrator preserved. Preflight `blockedAt=document`, `panelBusy=false`, `activeRequest=null`, `unresolved=[]`.
+- Exact observed upstream logs:
+  - `2026-10-10 22:27:26,199 HOST_TRACE start fence=False priorCompletion=None generation=0 command_type=CommandMetadata`
+  - `2026-10-10 22:27:31,207 HOST_TRACE result type=dict error=[R005] Client wait timed out after 5.0s [connection_probe]; host outcome unknown fence=True priorCompletion=False generation=0`
+  - `CALLBACK_TRACE_EVENT_COUNT=2`, `CALLBACK_LOG_ACCEPTANCE=PASS`.
+- **No CEP_CALLBACK event was received for the 5-second probe**. This is positive evidence that outbound host wait timed out but is not yet evidence whether CEP received the request, ran `evalScript`, or sent a late completion. A single timeout does NOT prove missing callback permanently.
+- `READ_ONLY_PROBE_RESULT={error:true,structured:null}`. After probe, trusted fence may exist. Do not send mutation or blind retry.
+- Task 01 scope: real upstream request-and-timeout instrumentation PASS. End-to-end callback receipt/ACK correlation is still unproven and remains a prerequisite for task 02. Task 02 (probe_fence recovery) and live house remain FAIL.
