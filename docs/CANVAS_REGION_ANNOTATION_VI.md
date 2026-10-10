@@ -110,3 +110,12 @@ Unit and JS syntax tests: [run 38025448611](https://github.com/caotiensinh/MCP_a
 - Files are written only when both responses agree, without overwriting existing files. Output JSON includes `preview_binding.status=stable_double_read_unverified_revision`, SHA-256 of image/metadata, `atomic_revision_verified=false`, and `preview_frame_verified=false`.
 - IMPORTANT: A matching before/after state is **not an atomic source revision guarantee**; the preview API does not return a source document revision/coordinate-frame token to prove exact pairing, and image bytes do not guarantee the preview is full-frame. Auto-targeted Adobe writes remain blocked until a trusted revision/viewport binding is implemented.
 - [CI 38029125889](https://github.com/caotiensinh/MCP_adobe/actions/runs/38029125889): 41/41 Python tests PASS and XD UXP VM contract PASS. No live Photoshop preview pair E2E claim. Illustrator and XD raster preview acquisition remains pending.
+
+
+## Windows three-application live read probe — 2026-10-10
+- [Run 38029316521](https://github.com/caotiensinh/MCP_adobe/actions/runs/38029316521) on Windows self-hosted runner, read-only calls to `creative.health` through existing gateway:
+  - illustrator: `MCP_READ_RETURNED` (tool returned non-error; **not** independently verified Illustrator GUI/bridge ready).
+  - photoshop: `CALL_FAILED:TimeoutError` (no live PASS).
+  - xd: `MCP_ERROR` (no live PASS).
+- Current criterion cannot prove desktop readiness from a non-error MCP read alone; harden health-result validation before future acceptance.
+- Probe code `scripts/probe_adobe_three_apps.py`, workflow `.github/workflows/adobe-three-apps-health.yml`. No Adobe writes, no transport/OAuth changes. Avoid blind reruns; inspect app process/interactive user session and bridge status first.
