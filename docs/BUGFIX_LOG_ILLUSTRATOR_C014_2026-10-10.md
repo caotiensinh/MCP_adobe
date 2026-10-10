@@ -69,3 +69,11 @@ Ngày: 2026-10-10 (JST). Repo: caotiensinh/MCP_adobe; nhánh feat/canvas-region-
 - Added read-only non-probing health workflow `illustrator-bounded-recovery-assessment.yml` commit `ae017d548d2f684e483badc47f3af02eb14c1908`, run 38051569989: `blockedAt=probe_fence`, `unresolvedJobs=[]`, `activeJob=null`, `panelBusy=false`, `activeRequestId=null`, blocking fence `host_330bf6bcfce64d448dfa1a6a26ffadeb` with `priorCompletionObserved=true`. This proves no ordinary mutation is authorized despite idle panel; it does **not** prove target host call completion.
 - Exact status inspection workflow `illustrator-fence-job-inspection.yml` commit `b141bf9fd110110158738191f550a6de5923232b`, run 38051678978: `creative.job.status` returned `is_error=true`, `structured=null` after ~40 sec. This did NOT reconcile the fence. Do not clear fence by heuristic and do not replay the unfinished house.
 - Current E2E house acceptance remains FAIL. Next fix must instrument and test upstream `illustrator_job_status` / trusted-probe fence with host completion evidence and strict timeout/response handling, then rerun document reads before any draw command.
+
+
+## 2026-10-10 21:27 JST — one-shot fence recovery probe
+- Added workflow `.github/workflows/illustrator-single-fence-recovery-probe.yml` commit `764ad5f366bc7257cf337c1128556288eba17ddc`, run https://github.com/caotiensinh/MCP_adobe/actions/runs/38051914775.
+- Preflight: panel `busy=false`, `activeRequestId=null`, no queued or unresolved jobs; fence `job_ec8196ab78c4`, `priorCompletionObserved=true`, `blockedAt=probe_fence`.
+- Exactly one `creative.health(probe=true, timeout=7)` returned MCP tool error after ~7s, no structured response. Because recovery outcome wasn't established, no document read or write occurred.
+- This falsifies the assumption that panel-idle + priorCompletionObserved alone is sufficient for live fence recovery. The upstream current code requires a **valid JSX probe response** and current connection generation before releasing the fence; it is not receiving a valid response reliably.
+- Next engineering priority: instrument CEP `evalScript` and bridge command result/ACK for a single bounded probe (requestId, requestToken, generation), then fix missing/late callback rather than clearing fences or using unbounded restart/retry.
