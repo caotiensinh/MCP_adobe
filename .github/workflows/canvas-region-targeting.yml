@@ -95,6 +95,9 @@ jobs:
           uv sync --python 3.12
           if($LASTEXITCODE -ne 0){throw 'uv sync failed'}
           Write-Host "RUNNER_NAME=$env:RUNNER_NAME HOSTNAME=$env:COMPUTERNAME"
+          Write-Host 'DIAG=adobe_runtime_before_probe'
+          Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*Photoshop*' -or $_.Name -like '*Illustrator*' -or $_.Name -eq 'XD.exe' -or $_.ProcessId -eq 26440 } | ForEach-Object { Write-Host "DIAG_PROCESS name=$($_.Name) pid=$($_.ProcessId) ppid=$($_.ParentProcessId) session=$($_.SessionId)" }
+          Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -eq 8787 -or $_.LocalPort -eq 8765 -or $_.RemotePort -eq 8787 -or $_.RemotePort -eq 8765 } | ForEach-Object { Write-Host "DIAG_ESTABLISHED local=$($_.LocalPort) remote=$($_.RemotePort) owner=$($_.OwningProcess)" }
           Write-Host "RUNNER_SESSION_USER=$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
           Write-Host "RUNNER_SESSION_INTERACTIVE=$([Environment]::UserInteractive)"
           Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*Photoshop*' -or $_.Name -like '*Illustrator*' -or $_.Name -eq 'XD.exe' } | ForEach-Object { Write-Host "ADOBE_PROCESS name=$($_.Name) session=$($_.SessionId) pid=$($_.ProcessId)" }
