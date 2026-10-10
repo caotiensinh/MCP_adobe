@@ -77,3 +77,11 @@ Ngày: 2026-10-10 (JST). Repo: caotiensinh/MCP_adobe; nhánh feat/canvas-region-
 - Exactly one `creative.health(probe=true, timeout=7)` returned MCP tool error after ~7s, no structured response. Because recovery outcome wasn't established, no document read or write occurred.
 - This falsifies the assumption that panel-idle + priorCompletionObserved alone is sufficient for live fence recovery. The upstream current code requires a **valid JSX probe response** and current connection generation before releasing the fence; it is not receiving a valid response reliably.
 - Next engineering priority: instrument CEP `evalScript` and bridge command result/ACK for a single bounded probe (requestId, requestToken, generation), then fix missing/late callback rather than clearing fences or using unbounded restart/retry.
+
+
+## 2026-10-10 21:47 JST — installed upstream source locations
+- Run https://github.com/caotiensinh/MCP_adobe/actions/runs/38053265852 (commit `15aaa4f7f96b2551134a15b2d352b6b825e6460a`) resolved exact MRCAO site-packages locations:
+  - `C:\Users\caodu\AppData\Local\MCPAdobe\illustrator-mcp\venv\Lib\site-packages\illustrator_mcp\execution\coordinator.py`
+  - `C:\Users\caodu\AppData\Local\MCPAdobe\illustrator-mcp\venv\Lib\site-packages\illustrator_mcp\websocket_bridge.py`
+- `local-host.log` had last write timestamp 2026-10-10 21:13:59 JST while diagnostic ran later; recent log scan did not yield actionable callback exception lines. Next action should add **bounded diagnostic instrumentation to installed upstream from a reviewed, pinned patch**; test with a read-only probe and exact correlation IDs before any house drawing.
+- The installed upstream, not the project's unit-test-only `illustrator_recovery.py`, is responsible for retaining `probe_fence`. Avoid claiming project-side fail-closed unit PASS means upstream is fixed.
