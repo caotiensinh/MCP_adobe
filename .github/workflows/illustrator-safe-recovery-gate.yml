@@ -49,3 +49,34 @@ jobs:
           '@ | Set-Content -LiteralPath recovery_gate.py -Encoding UTF8
           uv run python recovery_gate.py
           if($LASTEXITCODE -ne 0){throw 'safe recovery probe failed'}
+
+      - name: Collect sanitized Illustrator upstream failure evidence
+        if: failure()
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          $targets = @('Illustrator.exe','python.exe','node.exe')
+          Get-CimInstance Win32_Process | Where-Object { $targets -contains $_.Name } | ForEach-Object {
+            Write-Output ("PROCESS name={0} pid={1} session={2}" -f $_.Name,$_.ProcessId,$_.SessionId)
+          }
+          foreach($port in @(8081,8787)) {
+            $connections = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+            Write-Output ("PORT_{0}_LISTEN_COUNT={1}" -f $port,$connections.Count)
+          }
+          $log=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\logs\local-host.log'
+          if(-not (Test-Path -LiteralPath $log)){Write-Output 'GATEWAY_LOG_NOT_FOUND';exit 0}
+          $bytes=[IO.File]::ReadAllBytes($log)
+          if($bytes.Length -ge 2 -and $bytes[0] -eq 255 -and $bytes[1] -eq 254) {
+            $content=[Text.Encoding]::Unicode.GetString($bytes)
+          } elseif($bytes.Length -ge 2 -and $bytes[0] -eq 254 -and $bytes[1] -eq 255) {
+            $content=[Text.Encoding]::BigEndianUnicode.GetString($bytes)
+          } else {
+            $content=[Text.Encoding]::UTF8.GetString($bytes)
+            if($content.Contains([char]0)){$content=[Text.Encoding]::Unicode.GetString($bytes)}
+          }
+          $lines=@($content -split "\r?\n" | Where-Object {$_ -match 'C014|missing_descriptor|R_TIMEOUT|unresolved|creative_read|traceback|exception|delivery failure'})
+          Write-Output ("GATEWAY_DIAGNOSTIC_MATCHES={0}" -f $lines.Count)
+          $lines | Select-Object -Last 35 | ForEach-Object {
+            $safe = $_ -replace '(?i)(bearer\s+)\S+','$1[REDACTED]' -replace '(?i)((?:token|password|secret|authorization)\s*[:=]\s*)\S+','$1[REDACTED]' -replace 'https?://\S+','[URL_REDACTED]'
+            Write-Output ("GATEWAY_EVIDENCE "+$safe.Substring(0,[Math]::Min(360,$safe.Length)))
+          }
