@@ -123,7 +123,16 @@ async def capture(url: str, application: str = "photoshop") -> dict[str, Any]:
         health = await read("creative.health")
         print(f"REGION_METADATA_HEALTH=PASS application={application}", flush=True)
         state = await read("creative.context.get")
-        layers = await read("creative.selection.get" if application == "xd" else "creative.layer.list")
+        layers = await read("creative.scenegraph.list" if application == "xd" else "creative.layer.list")
+        if application == "xd":
+            # XD context.get combines document and selection; scenegraph is a separate read-only bridge call.
+            document = state.get("document", state) if isinstance(state, Mapping) else {}
+            if isinstance(document, Mapping) and "result" in document:
+                document = unwrap(document["result"])
+            if isinstance(document, Mapping) and document.get("id") is None:
+                document = dict(document)
+                document["id"] = layers.get("document_id") if isinstance(layers, Mapping) else None
+            state = {"document": document}
         return normalize_snapshot(state, layers, application=application)
 
 
