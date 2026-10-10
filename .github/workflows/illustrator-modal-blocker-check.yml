@@ -1,4 +1,4 @@
-name: Illustrator post-launch dialog verification
+name: Illustrator clean-preferences UI acceptance
 on:
   push:
     branches: [feat/canvas-region-targeting]
