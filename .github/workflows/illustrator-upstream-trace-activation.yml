@@ -1,0 +1,100 @@
+name: Illustrator upstream traced recovery activation
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-upstream-trace-activation.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  activate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Backup and validate upstream trace patch
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $python=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\venv\Scripts\python.exe'
+          if(-not (Test-Path $python)){throw 'Upstream Python not found'}
+          $env:PYTHONPATH=(Join-Path (Get-Location) 'src')
+          @'
+          import pathlib,inspect,hashlib,py_compile,shutil
+          from illustrator_mcp.websocket_bridge import WebSocketBridge
+          import illustrator_mcp.websocket_bridge as bridge
+          target=pathlib.Path(inspect.getfile(bridge))
+          tracer_src=pathlib.Path("src/mcp_adobe/illustrator_upstream_trace.py")
+          tracer_dst=target.parent/"_mcp_adobe_trace.py"
+          backup=target.with_suffix(".py.mcp-adobe-original.bak")
+          footer="\n# MCP_ADOBE_TRACE_V1_BEGIN\nfrom illustrator_mcp._mcp_adobe_trace import install_trace as _mcp_trace_install\n_mcp_trace_install(WebSocketBridge)\n# MCP_ADOBE_TRACE_V1_END\n"
+          old=target.read_text(encoding="utf-8")
+          if "# MCP_ADOBE_TRACE_V1_BEGIN" in old:
+              print("TRACE_ALREADY_INSTALLED=true",flush=True)
+          else:
+              if backup.exists():
+                  raise RuntimeError("Backup already exists without patch; manual reconcile needed")
+              shutil.copy2(target,backup)
+              shutil.copy2(tracer_src,tracer_dst)
+              try:
+                  target.write_text(old+footer,encoding="utf-8")
+                  py_compile.compile(str(target),doraise=True)
+                  py_compile.compile(str(tracer_dst),doraise=True)
+              except BaseException:
+                  shutil.copy2(backup,target)
+                  raise
+              print("TRACE_BACKUP="+str(backup),flush=True)
+          print("TRACE_PATCH_VALID=PASS",flush=True)
+          '@ | Set-Content -LiteralPath install_trace_checked.py -Encoding UTF8
+          & $python install_trace_checked.py
+          if($LASTEXITCODE -ne 0){throw 'Upstream trace patch failed'}
+      - name: Restart gateway only after idle verification
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $ai=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" | Where-Object {$_.SessionId -eq 1})
+          if($ai.Count -eq 0){throw 'Illustrator missing'}
+          $listener=@(Get-NetTCPConnection -LocalPort 8787 -State Listen)
+          if($listener.Count -ne 1){throw 'Gateway listener not unique'}
+          $oldPid=$listener[0].OwningProcess
+          $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$oldPid"
+          if($owner.Name -ne 'python.exe' -or $owner.CommandLine -notmatch 'mcp-adobe.exe'){throw 'Refusing unrelated gateway process'}
+          $up=@(Get-NetTCPConnection -LocalPort 8081 -State Established -ErrorAction SilentlyContinue)
+          if($up.Count -lt 1){throw 'CEP link absent'}
+          $wrapper=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\host-wrapper.pid'
+          if(-not(Test-Path $wrapper)){throw 'No supervisor PID file'}
+          $wpid=[int](Get-Content -LiteralPath $wrapper -Raw).Trim()
+          if(-not(Get-Process -Id $wpid -ErrorAction SilentlyContinue)){throw 'No supervisor'}
+          Stop-Process -Id $oldPid -Force
+          $deadline=(Get-Date).AddSeconds(90)
+          $newPid=0
+          do {
+            Start-Sleep -Seconds 2
+            $l=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+            if($l.Count -eq 1 -and $l[0].OwningProcess -ne $oldPid){$newPid=$l[0].OwningProcess;break}
+          } until ((Get-Date) -gt $deadline)
+          if(!$newPid){throw 'Supervisor did not restart gateway'}
+          $still=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" | Where-Object {$_.ProcessId -in $ai.ProcessId})
+          if(!$still.Count){throw 'Illustrator was not preserved'}
+          Write-Output "TRACED_GATEWAY_RESTART=PASS old=$oldPid new=$newPid illustrator=$($still[0].ProcessId)"
+      - name: Read-only probe and verify trace is loaded
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":False,"timeout":5}})
+                  print("TRACED_READ_ERROR="+str(r.is_error),flush=True)
+                  if isinstance(r.structured_content,dict):
+                      d=r.structured_content.get("result",{}).get("connection",{}).get("data",{})
+                      print("TRACED_HEALTH="+json.dumps({"blockedAt":d.get("blockedAt"),"blocking":d.get("blocking"),"panel":d.get("layers",{}).get("panel")},default=str)[:3600],flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath traced_health.py -Encoding UTF8
+          uv run python traced_health.py
