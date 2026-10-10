@@ -27,3 +27,13 @@ E. Windows self-hosted live acceptance: khoanh đúng một target; hai target c
 - Không xóa/sửa ảnh gốc dựa trên pixel rectangle mơ hồ, không chạy arbitrary script, không tự gửi screenshot cá nhân đến dịch vụ bên ngoài.
 - Tất cả edits qua policy hiện hữu, write reversible; high-risk giữ authorized-write.
 - Khi image raster không thể tách đối tượng bằng layer, cần explicit mask/selection và xác nhận.
+
+
+## Prototype UI trên branch — 2026-10-10
+- `ui/region_annotation.html`: trang companion HTML độc lập; mở bằng trình duyệt. Người dùng tải preview từ file cục bộ, paste metadata đã kiểm chứng do Adobe cung cấp, kéo rectangle, chọn layer ứng viên, nhập lệnh ngắn, sao chép JSON `mcp-adobe-region-request/v1` cho agent.
+- Không cần server riêng; không fetch/upload ảnh, không yêu cầu hoặc sửa cấu hình kết nối MCP, không thực hiện mutation tự động.
+- JSON xuất gồm `document_identity`, `document_dimensions`, `selected_region` (document pixels), `selected_layer`, `user_instruction` và flags `requires_live_document_identity_check`, `requires_live_layer_readback`, `execute_automatically=false`.
+- Chỉ dùng preview FULL document 1:1 hình học (có thể resize CSS); nếu preview cắt/rotate thì tọa độ sẽ sai — chưa nên dùng vào Adobe thật.
+- Ví dụ metadata thử nghiệm: `{"application":"photoshop","document_identity":"doc-demo-1","width":900,"height":600,"layers":[{"id":123,"name":"Tiêu đề","bounds":{"left":80,"top":70,"right":550,"bottom":160},"visible":true}]}`.
+- Test: [run 38024359335](https://github.com/caotiensinh/MCP_adobe/actions/runs/38024359335) PASS 10/10 và JavaScript `node --check` PASS. Đây là unit/static verification, **không phải Windows Photoshop live E2E**.
+- Cần triển khai tiếp bridge tự điền metadata và preview từ Adobe, layer-ID resolution đảm bảo revision match, lớp phủ bên trong Adobe hoặc companion overlay xác định zoom/pan, rồi execution có confirm và read-back.
