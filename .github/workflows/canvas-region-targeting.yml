@@ -100,4 +100,11 @@ jobs:
           $apps | ForEach-Object { Write-Host "PROC name=$($_.Name) pid=$($_.ProcessId) parent=$($_.ParentProcessId) session=$($_.SessionId)" }
           $listeners=Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in @(8787,8765) }
           $listeners | ForEach-Object { Write-Host "LISTEN port=$($_.LocalPort) pid=$($_.OwningProcess)" }
+          $targets=Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -in @(26440,23572,19020,23184) }
+          $targets | ForEach-Object {
+            $cmd=$_.CommandLine
+            if($cmd) { $cmd=$cmd -replace '(?i)(token|password|secret|authorization)[=:][^ ]+', '$1=[REDACTED]' -replace 'https?://[^ ]+', '[URL_REDACTED]' }
+            Write-Host "TARGET_PROCESS pid=$($_.ProcessId) name=$($_.Name) parent=$($_.ParentProcessId) session=$($_.SessionId) cmd=$cmd"
+          }
+          Get-NetTCPConnection -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -in @(26440,23572,19020,23184) -and $_.State -in @('Listen','Established') } | ForEach-Object { Write-Host "TARGET_SOCKET pid=$($_.OwningProcess) state=$($_.State) localport=$($_.LocalPort) remoteport=$($_.RemotePort)" }
           Write-Host "UPSTREAM_SERVICE_DIAGNOSTIC=COMPLETE"
