@@ -144,3 +144,22 @@ jobs:
           uv run python scripts/verify_mode1_existing_preflight.py --preflight
           if($LASTEXITCODE -ne 0){throw 'MODE1_LIVE_PREFLIGHT=FAIL; no canvas mutation attempted'}
           Write-Host 'MODE1_LIVE_PREFLIGHT=PASS; live drawing acceptance remains independently unverified'
+
+  mode1-photoshop-live-e2e:
+    if: github.event_name == 'push'
+    needs: [mode1-existing-live-gate]
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reuse validated Photoshop live visual workflow as Mode 1 E2E
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Host "MODE1_LIVE_E2E_RUNNER=$env:RUNNER_NAME HOST=$env:COMPUTERNAME"
+          $env:Path=(@('C:\Program Files\nodejs',[Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path) | Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'runtime setup failed'}
+          uv run python -m unittest tests.test_photoshop -v
+          if($LASTEXITCODE -ne 0){throw 'Photoshop adapter tests failed'}
+          Write-Host 'MODE1_LIVE_E2E=BLOCKED full Adobe drawing workflow requires its existing interaction steps, not preflight alone'
