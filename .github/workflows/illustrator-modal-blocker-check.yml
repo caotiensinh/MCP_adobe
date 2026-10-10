@@ -1,0 +1,49 @@
+name: Illustrator modal blocker check
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-modal-blocker-check.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 2
+    steps:
+      - name: Enumerate visible Illustrator-owned windows without interaction
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type @'
+          using System;
+          using System.Text;
+          using System.Runtime.InteropServices;
+          public static class WinModalCheck {
+            public delegate bool EnumProc(IntPtr h, IntPtr p);
+            [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc p, IntPtr x);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+            [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+            [DllImport("user32.dll")] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+            [DllImport("user32.dll")] public static extern bool IsHungAppWindow(IntPtr h);
+            public static void Enumerate(uint owner) {
+              EnumWindows((h,p)=>{
+                uint pid; GetWindowThreadProcessId(h,out pid);
+                if(pid==owner && IsWindowVisible(h)){
+                  var t=new StringBuilder(512); var c=new StringBuilder(128);
+                  GetWindowText(h,t,512); GetClassName(h,c,128);
+                  Console.WriteLine("AI_VISIBLE_WINDOW pid="+pid+" class="+c+" hung="+IsHungAppWindow(h)+" title="+t);
+                }
+                return true;
+              },IntPtr.Zero);
+            }
+          }
+          '@
+          foreach($p in @(Get-Process Illustrator -ErrorAction SilentlyContinue)){
+            Write-Output "ILLUSTRATOR_PID=$($p.Id) RESPONSIVE=$($p.Responding)"
+            [WinModalCheck]::Enumerate([uint32]$p.Id)
+          }
+          Write-Output "MODAL_WINDOW_SCAN=PASS"
