@@ -1,0 +1,37 @@
+name: Illustrator splash startup decisive check
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-splash-decisive-check.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Confirm startup state and sample CPU without host writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          Write-Output "RUNNER_HOST=$env:COMPUTERNAME SESSION=$([Diagnostics.Process]::GetCurrentProcess().SessionId)"
+          $a=@(Get-Process Illustrator -ErrorAction SilentlyContinue)
+          $c=@(Get-Process CEPHtmlEngine -ErrorAction SilentlyContinue)
+          Write-Output "AI_COUNT=$($a.Count) CEP_COUNT=$($c.Count)"
+          foreach($p in $a){
+            Write-Output "AI_ID=$($p.Id) ALIVE=$(-not $p.HasExited) RESPONDING=$($p.Responding) MAIN_TITLE=$($p.MainWindowTitle) CPU_BEFORE=$($p.CPU) MEMORY_MB=$([math]::Round($p.WorkingSet64/1MB)) START=$($p.StartTime.ToString('o'))"
+          }
+          Start-Sleep -Seconds 7
+          foreach($p in @(Get-Process Illustrator -ErrorAction SilentlyContinue)){
+            Write-Output "AI_CPU_AFTER=$($p.CPU) PID=$($p.Id) TITLE=$($p.MainWindowTitle)"
+          }
+          foreach($name in @('Adobe Illustrator','Illustrator','CEPHtmlEngine')){
+            $found=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {$_.Name -like "*$name*" })
+            foreach($p in $found){Write-Output "PROC name=$($p.Name) pid=$($p.ProcessId) parent=$($p.ParentProcessId) session=$($p.SessionId)"}
+          }
+          $t=Get-ScheduledTask -TaskName 'MCPAdobe-Illustrator-Interactive' -ErrorAction SilentlyContinue
+          if($t){$info=$t|Get-ScheduledTaskInfo;Write-Output "STARTUP_TASK_STATE=$($t.State) LAST_RESULT=$($info.LastTaskResult)"}
+          Write-Output 'DECISIVE_READONLY_DONE'
