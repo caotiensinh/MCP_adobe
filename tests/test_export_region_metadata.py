@@ -35,6 +35,35 @@ class LiveMetadataNormalizationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No active"):
             normalize_snapshot({"hasDocument": False}, {"layers": []})
 
+    def test_illustrator_layer_list_supported(self):
+        result = normalize_snapshot(
+            {"document": {"id": "ai-doc", "width": 1200, "height": 800}},
+            {"layers": [{"id": 3, "name": "Logo", "bounds": {"left": 2, "top": 3, "right": 90, "bottom": 80}}]},
+            application="illustrator",
+        )
+        self.assertEqual(result["application"], "illustrator")
+        self.assertEqual(result["layers"][0]["id"], 3)
+
+    def test_xd_selected_object_supported(self):
+        result = normalize_snapshot(
+            {"document": {"id": "xd-doc", "width": 600, "height": 400}},
+            {"selection": [{"id": "node-2", "name": "CTA", "bounds": {"left": 25, "top": 30, "right": 150, "bottom": 90}}]},
+            application="xd",
+        )
+        self.assertEqual(result["application"], "xd")
+        self.assertEqual(result["layers"][0]["id"], "node-2")
+
+    def test_xd_no_selection_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "No layers"):
+            normalize_snapshot(
+                {"document": {"id": "xd-doc", "width": 600, "height": 400}},
+                {"selection": []}, application="xd",
+            )
+
+    def test_unknown_application_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported"):
+            normalize_snapshot({}, {}, application="premiere")
+
 
 if __name__ == "__main__":
     unittest.main()
