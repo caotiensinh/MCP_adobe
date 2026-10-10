@@ -1,0 +1,53 @@
+name: Illustrator house establish actual document
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-house-establish-document.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  establish:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create one house document only after trusted host proof
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          @'
+          import asyncio,json
+          from mcp import Client
+          DOC="MCPAdobe LIVE Two-Story Red Tile House"
+          async def call(c,tool,cap,args):
+              r=await c.call_tool(tool,{"application":"illustrator","capability":cap,"arguments":args})
+              print("HOUSE_CALL="+json.dumps({"tool":tool,"cap":cap,"error":r.is_error,"payload":r.structured_content},default=str)[:5000],flush=True)
+              if r.is_error or not isinstance(r.structured_content,dict) or not r.structured_content.get("ok"):
+                  raise RuntimeError(cap+" returned error or unknown outcome; NO RETRY")
+              return r.structured_content
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  h=await call(c,"creative_read","creative.health",{"probe":True,"timeout":30})
+                  d=h["result"]["connection"]["data"]
+                  print("HOUSE_CREATE_PREFLIGHT="+json.dumps({"illustrator":d["layers"]["illustrator"],"document":d["layers"]["document"],"blocking":d.get("blocking"),"unresolved":d["execution"]["unresolvedJobs"]}),flush=True)
+                  if d.get("blocking") or d["execution"]["unresolvedJobs"] or d["layers"]["illustrator"].get("status")!="ok":
+                      raise RuntimeError("NOT_SAFE_TO_CREATE")
+                  if d["layers"]["document"].get("status")!="none_open":
+                      print("HOUSE_CREATE_SKIPPED=DOCUMENT_ALREADY_OPEN",flush=True)
+                      return
+                  await call(c,"creative_write","creative.document.create",{"width":900,"height":650,"color_mode":"RGB","name":DOC})
+                  r=await call(c,"creative_read","creative.document.info",{})
+                  info=r["result"]["data"]
+                  print("HOUSE_CREATED_READBACK="+json.dumps(info["document"],default=str),flush=True)
+                  if info["document"].get("name")!=DOC:
+                      raise RuntimeError("CREATED_DOCUMENT_NAME_MISMATCH")
+                  print("HOUSE_DOCUMENT_CREATE=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath establish_house.py -Encoding UTF8
+          uv run python establish_house.py
+          if($LASTEXITCODE -ne 0){throw 'House document establishment failed'}
