@@ -122,6 +122,28 @@ function xdScenegraphSnapshot() {
     nodes, node_count:count};
 }
 
+// A document-coordinate frame derived from artboards, not desktop pixels.
+// The preview must be a full-frame image of this rectangle.
+function xdCanvasFrame() {
+  const root=scenegraph.root;
+  if(!root || !root.guid || !root.children)throw new Error("XD root unavailable");
+  let left=Infinity,top=Infinity,right=-Infinity,bottom=-Infinity,count=0;
+  for(let i=0;i<root.children.length;i++){
+    const node=root.children.at(i);
+    if(!node || !node.guid)continue;
+    const type=node.constructor && node.constructor.name || "";
+    if(type!=="Artboard")continue;
+    const b=node.globalBounds;
+    if(!b || ![b.x,b.y,b.width,b.height].every(Number.isFinite) || b.width<=0 || b.height<=0)continue;
+    count++;
+    left=Math.min(left,b.x);top=Math.min(top,b.y);
+    right=Math.max(right,b.x+b.width);bottom=Math.max(bottom,b.y+b.height);
+  }
+  if(!count)throw new Error("XD artboard frame unavailable");
+  return {document_id:String(root.guid),coordinate_space:"global",
+    left,top,right,bottom,width:right-left,height:bottom-top,artboard_count:count};
+}
+
 function rememberOperation(operationId, value) {
   operationStatus[operationId] = value;
   operationOrder.push(operationId);
@@ -317,6 +339,10 @@ function dispatch(method, params) {
   if (method === "xd.document.info") {
     try { snapshot(scenegraph.selection, scenegraph.root); } catch (_) {}
     return latestSnapshot.document || { rootChildren: 0, insertionParent: null };
+  }
+
+  if (method === "xd.canvas.frame") {
+    return xdCanvasFrame();
   }
 
   if (method === "xd.scenegraph.snapshot") {
