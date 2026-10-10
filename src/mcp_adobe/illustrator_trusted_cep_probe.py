@@ -14,7 +14,7 @@ def patch_dispatch(bundle: str) -> str:
             f'&&typeof {request}.script==="string"'
             f'&&{request}.script.includes("documentCount")'
             f'&&{request}.script.includes("app.version")')
-    repl = (f"const {variable}=({gate})?{request}.script:"
+    repl = (f"{variable}=({gate})?{request}.script:"
             + "`mcp_handle_request(${JSON.stringify(" + request + ")})`;")
     return bundle[:match.start()] + repl + bundle[match.end():]
 
