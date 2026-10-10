@@ -12,6 +12,8 @@ on:
       - src/mcp_adobe/xd_scenegraph_targeting.py
       - tests/test_xd_scenegraph_targeting.py
       - adobe-xd-plugin/main.js
+      - scripts/capture_region_preview.py
+      - tests/test_capture_region_preview.py
       - tests/xd_scenegraph_uxp_contract.cjs
       - .github/workflows/canvas-region-targeting.yml
   workflow_dispatch:
@@ -30,7 +32,7 @@ jobs:
         run: python -m pip install "mcp>=2,<3"
       - name: Run targeting and metadata normalization tests without model calls
         run: |
-          PYTHONPATH=src python -m unittest tests.test_region_targeting tests.test_region_annotation_ui tests.test_export_region_metadata tests.test_xd_scenegraph_targeting -v
+          PYTHONPATH=src python -m unittest tests.test_region_targeting tests.test_region_annotation_ui tests.test_export_region_metadata tests.test_xd_scenegraph_targeting tests.test_capture_region_preview -v
       - name: Validate browser JavaScript syntax
         run: |
           python - <<'PY'
