@@ -1,0 +1,62 @@
+name: Illustrator resolve startup launch dialog
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-launch-dialog-resolution.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  launch:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Click only Launch Illustrator in verified application dialog
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type @'
+          using System;
+          using System.Text;
+          using System.Runtime.InteropServices;
+          public static class LaunchDialog {
+            public delegate bool EnumProc(IntPtr h, IntPtr p);
+            [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc cb,IntPtr p);
+            [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr h,EnumProc cb,IntPtr p);
+            [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+            [DllImport("user32.dll")] static extern int GetClassName(IntPtr h,StringBuilder s,int n);
+            [DllImport("user32.dll")] static extern int GetWindowText(IntPtr h,StringBuilder s,int n);
+            [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h,uint msg,IntPtr w,IntPtr l);
+            static string Text(IntPtr h){var s=new StringBuilder(256);GetWindowText(h,s,256);return s.ToString();}
+            static string Class(IntPtr h){var s=new StringBuilder(128);GetClassName(h,s,128);return s.ToString();}
+            public static int ClickLaunch(uint owner) {
+              int found=0;
+              EnumWindows((h,p)=>{
+                uint pid;GetWindowThreadProcessId(h,out pid);
+                if(pid==owner && Class(h)=="#32770" && Text(h)=="Adobe Illustrator"){
+                  EnumChildWindows(h,(child,x)=>{
+                    if(Class(child)=="Button" && Text(child).Replace("&","")=="Launch Illustrator"){
+                      found++;
+                      if(found==1)SendMessage(child,0x00F5,IntPtr.Zero,IntPtr.Zero);
+                    }
+                    return true;
+                  },IntPtr.Zero);
+                }
+                return true;
+              },IntPtr.Zero);
+              return found;
+            }
+          }
+          '@
+          $ai=@(Get-Process Illustrator -ErrorAction SilentlyContinue)
+          if($ai.Count -ne 1){throw 'Expected exactly one Illustrator launcher process'}
+          $count=[LaunchDialog]::ClickLaunch([uint32]$ai[0].Id)
+          Write-Output "LAUNCH_BUTTON_MATCH_COUNT=$count"
+          if($count -ne 1){throw 'Ambiguous or missing Launch Illustrator button'}
+          Start-Sleep -Seconds 20
+          $p=@(Get-Process Illustrator -ErrorAction SilentlyContinue)
+          $cep=@(Get-Process CEPHtmlEngine -ErrorAction SilentlyContinue)
+          Write-Output "AFTER_LAUNCH_AI_COUNT=$($p.Count) CEP_COUNT=$($cep.Count)"
+          foreach($x in $p){Write-Output "AFTER_LAUNCH_PID=$($x.Id) title=$($x.MainWindowTitle) responding=$($x.Responding)"}
