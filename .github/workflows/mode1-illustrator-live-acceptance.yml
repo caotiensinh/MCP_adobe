@@ -57,19 +57,7 @@ jobs:
           $processes=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" -ErrorAction SilentlyContinue)
           foreach($p in $processes){Write-Host "ILLUSTRATOR_PROCESS pid=$($p.ProcessId) session=$($p.SessionId)"}
           $candidate=@($processes | Where-Object { $_.SessionId -eq $session } | Select-Object -First 1)
-          if($candidate.Count -eq 0) {
-            $start=Get-StartApps -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^Adobe Illustrator|^Illustrator' } | Select-Object -First 1
-            if(-not $start){throw 'ILLUSTRATOR_LAUNCH_BLOCKED: no registered Start-app entry; no destructive process action'}
-            Write-Host "ILLUSTRATOR_START_REQUEST=registered-app name=$($start.Name)"
-            Start-Process -FilePath explorer.exe -ArgumentList ("shell:AppsFolder\\" + $start.AppID)
-            $deadline=(Get-Date).AddSeconds(65)
-            do {
-              Start-Sleep -Seconds 2
-              $processes=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" -ErrorAction SilentlyContinue)
-              $candidate=@($processes | Where-Object { $_.SessionId -eq $session } | Select-Object -First 1)
-            } until($candidate.Count -gt 0 -or (Get-Date) -gt $deadline)
-            if($candidate.Count -eq 0){throw 'ILLUSTRATOR_LAUNCH_UNCONFIRMED: no process in interactive session'}
-          }
+          if($candidate.Count -eq 0){throw 'ILLUSTRATOR_NOT_RUNNING: open desktop session required; do not spawn or modify app'}
           $ai=Get-Process -Id $candidate[0].ProcessId -ErrorAction Stop
           $ws=@(Get-NetTCPConnection -State Established -LocalPort 8081 -ErrorAction SilentlyContinue)
           if($ws.Count -eq 0){ throw 'Illustrator CEP panel is not connected to port 8081' }
