@@ -1,4 +1,4 @@
-name: Illustrator modal blocker check
+name: Illustrator recovered GUI window inspection
 on:
   push:
     branches: [feat/canvas-region-targeting]
