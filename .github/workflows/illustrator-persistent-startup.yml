@@ -1,0 +1,44 @@
+name: Illustrator persistent interactive startup
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-persistent-startup.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  start:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Register interactive scheduled task for Illustrator outside runner job
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $name='MCPAdobe-Illustrator-Interactive'
+          $exe='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
+          $session=[System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          $explorer=@(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'"|Where-Object {$_.SessionId -eq $session})
+          $user=[System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          Write-Output "INTERACTIVE_PRECHECK host=$env:COMPUTERNAME user=$user session=$session explorers=$($explorer.Count) exe=$(Test-Path $exe)"
+          if($env:COMPUTERNAME -ne 'MRCAO' -or $session -eq 0 -or $explorer.Count -lt 1 -or -not(Test-Path $exe)){throw 'Not safely in MRCAO interactive desktop'}
+          $existing=@(Get-Process Illustrator -ErrorAction SilentlyContinue)
+          if($existing.Count -gt 0){Write-Output "ILLUSTRATOR_ALREADY_RUNNING=$($existing[0].Id)";exit 0}
+          $old=Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+          if($old){
+            if($old.Actions.Execute -ne $exe){throw 'Task name collision: unrelated executable'}
+            Write-Output "PERSISTENT_TASK_EXISTS=YES"
+          }else{
+            $action=New-ScheduledTaskAction -Execute $exe
+            $principal=New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+            $settings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 0)
+            Register-ScheduledTask -TaskName $name -Action $action -Principal $principal -Settings $settings -Force|Out-Null
+            Write-Output 'PERSISTENT_TASK_CREATED=PASS'
+          }
+          Start-ScheduledTask -TaskName $name
+          Start-Sleep -Seconds 10
+          $running=@(Get-Process Illustrator -ErrorAction SilentlyContinue)
+          Write-Output "ILLUSTRATOR_AFTER_TASK=$($running.Count)"
+          if($running.Count -lt 1){throw 'Scheduled task did not start Illustrator'}
