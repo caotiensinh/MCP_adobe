@@ -7,6 +7,8 @@ on:
       - tests/test_region_targeting.py
       - tests/test_region_annotation_ui.py
       - ui/region_annotation.html
+      - scripts/export_region_metadata.py
+      - tests/test_export_region_metadata.py
       - .github/workflows/canvas-region-targeting.yml
   workflow_dispatch:
 permissions:
@@ -20,9 +22,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Run pure targeting tests with no Adobe or model calls
+      - name: Install Python MCP dependencies
+        run: python -m pip install "mcp>=2,<3"
+      - name: Run targeting and metadata normalization tests without model calls
         run: |
-          PYTHONPATH=src python -m unittest tests.test_region_targeting tests.test_region_annotation_ui -v
+          PYTHONPATH=src python -m unittest tests.test_region_targeting tests.test_region_annotation_ui tests.test_export_region_metadata -v
       - name: Validate browser JavaScript syntax
         run: |
           python - <<'PY'
