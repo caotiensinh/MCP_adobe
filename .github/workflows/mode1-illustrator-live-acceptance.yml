@@ -52,10 +52,13 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          $ai=Get-Process -Name Illustrator -ErrorAction SilentlyContinue |
-            Where-Object {$_.MainWindowHandle -ne 0} |
-            Select-Object -First 1
-          if(-not $ai){ throw 'Illustrator interactive window is not running' }
+          $session=[System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          Write-Host "ILLUSTRATOR_RUNNER_SESSION=$session INTERACTIVE=$([Environment]::UserInteractive)"
+          $processes=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" -ErrorAction SilentlyContinue)
+          foreach($p in $processes){Write-Host "ILLUSTRATOR_PROCESS pid=$($p.ProcessId) session=$($p.SessionId)"}
+          $candidate=@($processes | Where-Object { $_.SessionId -eq $session } | Select-Object -First 1)
+          if($candidate.Count -eq 0){ throw 'ILLUSTRATOR_PROCESS_MISSING_IN_DESKTOP_SESSION: not a MainWindowHandle failure' }
+          $ai=Get-Process -Id $candidate[0].ProcessId -ErrorAction Stop
           $ws=@(Get-NetTCPConnection -State Established -LocalPort 8081 -ErrorAction SilentlyContinue)
           if($ws.Count -eq 0){ throw 'Illustrator CEP panel is not connected to port 8081' }
           Write-Host "ILLUSTRATOR_VISUAL_PREFLIGHT_PROCESS=PASS PID=$($ai.Id) TITLE=$($ai.MainWindowTitle)"
