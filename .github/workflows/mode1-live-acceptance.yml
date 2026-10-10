@@ -48,22 +48,18 @@ jobs:
           uv run python -m unittest tests.test_photoshop -v
           if($LASTEXITCODE -ne 0){ throw "Photoshop targeted tests failed rc=$LASTEXITCODE" }
 
-      - name: Verify existing interactive Photoshop without spawning app
+      - name: Detect Photoshop in runner desktop session without relying on MainWindowHandle
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          Write-Host "RUNNER_INTERACTIVE=$([Environment]::UserInteractive) SESSION=$([System.Diagnostics.Process]::GetCurrentProcess().SessionId)"
-          $all=@(Get-CimInstance Win32_Process -Filter "Name='Photoshop.exe'" -ErrorAction SilentlyContinue)
-          foreach($p in $all) {
-            Write-Host "PHOTOSHOP_PROCESS pid=$($p.ProcessId) session=$($p.SessionId) parent=$($p.ParentProcessId)"
-          }
-          $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue |
-            Where-Object { $_.MainWindowHandle -ne 0 } |
-            Select-Object -First 1
-          if(-not $ps) {
-            throw 'PHOTOSHOP_DESKTOP_NOT_READY: open Photoshop manually in the same logged-in desktop session; workflow will NOT launch it or terminate it'
-          }
-          Write-Host "PHOTOSHOP_WINDOW=PASS PID=$($ps.Id) SESSION=$($ps.SessionId) TITLE=$($ps.MainWindowTitle)"
+          $session=[System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          Write-Host "RUNNER_INTERACTIVE=$([Environment]::UserInteractive) SESSION=$session"
+          $apps=@(Get-CimInstance Win32_Process -Filter "Name='Photoshop.exe'" -ErrorAction SilentlyContinue)
+          foreach($p in $apps){Write-Host "PHOTOSHOP_PROCESS pid=$($p.ProcessId) session=$($p.SessionId) parent=$($p.ParentProcessId)"}
+          $match=@($apps | Where-Object { $_.SessionId -eq $session })
+          if($match.Count -eq 0){throw 'PHOTOSHOP_PROCESS_NOT_FOUND_IN_RUNNER_SESSION; no app launched by CI'}
+          Write-Host "PHOTOSHOP_DESKTOP_PROCESS=PASS count=$($match.Count)"
+          Write-Host 'PHOTOSHOP_WINDOW_HANDLE=NOT_REQUIRED; MCP health and live readback are authoritative'
 
       - name: Refresh persistent MCP gateway
         shell: powershell
