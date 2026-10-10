@@ -186,7 +186,17 @@ jobs:
 
           if($title -eq 'Adobe XD'){
             $create=Find-XdByAutomationId -Process $xd -AutomationId 'sidebar-work--create'
-            Invoke-XdElement -Element $create -Label 'Create document'
+            if($create) {
+              Invoke-XdElement -Element $create -Label 'Create document'
+            } else {
+              Add-Type -AssemblyName System.Windows.Forms
+              if(-not [XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)){
+                throw 'XD home Create button missing and foreground fallback unavailable'
+              }
+              Start-Sleep -Milliseconds 600
+              [System.Windows.Forms.SendKeys]::SendWait('^n')
+              Write-Host 'XD_HOME_CREATE_FALLBACK=PASS request=Ctrl+N'
+            }
             Start-Sleep -Seconds 5
             $xd=Get-XdProcess
             if(-not $xd -or $xd.MainWindowTitle -eq 'Adobe XD'){
