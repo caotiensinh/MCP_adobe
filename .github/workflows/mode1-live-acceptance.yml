@@ -48,62 +48,22 @@ jobs:
           uv run python -m unittest tests.test_photoshop -v
           if($LASTEXITCODE -ne 0){ throw "Photoshop targeted tests failed rc=$LASTEXITCODE" }
 
-      - name: Ensure interactive Photoshop is open
+      - name: Verify existing interactive Photoshop without spawning app
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-
-          function Get-Photoshop {
-            return Get-Process -Name Photoshop -ErrorAction SilentlyContinue |
-              Where-Object {$_.MainWindowHandle -ne 0} |
-              Select-Object -First 1
+          Write-Host "RUNNER_INTERACTIVE=$([Environment]::UserInteractive) SESSION=$([System.Diagnostics.Process]::GetCurrentProcess().SessionId)"
+          $all=@(Get-CimInstance Win32_Process -Filter "Name='Photoshop.exe'" -ErrorAction SilentlyContinue)
+          foreach($p in $all) {
+            Write-Host "PHOTOSHOP_PROCESS pid=$($p.ProcessId) session=$($p.SessionId) parent=$($p.ParentProcessId)"
           }
-
-          $ps=Get-Photoshop
-          if(-not $ps){
-            $exe=$null
-            foreach($drive in @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)){
-              foreach($pattern in @(
-                "$($drive.Root)Program Files\Adobe\Adobe Photoshop *\Photoshop.exe",
-                "$($drive.Root)Adobe\Adobe Photoshop *\Photoshop.exe",
-                "$($drive.Root)Adobe Photoshop *\Photoshop.exe"
-              )){
-                $candidate=Get-Item $pattern -ErrorAction SilentlyContinue |
-                  Sort-Object FullName -Descending |
-                  Select-Object -First 1
-                if($candidate){ $exe=$candidate.FullName; break }
-              }
-              if($exe){ break }
-            }
-            if(-not $exe){
-              $shell=New-Object -ComObject WScript.Shell
-              foreach($root in @(
-                (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),
-                (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
-              )){
-                if(-not (Test-Path $root)){ continue }
-                foreach($lnk in @(Get-ChildItem $root -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue)){
-                  if($lnk.Name -notmatch 'Photoshop'){ continue }
-                  $shortcut=$shell.CreateShortcut($lnk.FullName)
-                  if($shortcut.TargetPath -and (Test-Path $shortcut.TargetPath)){
-                    $exe=$shortcut.TargetPath
-                    break
-                  }
-                }
-                if($exe){ break }
-              }
-            }
-            if(-not $exe){ throw 'Photoshop.exe was not found' }
-            $started=Start-Process -FilePath $exe -PassThru
-            Write-Host "PHOTOSHOP_LAUNCH_REQUEST=PASS PID=$($started.Id) PATH=$exe"
-            $deadline=(Get-Date).AddSeconds(60)
-            do {
-              Start-Sleep -Seconds 1
-              $ps=Get-Photoshop
-            } until($ps -or (Get-Date) -gt $deadline)
+          $ps=Get-Process -Name Photoshop -ErrorAction SilentlyContinue |
+            Where-Object { $_.MainWindowHandle -ne 0 } |
+            Select-Object -First 1
+          if(-not $ps) {
+            throw 'PHOTOSHOP_DESKTOP_NOT_READY: open Photoshop manually in the same logged-in desktop session; workflow will NOT launch it or terminate it'
           }
-          if(-not $ps){ throw 'Photoshop interactive window did not become available' }
-          Write-Host "PHOTOSHOP_WINDOW=PASS PID=$($ps.Id) TITLE=$($ps.MainWindowTitle)"
+          Write-Host "PHOTOSHOP_WINDOW=PASS PID=$($ps.Id) SESSION=$($ps.SessionId) TITLE=$($ps.MainWindowTitle)"
 
       - name: Refresh persistent MCP gateway
         shell: powershell
