@@ -31,6 +31,7 @@ small{color:#a7b5c7}.row{display:flex;gap:8px;align-items:center}@media(max-widt
 <label for="meta">Metadata JSON từ PS / AI / XD (document_identity, width, height, layers)</label>
 <textarea id="meta" rows="10" spellcheck="false" placeholder='{"document_identity":"doc-123","width":900,"height":600,"layers":[{"id":1,"name":"Heading","bounds":{"left":100,"top":80,"right":500,"bottom":160}}]}'></textarea>
 <button id="detect">Xác định layer trong vùng khoanh</button>
+<p class="help">Preview phải có cùng tỉ lệ khung hình với metadata. Sau khi đổi preview hoặc metadata, phải xác định lại đối tượng.</p>
 <div id="candidate-list" aria-live="polite"></div>
 <label for="request">Yêu cầu AI</label>
 <textarea id="request" rows="3" placeholder="Đổi chữ này sang màu đỏ."></textarea>
@@ -43,15 +44,19 @@ small{color:#a7b5c7}.row{display:flex;gap:8px;align-items:center}@media(max-widt
 'use strict';
 const $=id=>document.getElementById(id);
 let drag=null,selection=null,choice=null,meta=null,candidates=[];
+const validApps=['photoshop','illustrator','xd'];
+function validatePreviewMetadata(doc){const img=$('preview');if(!img.naturalWidth||!img.naturalHeight)throw Error('Chưa có preview.');const expected=doc.width/doc.height, actual=img.naturalWidth/img.naturalHeight;if(!Number.isFinite(expected)||expected<=0||Math.abs(actual-expected)>0.002)throw Error('Preview không khớp tỉ lệ document. Không thể định vị an toàn.');if(doc.coordinate_frame && doc.coordinate_frame.space==='artboard_union' && !doc.preview_frame_verified)throw Error('XD cần xác nhận preview chính xác của toàn bộ artboard union.');}
+
 $('metadata-file').addEventListener('change',async()=>{const file=$('metadata-file').files?.[0];if(!file)return;try{const obj=JSON.parse(await file.text());if(!["photoshop","illustrator","xd"].includes(obj.application)||!obj.document_identity||!(obj.width>0&&obj.height>0)||!Array.isArray(obj.layers))throw Error('Metadata không hợp lệ.');$('meta').value=JSON.stringify(obj,null,2);reset();$('status').textContent='Đã nạp metadata từ '+file.name+'. Khoanh vùng và xác định layer.';}catch(err){$('status').textContent='Lỗi metadata: '+err.message;}});
 $('preview-file').addEventListener('change',()=>{
- const file=$('preview-file').files?.[0];if(!file)return;
+ const file=$('preview-file').files?.[0];if(!file)return;reset();
  const url=URL.createObjectURL(file);const img=$('preview');
  img.onload=()=>{URL.revokeObjectURL(url);reset();$('status').textContent='Kéo chuột khoanh vùng cần sửa.';};
  img.src=url;
 });
 function reset(){selection=null;choice=null;candidates=[];$('selection').style.display='none';$('candidate-list').replaceChildren();$('build').disabled=true;$('copy').disabled=true;$('payload').textContent='Chưa có yêu cầu.';}
 $('clear').addEventListener('click',reset);
+$('meta').addEventListener('input',reset);
 function point(e){const r=$('preview').getBoundingClientRect();return {x:Math.max(0,Math.min(r.width,e.clientX-r.left)),y:Math.max(0,Math.min(r.height,e.clientY-r.top))};}
 function draw(){if(!selection)return;const r=$('preview').getBoundingClientRect();Object.assign($('selection').style,{display:'block',left:(selection.left/r.width*100)+'%',top:(selection.top/r.height*100)+'%',width:((selection.right-selection.left)/r.width*100)+'%',height:((selection.bottom-selection.top)/r.height*100)+'%'});}
 $('canvas').addEventListener('pointerdown',e=>{if(!$('preview').naturalWidth)return;reset();const p=point(e);drag=p;selection={left:p.x,right:p.x,top:p.y,bottom:p.y};$('canvas').setPointerCapture(e.pointerId);});
@@ -63,7 +68,7 @@ function overlap(a,b){return Math.max(0,Math.min(a.right,b.right)-Math.max(a.lef
 $('detect').addEventListener('click',()=>{
  try{
   meta=JSON.parse($('meta').value);if(!["photoshop","illustrator","xd"].includes(meta.application)||!meta.document_identity||!(meta.width>0&&meta.height>0)||!Array.isArray(meta.layers))throw Error('Metadata thiếu document_identity, width/height hoặc layers.');
-  const r=boundsRegion();choice=null;$('build').disabled=true;$('candidate-list').replaceChildren();
+  validatePreviewMetadata(meta);const r=boundsRegion();choice=null;$('build').disabled=true;$('candidate-list').replaceChildren();
   const area=(r.right-r.left)*(r.bottom-r.top);if(area<=0)throw Error('Vùng khoanh không hợp lệ.');
   candidates=meta.layers.filter(l=>l&&l.visible!==false&&l.locked!==true&&l.background!==true&&l.bounds).map(l=>({...l,coverage:overlap(r,l.bounds)/area})).filter(l=>l.coverage>=.1).sort((a,b)=>b.coverage-a.coverage);
   if(!candidates.length){$('status').textContent='Không tìm thấy layer. Cần xác minh vùng raster hoặc layer bounds.';return;}
@@ -72,8 +77,8 @@ $('detect').addEventListener('click',()=>{
  }catch(err){$('status').textContent='Lỗi: '+err.message;}
 });
 $('build').addEventListener('click',()=>{
- if(!choice||!meta||!selection)return;const request=$('request').value.trim();if(!request){$('status').textContent='Nhập yêu cầu ngắn cần sửa.';return;}
- const result={schema:'mcp-adobe-region-request/v1',intent:'review_then_edit',application:meta.application,document_identity:meta.document_identity,document_dimensions:{width:meta.width,height:meta.height},selected_region:boundsRegion(),selected_layer:{id:choice.id,name:choice.name,bounds:choice.bounds},user_instruction:request,requires_live_document_identity_check:true,requires_live_layer_readback:true,execute_automatically:false};
+ if(!choice||!meta||!selection)return;try{validatePreviewMetadata(meta);}catch(err){$('status').textContent=err.message;reset();return;}const request=$('request').value.trim();if(!request){$('status').textContent='Nhập yêu cầu ngắn cần sửa.';return;}
+ const result={schema:'mcp-adobe-region-request/v1',intent:'review_then_edit',application:meta.application,document_identity:meta.document_identity,document_dimensions:{width:meta.width,height:meta.height},preview_dimensions:{width:$('preview').naturalWidth,height:$('preview').naturalHeight},coordinate_frame:meta.coordinate_frame||null,selected_region:boundsRegion(),selected_layer:{id:choice.id,name:choice.name,bounds:choice.bounds},user_instruction:request,requires_live_document_identity_check:true,requires_live_layer_readback:true,requires_preview_revision_check:true,execute_automatically:false};
  $('payload').textContent=JSON.stringify(result,null,2);$('copy').disabled=false;$('status').textContent='JSON đã tạo; agent phải kiểm tra lại document/layer trước khi sửa.';
 });
 $('copy').addEventListener('click',()=>navigator.clipboard.writeText($('payload').textContent).then(()=>$('status').textContent='Đã sao chép JSON.').catch(()=>$('status').textContent='Không thể sao chép; chọn và copy JSON thủ công.'));
