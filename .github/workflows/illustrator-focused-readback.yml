@@ -29,7 +29,7 @@ jobs:
           async def main():
               readback_ok=False
               async with Client("http://127.0.0.1:8787/mcp") as c:
-                  for cap,args in [("creative.health",{"probe":False,"timeout":5.0}),("creative.document.info",{}),("creative.job.status",{"jobId":"job_bb227cf2e04a","detail":"full"})]:
+                  for cap,args in [("creative.health",{"probe":True,"timeout":5.0}),("creative.document.info",{}),("creative.job.status",{"jobId":"job_bb227cf2e04a","detail":"full"})]:
                       try:
                           r=await c.call_tool("creative_read",{"application":"illustrator","capability":cap,"arguments":args})
                           data=brief(r)
