@@ -12,6 +12,26 @@ jobs:
     timeout-minutes: 4
     steps:
       - uses: actions/checkout@v4
+      - name: Restore Illustrator process in interactive desktop without changing documents
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $session=[System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          Write-Output ("RUNNER_SESSION={0}" -f $session)
+          if($session -eq 0){throw 'Noninteractive Session 0: cannot open Illustrator on user desktop'}
+          $existing=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          if($existing.Count -gt 0){
+            Write-Output ("ILLUSTRATOR_ALREADY_RUNNING={0}" -f $existing.Count)
+            exit 0
+          }
+          $exe='C:\Program Files\Adobe\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
+          if(-not (Test-Path -LiteralPath $exe)){throw "Illustrator executable missing from known installation path"}
+          Write-Output 'ILLUSTRATOR_START_REQUESTED=1'
+          Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe)
+          Start-Sleep -Seconds 12
+          $started=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          if($started.Count -eq 0){throw 'Illustrator did not start in interactive session'}
+          Write-Output ("ILLUSTRATOR_STARTED_COUNT={0}" -f $started.Count)
       - name: Verify previous timed-out job and current canvas read safely
         shell: powershell
         run: |
