@@ -45,3 +45,11 @@ E. Windows self-hosted live acceptance: khoanh đúng một target; hai target c
 - Bảo vệ: nếu Adobe không trả `document.id`, kích thước hoặc layer ID/bounds, script **fail closed**; tuyệt đối không tự tính đoán layer.
 - CI [run 38024541072](https://github.com/caotiensinh/MCP_adobe/actions/runs/38024541072) 14/14 unit/static tests PASS. Live Windows read-only probe [run 38024572699](https://github.com/caotiensinh/MCP_adobe/actions/runs/38024572699) chạy độc lập.
 - Phần nhập preview ảnh vẫn cần thủ công; chưa thực hiện phát hiện layer bằng AI vision hay cập nhật Photoshop tự động; việc hoàn tất E2E chỉ đánh dấu khi có bằng chứng trên thiết bị thật.
+
+
+## Live Windows checkpoint 2026-10-10
+- [Run 38024572699](https://github.com/caotiensinh/MCP_adobe/actions/runs/38024572699): tests PASS; Windows live metadata failed on `creative.context.get` due to MCP tool error.
+- [Run 38024708941](https://github.com/caotiensinh/MCP_adobe/actions/runs/38024708941): unit/static lane PASS; Windows live lane failed earlier at `creative.health` with `MCP read rejected; content_block_types=['TextContent']`. No layer metadata produced.
+- **Không giả định bridge/Photoshop đang sẵn sàng**: các runs trước từng PASS health, nhưng health của phiên này FAIL. Cần xác nhận Photoshop UI mở, bridge đang connect, active document và đúng Windows user session; không rerun mù khi health chưa PASS.
+- Cả hai Windows probes read-only: không sửa canvas, không đổi cấu hình transport/MCP.
+- Tổng: 14/14 unit/static PASS, live Photoshop metadata vẫn BLOCKED. Agent edit E2E chưa PASS.
