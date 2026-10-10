@@ -93,6 +93,30 @@ def normalize_snapshot(state: Mapping[str, Any], layers_payload: Any, applicatio
             "width": float(width), "height": float(height), "layers": layers}
 
 
+def normalize_xd_canvas_snapshot(scenegraph: Any, frame: Any) -> dict[str, Any]:
+    from mcp_adobe.xd_scenegraph_targeting import normalize_xd_scenegraph
+    scenegraph, frame = unwrap(scenegraph), unwrap(frame)
+    if not isinstance(scenegraph, Mapping) or not isinstance(frame, Mapping):
+        raise ValueError("XD scenegraph or canvas frame missing")
+    if str(frame.get("document_id")) != str(scenegraph.get("document_id")):
+        raise ValueError("XD scenegraph/frame document mismatch")
+    width, height = frame.get("width"), frame.get("height")
+    left, top = frame.get("left"), frame.get("top")
+    if not all(isinstance(v, (int, float)) for v in (width, height, left, top)):
+        raise ValueError("XD canvas frame coordinates unavailable")
+    result = normalize_xd_scenegraph(
+        {"id": frame["document_id"], "width": width, "height": height}, scenegraph
+    )
+    for layer in result["layers"]:
+        bounds = layer["bounds"]
+        bounds["left"] -= left
+        bounds["right"] -= left
+        bounds["top"] -= top
+        bounds["bottom"] -= top
+    result["coordinate_frame"] = {"left": left, "top": top, "space": "artboard_union"}
+    return result
+
+
 def payload(result: Any) -> Any:
     if result.is_error:
         kinds = [type(block).__name__ for block in (result.content or [])]
@@ -124,6 +148,9 @@ async def capture(url: str, application: str = "photoshop") -> dict[str, Any]:
         print(f"REGION_METADATA_HEALTH=PASS application={application}", flush=True)
         state = await read("creative.context.get")
         layers = await read("creative.scenegraph.list" if application == "xd" else "creative.layer.list")
+        if application == "xd":
+            frame = await read("creative.canvas.frame")
+            return normalize_xd_canvas_snapshot(layers, frame)
         if application == "xd":
             # XD context.get combines document and selection; scenegraph is a separate read-only bridge call.
             document = state.get("document", state) if isinstance(state, Mapping) else {}
