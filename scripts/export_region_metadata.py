@@ -1,4 +1,4 @@
-"""Read-only Photoshop document/layer snapshot for canvas annotation UI.
+"""Read-only Adobe document/object snapshot for canvas annotation UI.
 
 No MCP transport, auth, or write path is changed. Fails closed when the
 upstream does not expose reliable dimensions, identity, or layer bounds.
@@ -41,7 +41,9 @@ def unwrap(value: Any) -> Any:
     return value
 
 
-def normalize_snapshot(state: Mapping[str, Any], layers_payload: Any) -> dict[str, Any]:
+def normalize_snapshot(state: Mapping[str, Any], layers_payload: Any, application: str = "photoshop") -> dict[str, Any]:
+    if application not in {"photoshop", "illustrator", "xd"}:
+        raise ValueError("Unsupported Adobe application")
     state = unwrap(state)
     layers_payload = unwrap(layers_payload)
     if not isinstance(state, Mapping) or state.get("hasDocument") is False:
@@ -56,7 +58,15 @@ def normalize_snapshot(state: Mapping[str, Any], layers_payload: Any) -> dict[st
     identity = doc.get("id") or doc.get("documentId") or state.get("documentId")
     if identity is None:
         raise ValueError("Document ID unavailable: refuse stale-targeting risk")
-    raw_layers = layers_payload.get("layers") if isinstance(layers_payload, Mapping) else layers_payload
+    raw_layers = (layers_payload.get("layers", layers_payload.get("items")) if isinstance(layers_payload, Mapping) else layers_payload)
+    if application == "xd" and isinstance(layers_payload, Mapping) and not isinstance(raw_layers, list):
+        selected = layers_payload.get("selection", layers_payload.get("selectedItems"))
+        if isinstance(selected, list):
+            raw_layers = selected
+        elif isinstance(selected, Mapping):
+            raw_layers = [selected]
+        elif "bounds" in layers_payload:
+            raw_layers = [layers_payload]
     if not isinstance(raw_layers, list):
         raise ValueError("Layer list not available")
     layers = []
@@ -76,7 +86,7 @@ def normalize_snapshot(state: Mapping[str, Any], layers_payload: Any) -> dict[st
         })
     if not layers:
         raise ValueError("No layers with stable IDs and bounds; manual metadata required")
-    return {"application": "photoshop", "document_identity": str(identity),
+    return {"application": application, "document_identity": str(identity),
             "width": float(width), "height": float(height), "layers": layers}
 
 
@@ -92,32 +102,35 @@ def payload(result: Any) -> Any:
     return unwrap(value)
 
 
-async def capture(url: str) -> dict[str, Any]:
+async def capture(url: str, application: str = "photoshop") -> dict[str, Any]:
+    if application not in {"photoshop", "illustrator", "xd"}:
+        raise ValueError("Unsupported Adobe application")
     async with Client(url) as client:
         listed = {t.name for t in (await client.list_tools()).tools}
         if "creative_read" not in listed:
             raise RuntimeError("MCP creative_read unavailable")
         async def read(capability: str) -> Any:
             result = await client.call_tool("creative_read", {
-                "application": "photoshop", "capability": capability, "arguments": {},
+                "application": application, "capability": capability, "arguments": {},
             })
             try:
                 return payload(result)
             except RuntimeError as exc:
-                raise RuntimeError(f"Photoshop capability={capability} failed: {exc}") from None
+                raise RuntimeError(f"{application} capability={capability} failed: {exc}") from None
         health = await read("creative.health")
-        print("REGION_METADATA_HEALTH=PASS gateway read returned", flush=True)
+        print(f"REGION_METADATA_HEALTH=PASS application={application}", flush=True)
         state = await read("creative.context.get")
-        layers = await read("creative.layer.list")
-        return normalize_snapshot(state, layers)
+        layers = await read("creative.selection.get" if application == "xd" else "creative.layer.list")
+        return normalize_snapshot(state, layers, application=application)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://127.0.0.1:8787/mcp")
+    parser.add_argument("--application", choices=("photoshop", "illustrator", "xd"), default="photoshop")
     parser.add_argument("--output", default="adobe_region_metadata.json")
     args = parser.parse_args()
-    result = asyncio.run(capture(args.url))
+    result = asyncio.run(capture(args.url, args.application))
     out = Path(args.output)
     out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"REGION_METADATA=PASS layers={len(result['layers'])} path={out}")
