@@ -12,6 +12,7 @@ on:
       - src/mcp_adobe/xd_scenegraph_targeting.py
       - tests/test_xd_scenegraph_targeting.py
       - adobe-xd-plugin/main.js
+      - tests/xd_scenegraph_uxp_contract.cjs
       - .github/workflows/canvas-region-targeting.yml
   workflow_dispatch:
 permissions:
@@ -49,6 +50,7 @@ jobs:
           PY
           node --check /tmp/region-annotation.js
           node --check adobe-xd-plugin/main.js
+          node tests/xd_scenegraph_uxp_contract.cjs
 
   live-metadata-read:
     if: github.event_name == 'workflow_dispatch'
