@@ -1,0 +1,53 @@
+name: Illustrator CEP response blocker assessment
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-cep-response-blocker.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Inspect Illustrator UI and CEP processes without changes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class WinCheck{
+            [DllImport("user32.dll")] public static extern bool IsHungAppWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+          }
+          '@
+          $procs=@(Get-Process Illustrator,CEPHtmlEngine -ErrorAction SilentlyContinue)
+          foreach($p in $procs){
+            $hung=if($p.MainWindowHandle -ne 0){[WinCheck]::IsHungAppWindow($p.MainWindowHandle)}else{$null}
+            Write-Output "APP_PROCESS name=$($p.ProcessName) pid=$($p.Id) responding=$($p.Responding) hung=$hung title=$($p.MainWindowTitle)"
+          }
+          foreach($l in @(Get-NetTCPConnection -LocalPort 8081 -State Established -ErrorAction SilentlyContinue)){
+            Write-Output "CEP_TCP pid=$($l.OwningProcess) peer=$($l.RemoteAddress):$($l.RemotePort)"
+          }
+          $root=Join-Path $env:APPDATA 'Adobe\CEP\logs'
+          Write-Output "CEP_LOG_DIR_EXISTS=$(Test-Path $root)"
+          if(Test-Path $root){
+            Get-ChildItem $root -File -Recurse -ErrorAction SilentlyContinue|Sort-Object LastWriteTime -Descending|Select-Object -First 8|
+              ForEach-Object {
+                Write-Output "CEP_LOG_META file=$($_.Name) bytes=$($_.Length) write=$($_.LastWriteTime.ToString('o'))"
+                if($_.Length -lt 2000000){
+                  Get-Content $_.FullName -Tail 25 -ErrorAction SilentlyContinue |
+                    Where-Object {$_ -match 'evalScript|error|exception|timeout|websocket|callback'}|
+                    ForEach-Object {$s=($_ -replace '(?i)(Bearer\s+)\S+','$1[REDACTED]');Write-Output "CEP_LOG_LINE $($s.Substring(0,[Math]::Min($s.Length,420)))"}
+                }
+              }
+          }
+          $trace=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\callback_trace.log'
+          if(Test-Path $trace){
+            Write-Output "TRACE_LAST_WRITE=$((Get-Item $trace).LastWriteTime.ToString('o'))"
+            Get-Content $trace -Tail 16|ForEach-Object {Write-Output "TRACE_LINE $_"}
+          }
