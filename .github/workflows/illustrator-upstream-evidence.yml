@@ -1,0 +1,38 @@
+name: Illustrator upstream failure evidence
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/illustrator-upstream-evidence.yml"
+permissions:
+  contents: read
+jobs:
+  evidence:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Inspect gateway error traces and upstream command lines, no writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          $log=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\logs\local-host.log'
+          Write-Host "EVIDENCE_LOG_EXISTS=$(Test-Path -LiteralPath $log)"
+          if(Test-Path -LiteralPath $log){
+            $file=Get-Item -LiteralPath $log
+            Write-Host "EVIDENCE_LOG_BYTES=$($file.Length) LAST_WRITE=$($file.LastWriteTime.ToString('o'))"
+            $lines=@(Get-Content -LiteralPath $log -Tail 150 -ErrorAction SilentlyContinue)
+            Write-Host "EVIDENCE_TAIL_LINES=$($lines.Count)"
+            foreach($line in ($lines | Select-Object -Last 65)){
+              $safe=$line -replace '(?i)(token|password|secret|authorization|api[_-]?key)\s*[:=]\s*[^\s,}]+','$1=[REDACTED]'
+              $safe=$safe -replace 'https?://\S+','[URL_REDACTED]'
+              if($safe.Length -gt 450){$safe=$safe.Substring(0,450)}
+              Write-Host "GATEWAY_LINE $safe"
+            }
+          }
+          Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^(node|python|illustrator|powershell)(\.exe)?$' -and $_.CommandLine -match 'illustrator-mcp|mcp-adobe|local-host|Illustrator.exe|host-wrapper' } | ForEach-Object {
+            $cmd=[string]$_.CommandLine
+            $cmd=$cmd -replace '(?i)(token|password|secret|authorization|api[_-]?key)\s*[:=]\s*[^\s,}]+','$1=[REDACTED]'
+            if($cmd.Length -gt 280){$cmd=$cmd.Substring(0,280)}
+            Write-Host "UPSTREAM_PROCESS pid=$($_.ProcessId) session=$($_.SessionId) name=$($_.Name) cmd=$cmd"
+          }
+          Write-Host 'READONLY_EVIDENCE_CAPTURE=PASS'
