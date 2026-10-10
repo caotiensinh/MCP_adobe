@@ -1,4 +1,4 @@
-name: Illustrator CEP delayed readiness and extension manifest
+name: Illustrator clean-preferences delayed boot acceptance
 on:
   push:
     branches: [feat/canvas-region-targeting]
