@@ -55,7 +55,11 @@ jobs:
           }
           Write-Output ("ILLUSTRATOR_EXECUTABLE_DISCOVERY={0}" -f $exe)
           Write-Output 'ILLUSTRATOR_START_REQUESTED=1'
-          Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe)
+          $tracking=$env:RUNNER_TRACKING_ID
+          try {
+            $env:RUNNER_TRACKING_ID=''
+            Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe)
+          } finally { $env:RUNNER_TRACKING_ID=$tracking }
           Start-Sleep -Seconds 12
           $started=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
           if($started.Count -eq 0){throw 'Illustrator did not start in interactive session'}
