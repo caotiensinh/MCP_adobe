@@ -94,9 +94,17 @@ jobs:
           $env:Path=([Environment]::GetEnvironmentVariable('Path','Machine')+';'+[Environment]::GetEnvironmentVariable('Path','User')+';'+$env:Path)
           uv sync --python 3.12
           if($LASTEXITCODE -ne 0){throw 'uv sync failed'}
+          Write-Host "RUNNER_NAME=$env:RUNNER_NAME HOSTNAME=$env:COMPUTERNAME"
           Write-Host "RUNNER_SESSION_USER=$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
           Write-Host "RUNNER_SESSION_INTERACTIVE=$([Environment]::UserInteractive)"
           Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*Photoshop*' -or $_.Name -like '*Illustrator*' -or $_.Name -eq 'XD.exe' } | ForEach-Object { Write-Host "ADOBE_PROCESS name=$($_.Name) session=$($_.SessionId) pid=$($_.ProcessId)" }
           Get-NetTCPConnection -LocalPort 8787,8765 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "ADOBE_PORT port=$($_.LocalPort) ownerPid=$($_.OwningProcess)" }
           uv run python scripts/probe_adobe_desktop_health.py
+          Write-Host 'LIVE_REGION_PROBE_BEGIN'
+          uv run python scripts/export_region_metadata.py --application illustrator --output "$env:RUNNER_TEMP\ai-region-metadata.json"
+          Write-Host "AI_METADATA_EXIT=$LASTEXITCODE"
+          uv run python scripts/export_region_metadata.py --application xd --output "$env:RUNNER_TEMP\xd-region-metadata.json"
+          Write-Host "XD_METADATA_EXIT=$LASTEXITCODE"
+          uv run python scripts/capture_bound_region_pair.py --output-prefix "$env:RUNNER_TEMP\ps-region-pair"
+          Write-Host "PS_PREVIEW_PAIR_EXIT=$LASTEXITCODE"
           if($LASTEXITCODE -ne 0){throw 'desktop probe failed'}
