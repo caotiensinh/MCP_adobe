@@ -36,7 +36,7 @@ class CanvasUiTests(unittest.TestCase):
         cls.view.feed(cls.html)
 
     def test_controls_present(self):
-        self.assertTrue({"preview-file", "preview", "canvas", "selection",
+        self.assertTrue({"preview-file", "metadata-file", "preview", "canvas", "selection",
                          "meta", "detect", "candidate-list", "request",
                          "build", "payload", "copy", "clear"} <= self.view.ids)
 
