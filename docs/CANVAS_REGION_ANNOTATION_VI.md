@@ -37,3 +37,11 @@ E. Windows self-hosted live acceptance: khoanh đúng một target; hai target c
 - Ví dụ metadata thử nghiệm: `{"application":"photoshop","document_identity":"doc-demo-1","width":900,"height":600,"layers":[{"id":123,"name":"Tiêu đề","bounds":{"left":80,"top":70,"right":550,"bottom":160},"visible":true}]}`.
 - Test: [run 38024359335](https://github.com/caotiensinh/MCP_adobe/actions/runs/38024359335) PASS 10/10 và JavaScript `node --check` PASS. Đây là unit/static verification, **không phải Windows Photoshop live E2E**.
 - Cần triển khai tiếp bridge tự điền metadata và preview từ Adobe, layer-ID resolution đảm bảo revision match, lớp phủ bên trong Adobe hoặc companion overlay xác định zoom/pan, rồi execution có confirm và read-back.
+
+
+## 2026-10-10: Tự xuất metadata từ Photoshop
+- Có thêm script read-only `scripts/export_region_metadata.py`. Trên máy Adobe, có thể chạy `uv run python scripts/export_region_metadata.py --output adobe_region_metadata.json`. Script dùng **MCP creative_read hiện có**, không cấu hình lại server.
+- Nhập `adobe_region_metadata.json` trong giao diện `ui/region_annotation.html` bằng nút nhập metadata; không cần gõ JSON thủ công.
+- Bảo vệ: nếu Adobe không trả `document.id`, kích thước hoặc layer ID/bounds, script **fail closed**; tuyệt đối không tự tính đoán layer.
+- CI [run 38024541072](https://github.com/caotiensinh/MCP_adobe/actions/runs/38024541072) 14/14 unit/static tests PASS. Live Windows read-only probe [run 38024572699](https://github.com/caotiensinh/MCP_adobe/actions/runs/38024572699) chạy độc lập.
+- Phần nhập preview ảnh vẫn cần thủ công; chưa thực hiện phát hiện layer bằng AI vision hay cập nhật Photoshop tự động; việc hoàn tất E2E chỉ đánh dấu khi có bằng chứng trên thiết bị thật.
