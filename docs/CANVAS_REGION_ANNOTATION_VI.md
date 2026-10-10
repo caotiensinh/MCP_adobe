@@ -72,3 +72,12 @@ Added pure read-only `src/mcp_adobe/xd_scenegraph_targeting.py` to normalize a *
 **Critical live gap:** The current XD MCP adapter exposes `creative.selection.get`, not a complete scenegraph capability. Therefore this commit **does not** make live Adobe XD support selection-free targeting. The XD UXP bridge must first produce `{document_id,complete:true,nodes:[...]}` via a safe read-only operation, with stable IDs and global document coordinates. Until then, XD remains selection-only / fail-closed. No new MCP transport, auth, or write capability has been added.
 
 Unit and JS syntax tests: [run 38025448611](https://github.com/caotiensinh/MCP_adobe/actions/runs/38025448611), 28/28 PASS; Windows live probe intentionally skipped. No three-app live acceptance claimed.
+
+
+## 2026-10-10 — XD UXP bridge scenegraph implementation (read-only)
+- Implemented `xd.scenegraph.snapshot` in actual `adobe-xd-plugin/main.js`: traverses scenegraph root children and nested nodes, stable guid, globalBounds, visibility/lock flags, and a bounded node count. This method never calls editDocument or changes selection.
+- Added read-only `creative.scenegraph.list` capability in `src/mcp_adobe/xd.py`, keeping existing five top-level MCP tools and WebSocket/authorization untouched.
+- `scripts/export_region_metadata.py --application xd` now calls `creative.scenegraph.list` rather than relying on `creative.selection.get`.
+- [Run 38027209235](https://github.com/caotiensinh/MCP_adobe/actions/runs/38027209235): Python unit tests **29/29 PASS** and a Node VM contract test invoking real UXP dispatch with a mocked scenegraph **PASS**. JS syntax PASS.
+- Limitations: actual XD plugin installation/interactive desktop live read not yet tested; current XD document.info snapshot may not expose stable document dimensions, so metadata export can still correctly fail closed. Need define an artboard/preview coordinate frame with origin, document identity and synchronized preview before real region editing.
+- No claim of Photoshop, Illustrator, or XD live region-edit E2E; PR must stay separate from main until acceptance.
