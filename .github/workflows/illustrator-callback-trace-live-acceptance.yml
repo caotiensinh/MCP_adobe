@@ -75,9 +75,11 @@ jobs:
                   b=d.get("blocking") or {}
                   panel=d.get("layers",{}).get("panel") or {}
                   print("BEFORE_PROBE="+json.dumps({"blockedAt":d.get("blockedAt"),"priorCompletionObserved":b.get("priorCompletionObserved"),"panelBusy":panel.get("busy"),"activeRequest":panel.get("activeRequestId"),"unresolved":d.get("execution",{}).get("unresolvedJobs")}),flush=True)
-                  if (d.get("blockedAt") == "probe_fence" and b.get("priorCompletionObserved") is True
-                      and panel.get("busy") is False and panel.get("activeRequestId") is None
-                      and not d.get("execution",{}).get("unresolvedJobs")):
+                  safe_idle=(panel.get("busy") is False and panel.get("activeRequestId") is None
+                             and not d.get("execution",{}).get("unresolvedJobs"))
+                  safe_fence=(d.get("blockedAt")=="probe_fence" and b.get("priorCompletionObserved") is True)
+                  safe_unblocked=(d.get("blockedAt") in (None,"document") and not b)
+                  if safe_idle and (safe_fence or safe_unblocked):
                       r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":True,"timeout":5}})
                       print("READ_ONLY_PROBE_RESULT="+json.dumps({"error":r.is_error,"structured":r.structured_content},default=str)[:2800],flush=True)
                   else:
