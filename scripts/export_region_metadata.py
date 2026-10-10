@@ -82,7 +82,8 @@ def normalize_snapshot(state: Mapping[str, Any], layers_payload: Any) -> dict[st
 
 def payload(result: Any) -> Any:
     if result.is_error:
-        raise RuntimeError("Adobe MCP read failed")
+        kinds = [type(block).__name__ for block in (result.content or [])]
+        raise RuntimeError(f"Adobe MCP read rejected; content_block_types={kinds}")
     value = result.structured_content
     if value is None:
         value = [{"text": block.text} for block in result.content if hasattr(block, "text")]
@@ -97,9 +98,15 @@ async def capture(url: str) -> dict[str, Any]:
         if "creative_read" not in listed:
             raise RuntimeError("MCP creative_read unavailable")
         async def read(capability: str) -> Any:
-            return payload(await client.call_tool("creative_read", {
+            result = await client.call_tool("creative_read", {
                 "application": "photoshop", "capability": capability, "arguments": {},
-            }))
+            })
+            try:
+                return payload(result)
+            except RuntimeError as exc:
+                raise RuntimeError(f"Photoshop capability={capability} failed: {exc}") from None
+        health = await read("creative.health")
+        print("REGION_METADATA_HEALTH=PASS gateway read returned", flush=True)
         state = await read("creative.context.get")
         layers = await read("creative.layer.list")
         return normalize_snapshot(state, layers)
