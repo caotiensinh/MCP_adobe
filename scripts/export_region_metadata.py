@@ -120,7 +120,16 @@ def normalize_xd_canvas_snapshot(scenegraph: Any, frame: Any) -> dict[str, Any]:
 def payload(result: Any) -> Any:
     if result.is_error:
         kinds = [type(block).__name__ for block in (result.content or [])]
-        raise RuntimeError(f"Adobe MCP read rejected; content_block_types={kinds}")
+        # Surface only a bounded upstream error hint; never print full payloads or secrets.
+        import re
+        hints = []
+        for block in result.content or []:
+            message = getattr(block, "text", "")
+            if isinstance(message, str):
+                message = re.sub(r"(?i)(token|password|secret|authorization|api[_-]?key)\\s*[:=]\\s*[^\\s,}]+", r"\\1=[REDACTED]", message)
+                message = re.sub(r"https?://\\S+", "[URL_REDACTED]", message)
+                hints.append(message[:350].replace("\\n", " "))
+        raise RuntimeError(f"Adobe MCP read rejected; content_block_types={kinds}; hints={hints[:2]}")
     value = result.structured_content
     if value is None:
         value = [{"text": block.text} for block in result.content if hasattr(block, "text")]
