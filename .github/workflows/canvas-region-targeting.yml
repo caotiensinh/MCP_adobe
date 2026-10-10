@@ -132,6 +132,12 @@ jobs:
           $env:Path=([Environment]::GetEnvironmentVariable('Path','Machine')+';'+[Environment]::GetEnvironmentVariable('Path','User')+';'+$env:Path)
           uv sync --python 3.12
           if($LASTEXITCODE -ne 0){throw 'Mode1 dependency setup failed'}
+          $nodecmd=Get-Command npx -ErrorAction SilentlyContinue
+          if(-not $nodecmd){throw 'MODE1_NODE_PATH_MISSING: npx not found; do not refresh persistent host'}
+          Write-Host "MODE1_NPX=PASS path=$($nodecmd.Source)"
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_local_host.ps1 -SkipStartupRegistration
+          if($LASTEXITCODE -ne 0){throw 'MODE1_PERSISTENT_HOST_REFRESH=FAIL'}
+          Write-Host 'MODE1_PERSISTENT_HOST_REFRESH=PASS'
           uv run python scripts/verify_mode1_existing_preflight.py --preflight
           if($LASTEXITCODE -ne 0){throw 'MODE1_LIVE_PREFLIGHT=FAIL; no canvas mutation attempted'}
           Write-Host 'MODE1_LIVE_PREFLIGHT=PASS; live drawing acceptance remains independently unverified'
