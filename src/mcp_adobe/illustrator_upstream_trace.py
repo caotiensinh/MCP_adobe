@@ -22,8 +22,8 @@ def install_trace(bridge_class: type) -> None:
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         log.addHandler(handler)
     log.setLevel(logging.WARNING)
-    original_handle = bridge_class._handle_message
-    if not getattr(original_handle, "_mcp_adobe_trace", False):
+    original_handle = getattr(bridge_class, '_handle_message', None)
+    if original_handle is not None and not getattr(original_handle, "_mcp_adobe_trace", False):
         async def traced_handle(self: Any, message: str) -> Any:
             kind = None
             request_id = None
