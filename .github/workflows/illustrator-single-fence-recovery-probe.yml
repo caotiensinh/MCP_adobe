@@ -1,0 +1,49 @@
+name: Illustrator one-shot fenced readback recovery
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-single-fence-recovery-probe.yml"]
+permissions:
+  contents: read
+jobs:
+  readback:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe fence only after settled idle and previous completion confirmed
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def read(c,cap,args):
+              r=await c.call_tool("creative_read",{"application":"illustrator","capability":cap,"arguments":args})
+              if r.is_error or not isinstance(r.structured_content,dict):
+                  raise RuntimeError("read "+cap+" failed: "+str(r.content)[:400])
+              return r.structured_content
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  h=await read(c,"creative.health",{"probe":False,"timeout":5})
+                  s=h["result"]["connection"]["data"]
+                  print("PRE_FENCE="+json.dumps({"blockedAt":s.get("blockedAt"),"blocking":s.get("blocking"),"panel":s.get("layers",{}).get("panel"),"execution":s.get("execution")},default=str)[:4000],flush=True)
+                  b=s.get("blocking") or {}
+                  panel=s.get("layers",{}).get("panel") or {}
+                  if s.get("blockedAt")!="probe_fence" or b.get("priorCompletionObserved") is not True or panel.get("busy") is not False or panel.get("activeRequestId") is not None or s.get("execution",{}).get("unresolvedJobs"):
+                      raise RuntimeError("Cannot authorize bounded trusted probe")
+                  r=await read(c,"creative.health",{"probe":True,"timeout":7})
+                  d=r["result"]["connection"]["data"]
+                  print("POST_FENCE="+json.dumps({"ready":d.get("ready"),"blockedAt":d.get("blockedAt"),"blocking":d.get("blocking"),"panel":d.get("layers",{}).get("panel")},default=str)[:4000],flush=True)
+                  if d.get("blockedAt") is not None or d.get("ready") is not True:
+                      raise RuntimeError("FENCE_NOT_RECOVERED; no document call or mutation")
+                  doc=await read(c,"creative.document.info",{})
+                  dd=doc["result"]["data"]
+                  print("READBACK_NAME="+str(dd.get("document",{}).get("name")),flush=True)
+                  print("READBACK_COUNT="+str(sum(int(l.get("itemCount",0)) for l in dd.get("layers",[]))),flush=True)
+                  print("FENCE_RECOVERY_READBACK=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath fenced_one_shot.py -Encoding UTF8
+          uv run python fenced_one_shot.py
