@@ -141,3 +141,11 @@ Ngày: 2026-10-10 (JST). Repo: caotiensinh/MCP_adobe; nhánh feat/canvas-region-
 - Windows workflow 38059969258: RESTRICTED_PROBE_DEPLOY_FILE=PASS, CEP_RELOAD_VERIFIED=NO, TRUSTED_HOST_ACCEPTANCE=NOT_YET_PROVEN; original bundle retained as index.js.before-mcp-trusted-probe.bak.
 - Windows preflight 38060192173 proved RUNNER_HOST=MRCAO and RUNNER_NAME=windows, CEP_PROCESS_COUNT=0 and no Illustrator.exe processes returned. This currently prevents activating new CEP JS and testing actual trusted probe or safe probe_fence release.
 - Acceptance: trusted probe FAIL/UNPROVEN; probe_fence release FAIL/UNPROVEN. No host writes and no unsafe fence reset. Open Illustrator 2023 and MCP CEP panel on MRCAO before continuing runtime acceptance.
+
+## 2026-10-11 00:05 JST — MRCAO host persistence root cause and solution
+- Run 38061893989 launched Illustrator PID 16680 from within GitHub Actions session 1, but run 38061964385 (separate job) found AI_COUNT=0 and CEP_COUNT=0. The initial process did not survive job cleanup.
+- Commit 968b8a84876f423e2c8c79adb3888138934bf6e8 added narrowly scoped Windows Task Scheduler interactive launch, independent of GitHub runner child processes.
+- Run 38062034126: INTERACTIVE_PRECHECK host MRCAO user MRCAO\\ducnghia session 1, PERSISTENT_TASK_CREATED=PASS, ILLUSTRATOR_AFTER_TASK=1.
+- Run 38062087275 from separate job: INDEPENDENT_ILLUSTRATOR_COUNT=1, PID 7072 responding=True; confirms persistence beyond previous workflow. INDEPENDENT_CEP_COUNT=0 and socket=0.
+- Run 38062135491 after another 25-second delay: DELAYED_ILLUSTRATOR=1 CEP=0, PID 7072 title empty, installed manifest confirms MCP Control extension and bootstrap but no CEP socket. The Illustrator desktop process is stable; CEP panel is not loaded or host initialization not finished.
+- Acceptance: persistent Illustrator process PASS; trusted probe real host response FAIL/UNTESTED; safe probe_fence release FAIL/UNTESTED. Do not report trusted probe PASS. Next isolate why Illustrator main window title remains empty / CEP panel cannot open, then probe only after live connection.
