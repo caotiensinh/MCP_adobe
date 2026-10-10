@@ -45,6 +45,21 @@ def install_trace(bridge_class: type) -> None:
                 log.warning("CEP_CALLBACK_PARSE_ERROR class=%s", type(exc).__name__)
             try:
                 result = await original_handle(self, message)
+                # Correlate a late completion after the original handler safely
+                # discarded/ACKed it. Never unlock here: only establish the
+                # observed predecessor completion required by a later trusted probe.
+                if kind == "complete" and isinstance(envelope, dict):
+                    from illustrator_mcp.execution import get_coordinator
+                    coordinator = get_coordinator()
+                    fence = coordinator.probe_fence
+                    if (isinstance(fence, dict)
+                            and fence.get("requestId") == request_id
+                            and fence.get("requestToken") == envelope.get("requestToken")
+                            and isinstance(envelope.get("requestToken"), str)
+                            and envelope.get("requestToken")):
+                        fence["priorCompletionObserved"] = True
+                        log.warning("CEP_LATE_FENCE_COMPLETION requestId=%s generation=%s",
+                                    str(request_id)[:48], fence.get("connectionGeneration"))
                 if kind is not None and kind != "heartbeat":
                     log.warning("CEP_CALLBACK_HANDLED kind=%s requestId=%s panelBusy=%s activeRequest=%s",
                                 str(kind)[:36], str(request_id)[:48],
