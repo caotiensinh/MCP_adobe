@@ -24,8 +24,29 @@ jobs:
             Write-Output ("ILLUSTRATOR_ALREADY_RUNNING={0}" -f $existing.Count)
             exit 0
           }
-          $exe='C:\Program Files\Adobe\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
-          if(-not (Test-Path -LiteralPath $exe)){throw "Illustrator executable missing from known installation path"}
+          $candidates=@()
+          foreach($base in @($env:ProgramFiles,${env:ProgramFiles(x86)})) {
+            if(-not $base){continue}
+            $adobe=Join-Path $base 'Adobe'
+            if(-not (Test-Path -LiteralPath $adobe)){continue}
+            $dirs=@(Get-ChildItem -LiteralPath $adobe -Directory -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'Illustrator'})
+            foreach($dir in $dirs) {
+              $candidate=Join-Path $dir.FullName 'Support Files\Contents\Windows\Illustrator.exe'
+              if(Test-Path -LiteralPath $candidate){$candidates+=Get-Item -LiteralPath $candidate}
+            }
+          }
+          foreach($key in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\Illustrator.exe','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\Illustrator.exe')){
+            if(Test-Path $key){
+              $value=(Get-Item -LiteralPath $key).GetValue('')
+              if($value -and (Test-Path -LiteralPath $value)){$candidates+=Get-Item -LiteralPath $value}
+            }
+          }
+          $exe=($candidates | Sort-Object FullName -Unique | Select-Object -First 1 -ExpandProperty FullName)
+          if(-not $exe){
+            Write-Output 'ILLUSTRATOR_EXECUTABLE_DISCOVERY=NOT_FOUND'
+            throw 'No Illustrator.exe was found in Adobe installation directories or App Paths registry'
+          }
+          Write-Output ("ILLUSTRATOR_EXECUTABLE_DISCOVERY={0}" -f $exe)
           Write-Output 'ILLUSTRATOR_START_REQUESTED=1'
           Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe)
           Start-Sleep -Seconds 12
