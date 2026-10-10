@@ -2,7 +2,7 @@
 <html lang="vi">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MCP Adobe · Khoanh vùng chỉnh sửa</title>
+<title>MCP Adobe · Khoanh vùng chỉnh sửa · PS / AI / XD</title>
 <style>
 :root{font-family:system-ui,sans-serif;color:#e8edf5;background:#101620}*{box-sizing:border-box}
 body{margin:0;padding:20px}.layout{display:grid;grid-template-columns:minmax(300px,1fr) 330px;gap:18px;max-width:1300px;margin:auto}
@@ -19,7 +19,7 @@ small{color:#a7b5c7}.row{display:flex;gap:8px;align-items:center}@media(max-widt
 </style></head>
 <body>
 <main class="layout">
-<section><h1>Khoanh vùng chi tiết cần chỉnh sửa</h1><p>Chọn preview của tài liệu Adobe và kéo chuột để khoanh. Không tự thực hiện thao tác ghi; bạn duyệt đối tượng trước khi đưa yêu cầu cho AI.</p>
+<section><h1>Khoanh vùng chỉnh sửa · Photoshop / Illustrator / XD</h1><p>Chọn preview của tài liệu Adobe và kéo chuột để khoanh. Không tự thực hiện thao tác ghi; bạn duyệt đối tượng trước khi đưa yêu cầu cho AI.</p>
 <label for="preview-file">Ảnh preview từ Adobe (chỉ hiển thị cục bộ)</label><input type="file" id="preview-file" accept="image/png,image/jpeg,image/webp">
 <p class="help">Kích thước preview phải tương ứng với toàn bộ document không xoay, không cắt. Layer bounds lấy từ Adobe.</p>
 <div id="canvas"><img id="preview" alt="Xem trước document" draggable="false"><div id="selection"></div></div>
@@ -28,7 +28,7 @@ small{color:#a7b5c7}.row{display:flex;gap:8px;align-items:center}@media(max-widt
 <section>
 <h2>Nhận diện và chỉnh sửa có kiểm soát</h2>
 <label for="metadata-file">Nạp metadata JSON đã xuất trực tiếp từ Adobe</label><input id="metadata-file" type="file" accept=".json,application/json">
-<label for="meta">Metadata JSON từ Adobe (document_identity, width, height, layers)</label>
+<label for="meta">Metadata JSON từ PS / AI / XD (document_identity, width, height, layers)</label>
 <textarea id="meta" rows="10" spellcheck="false" placeholder='{"document_identity":"doc-123","width":900,"height":600,"layers":[{"id":1,"name":"Heading","bounds":{"left":100,"top":80,"right":500,"bottom":160}}]}'></textarea>
 <button id="detect">Xác định layer trong vùng khoanh</button>
 <div id="candidate-list" aria-live="polite"></div>
@@ -43,7 +43,7 @@ small{color:#a7b5c7}.row{display:flex;gap:8px;align-items:center}@media(max-widt
 'use strict';
 const $=id=>document.getElementById(id);
 let drag=null,selection=null,choice=null,meta=null,candidates=[];
-$('metadata-file').addEventListener('change',async()=>{const file=$('metadata-file').files?.[0];if(!file)return;try{const obj=JSON.parse(await file.text());if(!obj.document_identity||!(obj.width>0&&obj.height>0)||!Array.isArray(obj.layers))throw Error('Metadata không hợp lệ.');$('meta').value=JSON.stringify(obj,null,2);reset();$('status').textContent='Đã nạp metadata từ '+file.name+'. Khoanh vùng và xác định layer.';}catch(err){$('status').textContent='Lỗi metadata: '+err.message;}});
+$('metadata-file').addEventListener('change',async()=>{const file=$('metadata-file').files?.[0];if(!file)return;try{const obj=JSON.parse(await file.text());if(!["photoshop","illustrator","xd"].includes(obj.application)||!obj.document_identity||!(obj.width>0&&obj.height>0)||!Array.isArray(obj.layers))throw Error('Metadata không hợp lệ.');$('meta').value=JSON.stringify(obj,null,2);reset();$('status').textContent='Đã nạp metadata từ '+file.name+'. Khoanh vùng và xác định layer.';}catch(err){$('status').textContent='Lỗi metadata: '+err.message;}});
 $('preview-file').addEventListener('change',()=>{
  const file=$('preview-file').files?.[0];if(!file)return;
  const url=URL.createObjectURL(file);const img=$('preview');
@@ -62,7 +62,7 @@ function boundsRegion(){if(!selection)throw Error('Hãy khoanh một vùng trên
 function overlap(a,b){return Math.max(0,Math.min(a.right,b.right)-Math.max(a.left,b.left))*Math.max(0,Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top));}
 $('detect').addEventListener('click',()=>{
  try{
-  meta=JSON.parse($('meta').value);if(!meta.document_identity||!(meta.width>0&&meta.height>0)||!Array.isArray(meta.layers))throw Error('Metadata thiếu document_identity, width/height hoặc layers.');
+  meta=JSON.parse($('meta').value);if(!["photoshop","illustrator","xd"].includes(meta.application)||!meta.document_identity||!(meta.width>0&&meta.height>0)||!Array.isArray(meta.layers))throw Error('Metadata thiếu document_identity, width/height hoặc layers.');
   const r=boundsRegion();choice=null;$('build').disabled=true;$('candidate-list').replaceChildren();
   const area=(r.right-r.left)*(r.bottom-r.top);if(area<=0)throw Error('Vùng khoanh không hợp lệ.');
   candidates=meta.layers.filter(l=>l&&l.visible!==false&&l.locked!==true&&l.background!==true&&l.bounds).map(l=>({...l,coverage:overlap(r,l.bounds)/area})).filter(l=>l.coverage>=.1).sort((a,b)=>b.coverage-a.coverage);
@@ -73,7 +73,7 @@ $('detect').addEventListener('click',()=>{
 });
 $('build').addEventListener('click',()=>{
  if(!choice||!meta||!selection)return;const request=$('request').value.trim();if(!request){$('status').textContent='Nhập yêu cầu ngắn cần sửa.';return;}
- const result={schema:'mcp-adobe-region-request/v1',intent:'review_then_edit',application:meta.application||'photoshop',document_identity:meta.document_identity,document_dimensions:{width:meta.width,height:meta.height},selected_region:boundsRegion(),selected_layer:{id:choice.id,name:choice.name,bounds:choice.bounds},user_instruction:request,requires_live_document_identity_check:true,requires_live_layer_readback:true,execute_automatically:false};
+ const result={schema:'mcp-adobe-region-request/v1',intent:'review_then_edit',application:meta.application,document_identity:meta.document_identity,document_dimensions:{width:meta.width,height:meta.height},selected_region:boundsRegion(),selected_layer:{id:choice.id,name:choice.name,bounds:choice.bounds},user_instruction:request,requires_live_document_identity_check:true,requires_live_layer_readback:true,execute_automatically:false};
  $('payload').textContent=JSON.stringify(result,null,2);$('copy').disabled=false;$('status').textContent='JSON đã tạo; agent phải kiểm tra lại document/layer trước khi sửa.';
 });
 $('copy').addEventListener('click',()=>navigator.clipboard.writeText($('payload').textContent).then(()=>$('status').textContent='Đã sao chép JSON.').catch(()=>$('status').textContent='Không thể sao chép; chọn và copy JSON thủ công.'));
