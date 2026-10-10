@@ -128,3 +128,10 @@ Ngày: 2026-10-10 (JST). Repo: caotiensinh/MCP_adobe; nhánh feat/canvas-region-
 - Win32 visible-window assessment https://github.com/caotiensinh/MCP_adobe/actions/runs/38058909690 shows Illustrator GUI PID **7244** (changed from earlier 7752), Responding=True, normal `illustrator` class title `Adobe Illustrator 2023` and no visible separate titled modal dialog in same PID. This is not proof absence of hidden modal or successful ExtendScript evaluation.
 - The process identity/session has changed. Do not assume prior `MCPAdobe LIVE Two-Story Red Tile House*` document or outstanding fences survived; inspect fresh passive `creative.health(probe=False)` before any new call. Avoid replaying artwork.
 - Current acceptance: 30s race **FAIL**, trusted probe **FAIL**, probe_fence release **FAIL**. Host callback correlation previously PASS but `Error: Illustrator evalScript timeout` still reproduced even with 45s Python-level timeout.
+
+
+## 2026-10-10 23:18 JST — passive live fence read after GUI PID change
+- Workflow https://github.com/caotiensinh/MCP_adobe/actions/runs/38058981035 completed successfully as a **passive observation**, not host recovery.
+- `creative.health(probe=false)` returned structured data, `ready=false`, `blockedAt=probe_fence`, blocking trusted probe `job_2dde26fa6ff9`, `requestId=1`, `connectionGeneration=0`, `priorCompletionObserved=true`; `panel.busy=false`, `activeRequestId=null`, heartbeat healthy. Document status `unknown`, no last-known document name.
+- Confirms state after GUI PID transition is STILL FENCED. Do not dispatch ordinary host calls or assert Illustrator readback PASS. The 3 requested acceptance criteria remain **FAIL**: verified 30s timeout resolution, valid trusted host probe, and safe probe_fence release. No artwork writes attempted.
+- Narrow subsequent work to the actual `CSInterface.evalScript` completion/host execution path. The installed CEP bundle contains no literal 30s watchdog; native CEP/ExtendScript host behavior is still unproven. A fresh safe probe should only be attempted after establishing an actionable host-side change, not as another blind timeout rerun.
