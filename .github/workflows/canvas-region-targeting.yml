@@ -105,6 +105,6 @@ jobs:
           Write-Host "AI_METADATA_EXIT=$LASTEXITCODE"
           uv run python scripts/export_region_metadata.py --application xd --output "$env:RUNNER_TEMP\xd-region-metadata.json"
           Write-Host "XD_METADATA_EXIT=$LASTEXITCODE"
-          uv run python scripts/capture_bound_region_pair.py --output-prefix "$env:RUNNER_TEMP\ps-region-pair"
+          uv run python -m scripts.capture_bound_region_pair --output-prefix "$env:RUNNER_TEMP\ps-region-pair"
           Write-Host "PS_PREVIEW_PAIR_EXIT=$LASTEXITCODE"
           if($LASTEXITCODE -ne 0){throw 'desktop probe failed'}
