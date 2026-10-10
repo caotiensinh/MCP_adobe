@@ -1,0 +1,40 @@
+name: Illustrator bounded recovery assessment
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-bounded-recovery-assessment.yml"]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect Illustrator panel readiness without starting any new host probe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv failed'}
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":False,"timeout":5}})
+                  p=r.structured_content
+                  print("HEALTH_ERROR="+str(r.is_error),flush=True)
+                  if not isinstance(p,dict):
+                      print("HEALTH_CONTENT="+str(r.content)[:500],flush=True)
+                      raise RuntimeError("health unavailable")
+                  d=p.get("result",{}).get("connection",{}).get("data",{})
+                  print("RECOVERY_ASSESS="+json.dumps({"blockedAt":d.get("blockedAt"),"execution":d.get("execution"),"blocking":d.get("blocking"),"panel":d.get("layers",{}).get("panel")},default=str),flush=True)
+                  if d.get("blockedAt") is not None or d.get("blocking") is not None or d.get("execution",{}).get("unresolvedJobs"):
+                      print("RECOVERY_AUTHORIZED=NO",flush=True)
+                      return
+                  print("RECOVERY_AUTHORIZED=READ_ONLY_PROBE_ONLY",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -Path safe_assessment.py -Encoding UTF8
+          uv run python safe_assessment.py
