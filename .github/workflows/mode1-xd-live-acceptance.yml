@@ -199,36 +199,8 @@ jobs:
             Write-Host "XD_DOCUMENT_CONTEXT=PASS existing-test-document TITLE=$title"
           }
 
-          # Preserve currently open Adobe XD and user session; do not force-kill XD.
-          Write-Host 'XD_RESTART=SKIPPED preserve existing interactive application and document'
-
-          Add-Type -AssemblyName System.Windows.Forms
-                [void][XdWindowNative]::ShowWindow($xd.MainWindowHandle,9)
-                if(-not [XdWindowNative]::SetForegroundWindow($xd.MainWindowHandle)){
-                  throw 'failed to foreground XD for Ctrl+N fallback'
-                }
-                Start-Sleep -Milliseconds 500
-                [System.Windows.Forms.SendKeys]::SendWait('^n')
-                Write-Host 'XD_CREATE_DOCUMENT_FALLBACK=PASS shortcut=Ctrl+N'
-              }
-
-              $documentDeadline=(Get-Date).AddSeconds(15)
-              do {
-                Start-Sleep -Seconds 1
-                $xd=Get-XdProcess
-              } until(
-                ($xd -and [string]$xd.MainWindowTitle -ne 'Adobe XD') -or
-                (Get-Date) -gt $documentDeadline
-              )
-              if(-not $xd -or $xd.MainWindowTitle -eq 'Adobe XD'){
-                throw 'XD did not enter test document after safe restart'
-              }
-            }
-            if([string]$xd.MainWindowTitle -notmatch '^Untitled(?:-1)? .*Adobe XD$'){
-              throw "XD safe restart opened unexpected document: $($xd.MainWindowTitle)"
-            }
-            Write-Host "XD_SAFE_TEST_RESTART_DOCUMENT=PASS TITLE=$($xd.MainWindowTitle)"
-          }
+          # Keep XD running; never force-close the user's application.
+          Write-Host 'XD_RESTART=SKIPPED'
 
           Add-Type -AssemblyName System.Windows.Forms
           [void][XdWindowNative]::ShowWindow($xd.MainWindowHandle,9)
