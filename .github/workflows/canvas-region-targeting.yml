@@ -45,3 +45,22 @@ jobs:
           Path('/tmp/region-annotation.js').write_text('\n'.join(parser.scripts),encoding='utf-8')
           PY
           node --check /tmp/region-annotation.js
+
+  live-metadata-read:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Export real Photoshop document metadata (read-only)
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          if(-not (Get-Command uv -ErrorAction SilentlyContinue)){throw 'uv missing'}
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv sync failed'}
+          uv run python scripts/export_region_metadata.py --output "$env:RUNNER_TEMP\adobe_region_metadata.json"
+          if($LASTEXITCODE -ne 0){throw 'REGION_METADATA=FAIL upstream snapshot unavailable'}
+          Write-Host 'REGION_METADATA_LIVE=PASS read-only snapshot'
