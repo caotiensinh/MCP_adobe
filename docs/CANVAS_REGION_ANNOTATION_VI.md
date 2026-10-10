@@ -53,3 +53,13 @@ E. Windows self-hosted live acceptance: khoanh đúng một target; hai target c
 - **Không giả định bridge/Photoshop đang sẵn sàng**: các runs trước từng PASS health, nhưng health của phiên này FAIL. Cần xác nhận Photoshop UI mở, bridge đang connect, active document và đúng Windows user session; không rerun mù khi health chưa PASS.
 - Cả hai Windows probes read-only: không sửa canvas, không đổi cấu hình transport/MCP.
 - Tổng: 14/14 unit/static PASS, live Photoshop metadata vẫn BLOCKED. Agent edit E2E chưa PASS.
+
+
+## Shared workflow for three Adobe applications — 2026-10-10
+- Cả **Adobe Photoshop**, **Adobe Illustrator** và **Adobe XD** dùng chung giao diện `ui/region_annotation.html`, schema `mcp-adobe-region-request/v1`, engine vùng `src/mcp_adobe/region_targeting.py`.
+- Exporter `scripts/export_region_metadata.py --application photoshop|illustrator|xd` chỉ dùng gateway `creative_read` hiện tại và **không sửa MCP transport/auth**.
+- Photoshop: đọc `creative.context.get` + `creative.layer.list`. Illustrator: đọc `creative.context.get` + `creative.layer.list`. XD: `creative.context.get` + `creative.selection.get` (chỉ node đã chọn; XD bridge chưa có `creative.layer.list`). Mỗi app phải trả stable document ID, dimensions, target ID và bounds; thiếu thì fail closed.
+- Đối với XD, chưa hỗ trợ tự phân tích *mọi node dưới điểm khoanh*: cần mở rộng UXP bridge để đọc scenegraph/hit-test read-only rồi mới coi selection-free region detection là PASS. Thao tác apply pending của XD vẫn theo cơ chế phê duyệt hiện hữu.
+- Unity UI không đồng nghĩa ba app đã có live E2E. Photoshop runtime health từng FAIL trong [run 38024708941](https://github.com/caotiensinh/MCP_adobe/actions/runs/38024708941). Illustrator, XD metadata live chưa chứng minh.
+- Workflow push chỉ chạy unit/static tests, job Windows live metadata hiện opt-in qua manual `workflow_dispatch`, tránh lặp test khi app desktop/bridge chưa sẵn sàng.
+- [CI 38025228494](https://github.com/caotiensinh/MCP_adobe/actions/runs/38025228494): 18/18 tests PASS + JS syntax PASS; Windows live job SKIPPED intentionally.
