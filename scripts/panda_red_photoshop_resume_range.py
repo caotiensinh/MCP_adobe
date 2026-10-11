@@ -14,10 +14,16 @@ import shutil
 from pathlib import Path
 
 from mcp import Client
-from panda_red_poster_blueprint import STEPS, WIDTH, HEIGHT, validate
-from panda_red_photoshop_resume_3shapes import call, sha, state, layer_names, inspect, rgb
-from panda_red_photoshop_vector_fill import compile_path_fill
-from panda_red_photoshop_resume_5shapes import native_polygon
+if __package__:
+    from .panda_red_poster_blueprint import STEPS, WIDTH, HEIGHT, validate
+    from .panda_red_photoshop_resume_3shapes import call, sha, state, layer_names, inspect, rgb
+    from .panda_red_photoshop_vector_fill import compile_path_fill
+    from .panda_red_photoshop_resume_5shapes import native_polygon
+else:
+    from panda_red_poster_blueprint import STEPS, WIDTH, HEIGHT, validate
+    from panda_red_photoshop_resume_3shapes import call, sha, state, layer_names, inspect, rgb
+    from panda_red_photoshop_vector_fill import compile_path_fill
+    from panda_red_photoshop_resume_5shapes import native_polygon
 
 ROOT=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"
 SOURCE_NAME=os.environ["RED_PS_SOURCE_NAME"]
