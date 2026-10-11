@@ -1,7 +1,7 @@
 const application = require("application");
 const { entrypoints } = require("uxp");
 const scenegraph = require("scenegraph");
-const { Rectangle, Text, Color } = scenegraph;
+const { Rectangle, Ellipse, Text, Color } = scenegraph;
 
 const BRIDGE_URL = "ws://127.0.0.1:8765";
 const STATUS_LIMIT = 200;
@@ -201,6 +201,17 @@ function applyMutation(item, selection) {
     return nodeInfo(node);
   }
 
+  if (item.method === "xd.queue.ellipse_create") {
+    const node = new Ellipse();
+    node.width = Math.max(1, safeNumber(params.width, 100));
+    node.height = Math.max(1, safeNumber(params.height, 100));
+    node.fill = new Color(params.fill || "#FFFFFF");
+    if (params.name) node.name = String(params.name);
+    selection.insertionParent.addChild(node);
+    node.moveInParentCoordinates(safeNumber(params.x, 0), safeNumber(params.y, 0));
+    return nodeInfo(node);
+  }
+
   if (item.method === "xd.queue.text_create") {
     const node = new Text();
     node.text = params.text == null ? "Text" : String(params.text);
@@ -366,6 +377,7 @@ function dispatch(method, params) {
 
   if (
     method === "xd.queue.rectangle_create" ||
+    method === "xd.queue.ellipse_create" ||
     method === "xd.queue.text_create" ||
     method === "xd.queue.selection_resize" ||
     method === "xd.queue.selection_fill"
