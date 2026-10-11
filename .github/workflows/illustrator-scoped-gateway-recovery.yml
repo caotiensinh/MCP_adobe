@@ -1,8 +1,9 @@
 name: Illustrator scoped gateway recovery and readback
 on:
-  push:
-    branches: [feat/canvas-region-targeting]
+  pull_request:
+    branches: [main]
     paths: [".github/workflows/illustrator-scoped-gateway-recovery.yml"]
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -32,7 +33,7 @@ jobs:
                           raise RuntimeError("Preflight returned no structured "+cap)
                       return r.structured_content
                   health=await read("creative.health",{"probe":False,"timeout":5.0})
-                  status=await read("creative.job.status",{"jobId":"job_bb227cf2e04a","detail":"full"})
+                  status=await read("creative.job.status",{"jobId":"job_40275b48de5d","detail":"full"})
                   h=health.get("result",{}).get("connection",{}).get("data",{})
                   j=status.get("result",{}).get("data",{}).get("job",{})
                   pathlib.Path("illustrator_pre_recovery.json").write_text(json.dumps({"health":health,"status":status},default=str,ensure_ascii=False),encoding="utf-8")
@@ -42,11 +43,11 @@ jobs:
                   if h.get("execution",{}).get("activeJob") is not None or h.get("execution",{}).get("waiting") != 0:
                       raise RuntimeError("Active job/queue; refusing restart")
                   panel=h.get("layers",{}).get("panel",{})
-                  if panel.get("status")!="ok" or panel.get("busy") is not False or panel.get("activeRequestId") is not None:
+                  if panel.get("status")!="ok" or panel.get("busy") is not False or panel.get("activeRequestId") is not None or panel.get("heartbeatStale") is True:
                       raise RuntimeError("Panel not proven idle")
-                  if j.get("jobId")!="job_bb227cf2e04a" or j.get("status")!="unknown" or j.get("awaitingHost") is not True:
+                  if j.get("jobId")!="job_40275b48de5d" or j.get("status")!="unknown" or j.get("awaitingHost") is not True or (h.get("execution") or {}).get("unresolvedJobs")!=["job_40275b48de5d"]:
                       raise RuntimeError("Unexpected blocking job; refusing restart")
-                  print("SCOPED_RECOVERY_PREFLIGHT=PASS",flush=True)
+                  print("SCOPED_RECOVERY_PREFLIGHT=PASS target=job_40275b48de5d no replay",flush=True)
           asyncio.run(main())
           '@ | Set-Content -LiteralPath scoped_preflight.py -Encoding UTF8
           uv run python scoped_preflight.py
@@ -96,7 +97,7 @@ jobs:
                   print("POST_HEALTH="+json.dumps(h.structured_content,default=str)[:3200],flush=True)
                   r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.document.info","arguments":{}})
                   print("POST_DOC="+json.dumps(r.structured_content,default=str)[:4800],flush=True)
-                  if r.is_error or not isinstance(r.structured_content,dict) or not r.structured_content.get("ok"):
+                  if h.is_error or not isinstance(h.structured_content,dict) or r.is_error or not isinstance(r.structured_content,dict) or not r.structured_content.get("ok"):
                       raise RuntimeError("MCP_DOCUMENT_READBACK=FAIL")
                   print("MCP_DOCUMENT_READBACK=PASS",flush=True)
           asyncio.run(main())
