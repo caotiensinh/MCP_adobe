@@ -1,0 +1,78 @@
+name: Kung Fu Panda 4 Photoshop five-stroke artifact recovery read only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-ps-five-readback-artifact.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  recover:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recover existing real PSD and PNG with immutable hashes, never launch Adobe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'RED_PS_RECOVERY_WRONG_MACHINE'}
+          $env:SOURCE_RUN_ID='38148390967'
+          $env:EXPECTED_PSD_SHA='9B87CFEF62BF63CB5A7797974285077E69E71FB4A4BFC603B891B4CE41B4A710'
+          $env:EXPECTED_PNG_SHA='CA6631D318017EF4594FA7244525761D4632BB377D335EB315BDA4AE266D4285'
+          $env:EXPECTED_SOURCE_SHA='9396E3F3A0F3CABBC1BC279524FAFA8B3E6EE08F192CCC56A34CC53FC5AC618E'
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $original=Join-Path $root 'MCP_KFP4_Red_PS_38147544140_3shapes.psd'
+          if(-not(Test-Path -LiteralPath $original -PathType Leaf) -or
+            (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash -ne $env:EXPECTED_SOURCE_SHA){
+            throw 'RED_PS_THREE_SHAPE_IMMUTABLE_SOURCE_INVALID'
+          }
+          $folder=Join-Path $PWD 'red_ps_five'
+          New-Item -ItemType Directory -Path $folder -Force|Out-Null
+          foreach($extension in @('psd','png')){
+            $src=Join-Path $root ("MCP_KFP4_Red_PS_{0}_5shapes.{1}" -f $env:SOURCE_RUN_ID,$extension)
+            if(-not(Test-Path -LiteralPath $src -PathType Leaf)){throw "RED_PS_FIVE_SOURCE_MISSING_$extension"}
+            $expected=if($extension -eq 'psd'){$env:EXPECTED_PSD_SHA}else{$env:EXPECTED_PNG_SHA}
+            $hash=(Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+            if($hash -ne $expected){throw "RED_PS_FIVE_SOURCE_SHA_MISMATCH_$extension"}
+            $dst=Join-Path $folder ("kung_fu_panda_red_five.{0}" -f $extension)
+            Copy-Item -LiteralPath $src -Destination $dst -ErrorAction Stop
+            if((Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -ne $expected){
+              throw "RED_PS_FIVE_COPY_SHA_MISMATCH_$extension"
+            }
+            Write-Host "RED_PS_FIVE_RECOVERED=PASS ext=$extension bytes=$((Get-Item $src).Length) sha256=$hash"
+          }
+          $png=Join-Path $folder 'kung_fu_panda_red_five.png'
+          $bytes=[System.IO.File]::ReadAllBytes($png)
+          if($bytes.Length -lt 30){throw 'RED_PS_FIVE_PNG_TRUNCATED'}
+          $signature=@(137,80,78,71,13,10,26,10)
+          for($i=0;$i -lt 8;$i++){if($bytes[$i] -ne $signature[$i]){throw 'RED_PS_FIVE_INVALID_PNG_SIGNATURE'}}
+          function Get-BigEndian32([byte[]]$data,[int]$index){
+            return ([uint32]$data[$index] -shl 24) -bor ([uint32]$data[$index+1] -shl 16) -bor ([uint32]$data[$index+2] -shl 8) -bor [uint32]$data[$index+3]
+          }
+          $w=Get-BigEndian32 $bytes 16
+          $h=Get-BigEndian32 $bytes 20
+          if($w -ne 880 -or $h -ne 1265){throw "RED_PS_FIVE_WRONG_IMAGE_SIZE $w $h"}
+          Write-Host "RED_PS_FIVE_NATIVE_PNG_SIZE=PASS width=$w height=$h"
+          $manifest=[ordered]@{
+            run_id=$env:SOURCE_RUN_ID
+            source_run_url='https://github.com/caotiensinh/MCP_adobe/actions/runs/38148390967'
+            original_sha256=$env:EXPECTED_SOURCE_SHA.ToLowerInvariant()
+            psd_sha256=$env:EXPECTED_PSD_SHA.ToLowerInvariant()
+            png_sha256=$env:EXPECTED_PNG_SHA.ToLowerInvariant()
+            width=$w;height=$h;verified_components=5;total_planned_components=60
+            image_acceptance='NOT_COMPLETE'
+            adobe_import_count=0
+            this_job_mutations=0
+          }
+          ($manifest|ConvertTo-Json -Depth 4)|Set-Content -LiteralPath (Join-Path $folder 'manifest.json') -Encoding UTF8
+          Write-Host "RED_PS_FIVE_READBACK_ARTIFACT=PASS components=5/60 no-replay"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kung-fu-red-photoshop-five-native-artifacts
+          path: red_ps_five/*
+          if-no-files-found: error
+          retention-days: 14
