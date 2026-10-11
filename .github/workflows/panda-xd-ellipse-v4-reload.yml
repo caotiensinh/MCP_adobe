@@ -4,6 +4,7 @@ on:
     branches: [feat/canvas-region-targeting]
     paths:
       - '.github/workflows/panda-xd-ellipse-v4-reload.yml'
+      - 'scripts/panda_xd_ellipse_fix_preflight.py'
   workflow_dispatch:
 permissions:
   contents: read
