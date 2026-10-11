@@ -4,6 +4,7 @@ on:
     branches: [feat/canvas-region-targeting]
     paths:
       - ".github/workflows/panda-xd-native-hwnd-save-20261011.yml"
+      - "scripts/panda_xd_native_hwnd_save_20261011.ps1"
   workflow_dispatch:
 permissions:
   contents: read
