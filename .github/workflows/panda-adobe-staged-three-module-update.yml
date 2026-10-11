@@ -1,0 +1,91 @@
+name: Panda PS XD AI stage corrected gateway Illustrator XD modules without activating
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-adobe-staged-three-module-update.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage only THREE revised modules after exact source/install hash checks
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'PAN_STAGE_WRONG_MACHINE'}
+          $root=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway'
+          $install=Join-Path $root 'venv\Lib\site-packages\mcp_adobe'
+          $python=Join-Path $root 'venv\Scripts\python.exe'
+          if(-not(Test-Path -LiteralPath $python -PathType Leaf)){throw 'PAN_STAGE_NO_INSTALLED_PYTHON'}
+          $expected=@{
+            'illustrator.py'=@('06EE5E5FE43348768D9D0FC81C3575801437A8CC584C19F1E3C0AB96F7B1AD59','0298CB04EE1A2928CF38A79E6F4A28492222950259A8B3662ECE82D6453BFE8C')
+            'illustrator_cep.py'=@('E14F47CC6018FAB3A2F4F490261FCAC2E5C560D88A990AAC904DBDB7C5BA711C','E2AC497A4C2E31F85D2A98A051DCA618584E95292FAC9A006566ADD8D7CD3C82')
+            'xd.py'=@('15E80FDEA6C6710A51153D1216314E1E003D993BB12573288057338B73B43695','F020BAF5FC6DFAB5F2D0690BFAF57E12B3244249058DDE98C0A33E260A06923D')
+          }
+          foreach($name in @($expected.Keys)){
+            $installed=Join-Path $install $name
+            $source=Join-Path $PWD ("src/mcp_adobe/$name")
+            if(-not(Test-Path -LiteralPath $installed -PathType Leaf) -or -not(Test-Path -LiteralPath $source -PathType Leaf)){
+              throw "PAN_STAGE_SOURCE_OR_INSTALLED_ABSENT:$name"
+            }
+            $a=(Get-FileHash $installed -Algorithm SHA256).Hash
+            $b=(Get-FileHash $source -Algorithm SHA256).Hash
+            if($a -ne $expected[$name][0] -or $b -ne $expected[$name][1]){
+              throw "PAN_STAGE_CONCURRENT_SHA_CHANGED:$name"
+            }
+          }
+          $stage=Join-Path $root ("updates\red_panda_{0}" -f $env:GITHUB_RUN_ID)
+          if(Test-Path -LiteralPath $stage){throw 'PAN_STAGE_ALREADY_EXISTS_NO_REPLAY'}
+          $candidate=Join-Path $stage 'candidate'
+          $original=Join-Path $stage 'original'
+          $target=Join-Path $candidate 'mcp_adobe'
+          New-Item -Path $original -ItemType Directory -Force|Out-Null
+          New-Item -Path $candidate -ItemType Directory -Force|Out-Null
+          Copy-Item -LiteralPath $install -Destination $candidate -Recurse -ErrorAction Stop
+          foreach($name in @($expected.Keys)){
+            Copy-Item -LiteralPath (Join-Path $install $name) -Destination (Join-Path $original $name) -ErrorAction Stop
+            Copy-Item -LiteralPath (Join-Path $PWD ("src/mcp_adobe/$name")) -Destination (Join-Path $target $name) -Force -ErrorAction Stop
+            if((Get-FileHash (Join-Path $target $name) -Algorithm SHA256).Hash -ne $expected[$name][1]){
+              throw "PAN_STAGE_CANDIDATE_HASH_BAD:$name"
+            }
+            Write-Host "PAN_STAGE_MODULE=PASS name=$name previous=$($expected[$name][0]) next=$($expected[$name][1])"
+          }
+          $manifest=[ordered]@{stage_id=$env:GITHUB_RUN_ID;root=$stage;module_count=3;source_file_count=3;
+            server_unchanged=$true;photoshop_unchanged=$true;activate=$false}
+          $manifest|ConvertTo-Json -Depth 4|Set-Content -LiteralPath (Join-Path $stage 'manifest.json') -Encoding UTF8
+          Write-Host "PAN_STAGE_BUILT=PASS id=$env:GITHUB_RUN_ID candidate=$candidate"
+      - name: Verify three candidate modules import under installed gateway Python
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway'
+          $candidate=Join-Path $root ("updates\red_panda_{0}\candidate" -f $env:GITHUB_RUN_ID)
+          $env:PYTHONPATH=$candidate
+          $env:PYTHONUTF8='1'
+          $python=Join-Path $root 'venv\Scripts\python.exe'
+          @'
+          import importlib,os,sys
+          import mcp_adobe.illustrator as ai
+          import mcp_adobe.illustrator_cep as cep
+          import mcp_adobe.xd as xd
+          root=os.environ["PYTHONPATH"].replace("\\","/").lower()
+          for name,module in (("ai",ai),("cep",cep),("xd",xd)):
+              assert module.__file__.replace("\\","/").lower().startswith(root), (name,module.__file__)
+              print("PAN_STAGE_IMPORT_PATH=PASS "+name,flush=True)
+          assert "creative.document.fast_snapshot" in ai._BINDINGS
+          assert "fast_document_snapshot" in cep.SUPPORTED_LEGACY_TOOLS
+          assert "xd.queue.path_create" in xd._BINDINGS
+          print("PAN_STAGE_IMPORT_CAPABILITIES=PASS ai_safe_fast_snapshot=1 xd_path=1",flush=True)
+          '@|Set-Content -LiteralPath .\panda_candidate_import.py -Encoding UTF8
+          & $python .\panda_candidate_import.py
+          if($LASTEXITCODE -ne 0){throw 'PAN_STAGE_CANDIDATE_IMPORT_FAILED_NO_ACTIVATION'}
+          Write-Host "PAN_STAGE_VERIFIED_NO_GATEWAY_RESTART=PASS"
