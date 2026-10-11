@@ -92,7 +92,7 @@ class HotApplyWorker:
         start = time.perf_counter()
         self._unsafe = True
         try:
-            self._process.stdin.write("PING\\n")
+            self._process.stdin.write("PING\n")
             self._process.stdin.flush()
             self._expect("XD_HOT_PONG", self.timeout_seconds)
         except Exception as exc:
