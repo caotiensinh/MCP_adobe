@@ -4,6 +4,8 @@ on:
     branches: [feat/canvas-region-targeting]
     paths:
       - '.github/workflows/panda-xd-21-live-radius-repair.yml'
+      - 'scripts/panda_xd_repair_ellipse_mode1.py'
+      - 'scripts/panda_xd_audit_native_geometry.py'
   workflow_dispatch:
 permissions:
   contents: read
