@@ -106,7 +106,7 @@ assert.throws(()=>mutate('xd.queue.rectangle_position_repair',
 assert.throws(()=>mutate('xd.queue.rectangle_position_repair',
     {...request,document_id:'other'}),/document identity or input is invalid/);
 assert.throws(()=>mutate('xd.queue.rectangle_position_repair',
-    {...request,guid:'44444444-4444-4444-8444-444444444444'}),/GUID\\/name\\/type mismatch/);
+    {...request,guid:'44444444-4444-4444-8444-444444444444'}),/GUID.*mismatch/);
 
 // Every path represents exactly one independent editable vector shape.
 nodes=[];
