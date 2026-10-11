@@ -1,0 +1,34 @@
+name: Panda Illustrator exact CEP callback trace after C014 fast snapshot no replay
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-illustrator-callback-trace-post-upgrade.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Read dedicated installed upstream callback_trace.log without any host calls
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'PANDA_TRACE_WRONG_HOST'}
+          $path=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\callback_trace.log'
+          if(-not(Test-Path -LiteralPath $path -PathType Leaf)){throw 'PANDA_TRACE_FILE_MISSING'}
+          $f=Get-Item -LiteralPath $path
+          Write-Host "PANDA_TRACE_FILE=PASS size=$($f.Length) modified=$($f.LastWriteTime.ToString('o'))"
+          foreach($line in @(Get-Content -LiteralPath $path -Tail 350 -ErrorAction Stop)){
+            $text=[string]$line
+            if($text -match '2026-10-11 16:1[56-9]:|2026-10-11 16:2[0-5]:|CEP_CALLBACK|HOST_TRACE'){
+              $safe=$text -replace '(?i)(token|password|secret|authorization|api[_-]?key|cookie)\s*[:=]\s*[^\s,}]+','$1=[REDACTED]'
+              if($safe.Length -gt 500){$safe=$safe.Substring(0,500)}
+              Write-Host "PANDA_TRACE_SIGNAL=$safe"
+            }
+          }
+          Write-Host 'PANDA_TRACE_READ_ONLY=PASS'
