@@ -3,24 +3,23 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - "src/mcp_adobe/illustrator_upstream_trace.py"
+      - "tests/test_illustrator_upstream_trace.py"
       - ".github/workflows/illustrator-c013-generation-regression.yml"
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   regression:
-    runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 4
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: Prove stale callback cannot mutate current fence
-        shell: powershell
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: C013 stale epoch and generation regression
         run: |
-          $ErrorActionPreference='Stop'
-          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
-          uv sync --python 3.12
-          if($LASTEXITCODE -ne 0){throw 'C013_DEPENDENCIES_FAILED'}
-          $env:PYTHONPATH=Join-Path (Get-Location) "src"
-          uv run --with pytest python -m pytest -q tests/test_illustrator_upstream_trace.py
-          if($LASTEXITCODE -ne 0){throw 'C013_GENERATION_REGRESSION_FAILED'}
-          Write-Output 'C013_GENERATION_REGRESSION=PASS'
+          python -m pip install --disable-pip-version-check pytest
+          PYTHONPATH=src python -m pytest -q tests/test_illustrator_upstream_trace.py
+          echo "C013_GENERATION_AND_EPOCH_REGRESSION=PASS"
