@@ -1,0 +1,48 @@
+name: Illustrator C014 restore interactive host
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/illustrator-c014-restore-interactive-host.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  restore:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Confirm desktop identity and revive absent Illustrator without touching documents
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $session=[Diagnostics.Process]::GetCurrentProcess().SessionId
+          $ai=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'")
+          $ex=@(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'")
+          Write-Output "C014_HOST=$env:COMPUTERNAME RUNNER=$env:RUNNER_NAME SESSION=$session AI_COUNT=$($ai.Count)"
+          foreach($e in $ex){Write-Output "C014_EXPLORER session=$($e.SessionId) pid=$($e.ProcessId)"}
+          foreach($p in $ai){Write-Output "C014_AI_EXISTING pid=$($p.ProcessId) session=$($p.SessionId)"}
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'C014_UNEXPECTED_HOST_NO_MUTATION'}
+          if($session -eq 0 -or @($ex|Where-Object {$_.SessionId -eq $session}).Count -lt 1){throw 'C014_NO_INTERACTIVE_EXPLORER'}
+          if($ai.Count -gt 0){Write-Output "C014_AI_ALREADY_RESTORED=PASS";exit 0}
+          $exe='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
+          if(-not(Test-Path -LiteralPath $exe)){throw 'C014_AI_EXE_MISSING'}
+          $roots=@("$env:APPDATA\Adobe\Adobe Illustrator 27 Settings","$env:LOCALAPPDATA\Adobe\Illustrator")
+          foreach($root in $roots){
+            if(Test-Path $root){Write-Output "C014_RECOVERY_ROOT_EXISTS path=$root"}
+          }
+          $tracking=$env:RUNNER_TRACKING_ID
+          try{
+            Remove-Item Env:RUNNER_TRACKING_ID -ErrorAction SilentlyContinue
+            $p=Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe) -PassThru
+            Write-Output "C014_AI_LAUNCH pid=$($p.Id)"
+          } finally {
+            if($null -ne $tracking){$env:RUNNER_TRACKING_ID=$tracking}
+          }
+          Start-Sleep -Seconds 20
+          $after=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'")
+          if($after.Count -lt 1){throw 'C014_AI_LAUNCH_FAILED'}
+          Write-Output "C014_AI_PROCESS_RESTORED=PASS pid=$($after[0].ProcessId)"
