@@ -1,8 +1,5 @@
 name: Kung Fu Panda 4 Photoshop live two vector curves to five native layers
 on:
-  push:
-    branches: [feat/canvas-region-targeting]
-    paths: [".github/workflows/panda-red-ps-resume-5-shapes.yml"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -50,7 +47,6 @@ jobs:
           $folder=Join-Path $PWD 'red_ps_vector'
           New-Item -ItemType Directory -Force $folder|Out-Null
           foreach($ext in @('psd','png')){
-            $src=Join-Path $env:USERPROFILE "Documents\MCPAdobe\MCP_KFP4_Red_PS_$env:GITHUB_RUN_ID" + "_5shapes.$ext"
             # Use explicit per-run filename, not wildcard.
             $src=Join-Path (Join-Path $env:USERPROFILE 'Documents\MCPAdobe') ("MCP_KFP4_Red_PS_{0}_5shapes.{1}" -f $env:GITHUB_RUN_ID,$ext)
             if(Test-Path -LiteralPath $src -PathType Leaf){
