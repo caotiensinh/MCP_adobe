@@ -1,11 +1,5 @@
 name: Illustrator C013 generation regression
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - "src/mcp_adobe/illustrator_upstream_trace.py"
-      - "tests/test_illustrator_upstream_trace.py"
-      - ".github/workflows/illustrator-c013-generation-regression.yml"
   workflow_dispatch:
 permissions:
   contents: read
