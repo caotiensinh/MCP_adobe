@@ -21,6 +21,12 @@ on:
       - tests/xd_scenegraph_uxp_contract.cjs
       - .github/workflows/canvas-region-targeting.yml
   workflow_dispatch:
+    inputs:
+      enable_live_desktop:
+        description: 'Explicitly allow MRCAO desktop jobs that may refresh local host'
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: read
 jobs:
@@ -59,7 +65,7 @@ jobs:
           node tests/xd_scenegraph_uxp_contract.cjs
 
   live-metadata-read:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.enable_live_desktop == true
     strategy:
       fail-fast: false
       matrix:
@@ -83,7 +89,7 @@ jobs:
           Write-Host 'REGION_METADATA_LIVE=PASS read-only snapshot'
 
   desktop-health-probe:
-    if: github.event_name == 'push'
+    if: github.event_name == 'workflow_dispatch' && inputs.enable_live_desktop == true
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 4
     steps:
@@ -119,7 +125,7 @@ jobs:
 
 
   mode1-existing-live-gate:
-    if: github.event_name == 'push'
+    if: github.event_name == 'workflow_dispatch' && inputs.enable_live_desktop == true
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 3
     steps:
@@ -146,7 +152,7 @@ jobs:
           Write-Host 'MODE1_LIVE_PREFLIGHT=PASS; live drawing acceptance remains independently unverified'
 
   mode1-photoshop-live-e2e:
-    if: github.event_name == 'push'
+    if: github.event_name == 'workflow_dispatch' && inputs.enable_live_desktop == true
     needs: [mode1-existing-live-gate]
     runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 12
