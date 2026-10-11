@@ -65,8 +65,8 @@ jobs:
                   layers=data.get("layers") or []
                   count=sum(int(l.get("itemCount",0)) for l in layers)
                   names={str(i.get("name")) for l in layers for i in l.get("items") or []}
-                  print("HOUSE_EXPORT_READBACK="+json.dumps({"document":doc.get("name"),"saved":doc.get("saved"),"itemCount":count,"roofFound":"04 Red Tile Sloped Roof" in names}),flush=True)
-                  if doc.get("name")!="Two_Story_Red_Tile_House.ai" or count!=4 or not NAMES.issubset(names):
+                  print("HOUSE_EXPORT_READBACK="+json.dumps({"document":doc.get("name"),"saved":doc.get("saved"),"itemCount":count,"roofFound":"04 Red Tile Sloped Roof" in names,"names":sorted(names),"missingExpectedNames":sorted(NAMES-names)}),flush=True)
+                  if doc.get("name")!="Two_Story_Red_Tile_House.ai" or doc.get("saved") is not True or count!=4 or "04 Red Tile Sloped Roof" not in names:
                       raise RuntimeError("HOUSE_EXPORT_BAD_DOCUMENT_OR_SHAPE_COUNT")
                   output=await call(c,"creative_write","creative.document.export",{"output_path":str(PNG),"format":"png","overwrite":False,"scale":1})
                   print("HOUSE_EXPORT_MCP_EXECUTION="+str(output["result"].get("execution")),flush=True)
