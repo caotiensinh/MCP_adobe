@@ -27,8 +27,8 @@ GATES={
 def audit(path:Path):
     with Image.open(path) as source:
         source.load()
-        if source.format!="PNG" or source.width<290 or source.height<420 or
-           abs(source.width/source.height-RATIO)>.025:
+        if (source.format!="PNG" or source.width<290 or source.height<420 or
+           abs(source.width/source.height-RATIO)>.025):
             raise RuntimeError("PANDA_RED_WRONG_SIZE_OR_FORMAT")
         rgb=source.convert("RGB")
     w,h=rgb.size
