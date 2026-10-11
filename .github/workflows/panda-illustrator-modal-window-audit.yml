@@ -1,0 +1,53 @@
+name: Panda Illustrator host blockage modal and UI Automation read only audit
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-illustrator-modal-window-audit.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Enumerate only Adobe desktop windows modal state, never click or switch
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){
+            throw 'PANDA_AI_MODAL_WRONG_DESKTOP'
+          }
+          $p=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'"|Where-Object {$_.SessionId -eq 1})
+          if($p.Count -ne 1){throw 'PANDA_AI_MODAL_PROCESS_AMBIGUOUS'}
+          $pidTarget=[int]$p[0].ProcessId
+          $proc=Get-Process -Id $pidTarget
+          Write-Host "PANDA_AI_MODAL_MAIN pid=$pidTarget mainHandle=$($proc.MainWindowHandle) title=$($proc.MainWindowTitle) respond=$($proc.Responding)"
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $windows=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $found=0;$modals=0
+          for($i=0;$i -lt $windows.Count;$i++){
+            $w=$windows.Item($i)
+            try{
+              $id=$w.Current.ProcessId
+              $name=[string]$w.Current.Name
+              $class=[string]$w.Current.ClassName
+              if($id -ne $pidTarget -and $name -notmatch 'Adobe Illustrator|Illustrator|New Document|Save As|Open Document|Save Document'){continue}
+              $found++
+              $pattern=$null
+              $isWindow=$w.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern,[ref]$pattern)
+              $modal=$false
+              if($isWindow -and $null -ne $pattern){$modal=$pattern.Current.IsModal}
+              if($modal){$modals++}
+              if($name.Length -gt 180){$name=$name.Substring(0,180)}
+              Write-Host "PANDA_AI_MODAL_WINDOW pid=$id title=$name class=$class modal=$modal offscreen=$($w.Current.IsOffscreen) enabled=$($w.Current.IsEnabled)"
+            }catch [System.Windows.Automation.ElementNotAvailableException]{
+              Write-Host 'PANDA_AI_MODAL_TRANSIENT_WINDOW=SKIPPED'
+            }
+          }
+          Write-Host "PANDA_AI_MODAL_AUDIT=PASS windows=$found modals=$modals no_writes=1"
