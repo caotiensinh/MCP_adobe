@@ -20,6 +20,14 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
+          $parseErrors=$null
+          $parseTokens=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'scripts/panda_xd_bootstrap_native.ps1'),[ref]$parseTokens,[ref]$parseErrors)
+          if(@($parseErrors).Count -gt 0){
+            foreach($e in $parseErrors){Write-Host "XD_BOOTSTRAP_PS_PARSER_ERROR=$($e.Message)"}
+            throw 'XD_BOOTSTRAP_SCRIPT_SYNTAX_INVALID'
+          }
+          Write-Host 'XD_BOOTSTRAP_POWERSHELL_AST_VALID=PASS'
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/panda_xd_bootstrap_native.ps1 -RunId "${{ github.run_id }}"
           if($LASTEXITCODE -ne 0){throw 'XD_BOOTSTRAP_NATIVE_FILE_NOT_VERIFIED'}
       - name: Collect verified local XD source
