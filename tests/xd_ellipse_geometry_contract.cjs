@@ -26,13 +26,18 @@ class Rectangle {
 class Text extends Rectangle {
   constructor(){super();this.width=100;this.height=32;this.guid='text-guid';this.text='';}
 }
+class Path extends Rectangle {
+  constructor(){super();this.guid='path-guid';this._pathData='';}
+  set pathData(v){this._pathData=v;this.width=80;this.height=40;}
+  get pathData(){return this._pathData;}
+}
 class Color{constructor(raw){this.raw=raw;}}
 const root={guid:rootGuid,children:{get length(){return nodes.length},at:i=>nodes[i]}};
 const insertionParent={addChild(node){nodes.push(node)},children:root.children};
 const selection={items:[],insertionParent};
 const sandbox={
  require(id){
-  if(id==='scenegraph')return {Rectangle,Ellipse,Text,Color,root,selection};
+  if(id==='scenegraph')return {Rectangle,Ellipse,Path,Text,Color,root,selection};
   if(id==='application')return {version:'test',appLanguage:'en'};
   if(id==='uxp')return {entrypoints:{setup(){}}};
   throw Error('unexpected module '+id);
@@ -75,6 +80,22 @@ assert.equal(nodes[2].globalBounds.y,780,'text should use global document Y');
 // nodeInfo intentionally reports localBounds; scenegraph/globalBounds proves placement.
 assert.equal(label.bounds.x,0);
 assert.throws(()=>mutate('xd.queue.rectangle_create',{x:'invalid',y:0,width:10,height:10}),/invalid global placement geometry/);
+
+// Every path represents exactly one independent editable vector shape.
+nodes=[];
+const curve=mutate('xd.queue.path_create',{name:'Panda hand outline',
+  pathData:'M0 0 C20 -10 60 0 80 40 L0 40 Z',x:122,y:196,fill:'#27282A'});
+assert.equal(nodes.length,1);
+assert.ok(nodes[0] instanceof Path);
+assert.equal(nodes[0].name,'Panda hand outline');
+assert.equal(nodes[0].globalBounds.x,122);
+assert.equal(nodes[0].globalBounds.y,196);
+assert.equal(curve.globalBounds.left,122);
+assert.equal(curve.globalBounds.bottom,236);
+assert.throws(()=>mutate('xd.queue.path_create',{pathData:'<svg/onload>',x:0,y:0}),/bounded SVG path commands/);
+assert.throws(()=>mutate('xd.queue.path_create',{pathData:'M0 0 L20 0 L20 40 Z',x:Infinity,y:0}),/finite global position/);
+assert.throws(()=>mutate('xd.queue.path_create',{pathData:'M0 0 L20 0 L20 40 Z',x:0,y:0,fill:'#fff',name:'x'.repeat(5000),y:NaN}),/finite global position/);
+assert.equal(nodes.length,1,'invalid path requests must not mutate the scenegraph');
 
 // Simulate the real E2E regression: Ellipse created with width/height (ignored).
 nodes=[new Ellipse()];
