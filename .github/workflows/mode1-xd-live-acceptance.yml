@@ -1,19 +1,7 @@
 name: Mode1 Adobe XD live E2E on MRCAO
 
 on:
-  push:
-    branches: [feat/canvas-region-targeting]
-    paths:
-      - ".github/workflows/mode1-xd-live-acceptance.yml"
-      - "src/mcp_adobe/xd.py"
-      - "src/mcp_adobe/xd_bridge.py"
-      - "src/mcp_adobe/server.py"
-      - "adobe-xd-plugin/**"
-      - "scripts/install_xd_plugin.ps1"
-      - "scripts/install_local_host.ps1"
-      - "tests/test_xd.py"
   workflow_dispatch:
-
 permissions:
   contents: read
 
