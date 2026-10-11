@@ -82,6 +82,13 @@ jobs:
           $checkpoint=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38114632173.json'
           $resume=Test-Path -LiteralPath $checkpoint
           Write-Host "XD_RESUME_GUARD present=$resume path=$checkpoint"
+          if($resume){
+            # A real XD plugin is already holding a queued operation. Any GUI
+            # connect or Create here could invalidate the in-memory receipt.
+            # The Python resume step validates document id, exact GUIDs and queue.
+            Write-Host "XD_RESUME_GUI_REINITIALIZATION=SKIPPED_PRESERVE_LIVE_DOCUMENT_AND_QUEUE"
+            exit 0
+          }
           $xd=Find-Xd
           if(-not $xd){
             $start=Get-StartApps -ErrorAction SilentlyContinue |
