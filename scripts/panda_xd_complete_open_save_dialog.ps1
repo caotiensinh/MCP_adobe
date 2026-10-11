@@ -39,23 +39,6 @@ $allEdits=$fileHost.FindAll([System.Windows.Automation.TreeScope]::Descendants,
 Write-Host "XD_PICKER_FILENAME_HOST_EDITS=$($allEdits.Count)"
 $edit=$null
 if($allEdits.Count -eq 1){$edit=$allEdits.Item(0)}
-if(-not $edit){
-  $children=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,
-                          [System.Windows.Automation.Condition]::TrueCondition)
-  foreach($element in $children){
-    $name=[string]$element.Current.Name
-    $id=[string]$element.Current.AutomationId
-    $tp=[string]$element.Current.ControlType.ProgrammaticName
-    $matchesName=[regex]::IsMatch($name,'File name|Save|保存|ファイル名')
-    $matchesId=[regex]::IsMatch($id,'FileName|1001|^1$')
-    if($matchesName -or $matchesId){
-      Write-Host "XD_PICKER_CONTROL name=$name id=$id type=$tp"
-    }
-    if($tp -eq 'ControlType.Edit' -and ($id -eq '1001' -or $id -match 'FileName')){
-      $edit=$element
-    }
-  }
-}
 if(-not $edit){throw 'XD_PICKER_FILENAME_EDIT_NOT_UNIQUE_REFUSE_TYPING'}
 $value=$edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
 $value.SetValue($target)
