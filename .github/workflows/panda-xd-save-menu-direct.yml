@@ -25,7 +25,7 @@ jobs:
           $tokens=$null;$errors=$null
           [void][System.Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$errors)
           if(@($errors).Count -gt 0){
-            foreach($e in $errors){Write-Host "XD_MENU_SAVE_PARSER_ERROR=$($e.Message)"}
+            foreach($e in $errors){Write-Host "XD_MENU_SAVE_PARSER_ERROR=$($e.Message) line=$($e.Extent.StartLineNumber) column=$($e.Extent.StartColumnNumber) text=$($e.Extent.Text)"}
             throw 'XD_MENU_SAVE_SOURCE_SYNTAX_INVALID'
           }
           Write-Host 'XD_MENU_SAVE_PARSER=PASS'
