@@ -1,0 +1,65 @@
+name: PANDA XD inspect live document File Save menu
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-live-file-menu-audit.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  menu-audit:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect XD unsaved document, Save menu enablement and plugin without any GUI click
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_MENU_AUDIT_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_MENU_AUDIT_WRONG_SESSION'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $apps=@()
+          foreach($window in $top){
+            $name=[string]$window.Current.Name
+            if($name -match 'Adobe XD' -and $window.Current.ClassName -eq 'ApplicationFrameWindow'){$apps+=,$window}
+          }
+          Write-Host "XD_FILE_AUDIT_WINDOW_COUNT=$($apps.Count)"
+          foreach($window in $apps){
+            Write-Host "XD_FILE_AUDIT_APP name=$($window.Current.Name) pid=$($window.Current.ProcessId)"
+            $items=$window.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+            foreach($item in $items){
+              $id=[string]$item.Current.AutomationId
+              if($id -match '^AppMenu_(File|Save|SaveAs)$' -or $id -match '^AppMenuBar_Plugins$'){
+                $enabled=$item.Current.IsEnabled
+                $name=[string]$item.Current.Name
+                $type=[string]$item.Current.ControlType.ProgrammaticName
+                Write-Host "XD_FILE_AUDIT_MENU id=$id name=$name enabled=$enabled type=$type"
+                try{
+                  $ec=$item.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+                  Write-Host "XD_FILE_AUDIT_EXPAND_STATE id=$id state=$($ec.Current.ExpandCollapseState)"
+                }catch{}
+              }
+              if($item.Current.Name -eq 'Save As' -and $item.Current.ControlType.ProgrammaticName -eq 'ControlType.Window'){
+                Write-Host 'XD_FILE_AUDIT_DIALOG=OPEN'
+              }
+            }
+          }
+          foreach($port in @(8787,8765)){
+            foreach($conn in @(Get-NetTCPConnection -LocalPort $port -State Established -ErrorAction SilentlyContinue)){
+              Write-Host "XD_FILE_AUDIT_BRIDGE port=$port peer=$($conn.RemoteAddress) pid=$($conn.OwningProcess)"
+            }
+          }
+          $p=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          foreach($file in @(Get-ChildItem -LiteralPath $p -Filter '*.xd' -File -ErrorAction SilentlyContinue |
+            Where-Object {$_.Name -match 'Panda|Untitled'})){
+            Write-Host "XD_FILE_AUDIT_EXISTING path=$($file.FullName) size=$($file.Length)"
+          }
+          Write-Host 'XD_FILE_MENU_READONLY_COMPLETE=PASS'
