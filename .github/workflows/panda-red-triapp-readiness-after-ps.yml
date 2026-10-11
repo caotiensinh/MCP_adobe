@@ -1,0 +1,116 @@
+name: Kung Fu Panda red PS XD AI three-app live safety and latency gate (read only)
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-triapp-readiness-after-ps.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  triapp:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check actual interactive Adobe desktop, no host restarts or document writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'RED_TRIAPP_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RED_TRIAPP_WRONG_SESSION'}
+          foreach($name in @('Photoshop','Illustrator','XD')){
+            $a=@(Get-Process -Name $name -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1})
+            Write-Host "RED_TRIAPP_PROCESS name=$name count=$($a.Count) pid=$(@($a|ForEach-Object {$_.Id}) -join ',')"
+          }
+          foreach($port in @(8787,8081,8765)){
+            $a=@(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
+            Write-Host "RED_TRIAPP_PORT port=$port listenerCount=$($a.Count)"
+          }
+      - name: Probe Photoshop Illustrator and XD using one persistent MCP client; no new Illustrator job when fenced
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json,statistics,time
+          from pathlib import Path
+          from mcp import Client
+          from math import ceil
+          def percentile(samples,p):
+            vals=sorted(samples)
+            return round(vals[min(len(vals)-1,max(0,ceil(p*len(vals))-1))],2)
+          async def main():
+            summary={"schema":"mcp-adobe-ps-xd-ai-2026-10-v1",
+              "mode":"READ_ONLY_NO_ADOBE_DOCUMENT_MUTATION",
+              "app_readiness":{},"host_calls":[],"samples_per_available_host":6}
+            async with Client("http://127.0.0.1:8787/mcp") as c:
+              for app in ("photoshop","xd","illustrator"):
+                delays=[]
+                args={"probe":False,"timeout":5} if app=="illustrator" else {}
+                for iteration in range(6):
+                  t=time.perf_counter()
+                  try:
+                    r=await asyncio.wait_for(c.call_tool("creative_read",{
+                      "application":app,"capability":"creative.health","arguments":args}),timeout=12)
+                    dt=round((time.perf_counter()-t)*1000,2)
+                    p=r.structured_content or {}
+                    result=p.get("result") or {}
+                    if r.is_error or p.get("ok") is not True:
+                      raise RuntimeError("MCP_HEALTH_NOT_OK "+str(r.content)[:170])
+                    delays.append(dt)
+                    if iteration==0:
+                      if app=="illustrator":
+                        d=(result.get("connection") or {}).get("data") or {}
+                        ex=d.get("execution") or {}
+                        panel=(d.get("layers") or {}).get("panel") or {}
+                        blocked=bool(ex.get("unresolvedJobs")) or ex.get("activeJob") is not None or ex.get("waiting")!=0
+                        summary["app_readiness"][app]={
+                          "transport_ok":True,"ready_for_write":not blocked and panel.get("status")=="ok" and panel.get("busy") is False and d.get("ready") is True,
+                          "blocked_at":d.get("blockedAt"),"unresolved_job_ids":ex.get("unresolvedJobs"),
+                          "panel_status":panel.get("status"),"panel_busy":panel.get("busy"),
+                          "notes":"No Illustrator drawing/probe dispatched in this audit"}
+                      elif app=="xd":
+                        summary["app_readiness"][app]={
+                          "transport_ok":True,"bridge":result.get("bridge"),
+                          "build":result.get("bridge_build"),"pending_count":result.get("pending_count"),
+                          "ready_for_write":result.get("bridge")=="connected" and result.get("pending_count")==0}
+                      else:
+                        summary["app_readiness"][app]={"transport_ok":True,"ready_for_write":bool(result.get("ready",True))}
+                        try:
+                          info=await asyncio.wait_for(c.call_tool("creative_read",{
+                            "application":"photoshop","capability":"creative.document.info","arguments":{}}),timeout=12)
+                          raw=(info.structured_content or {}).get("result") or {}
+                          summary["app_readiness"][app]["document_name"]=(raw.get("document") or {}).get("name")
+                          summary["app_readiness"][app]["document_read_ok"]=not info.is_error and (info.structured_content or {}).get("ok") is True
+                        except Exception as exc:
+                          summary["app_readiness"][app]["document_read_error"]=type(exc).__name__
+                  except Exception as exc:
+                    if iteration==0:
+                      summary["app_readiness"][app]={"transport_ok":False,"ready_for_write":False,
+                        "error":type(exc).__name__+":"+str(exc)[:250]}
+                    break
+                summary["host_calls"].append({"app":app,"samples":len(delays),
+                  "p50_ms":percentile(delays,.5) if delays else None,
+                  "p95_ms":percentile(delays,.95) if delays else None,
+                  "max_ms":max(delays) if delays else None})
+                print("RED_TRIAPP_READINESS="+json.dumps({"app":app,
+                  "state":summary["app_readiness"][app],"latency":summary["host_calls"][-1]}),flush=True)
+            Path("red_triapp_live_readonly.json").write_text(json.dumps(summary,indent=2),encoding="utf8")
+            print("RED_TRIAPP_READONLY_AUDIT=PASS no Adobe writes, Illustrator unresolved fences preserved",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\triapp_readiness.py -Encoding UTF8
+          uv run --python 3.12 python .\triapp_readiness.py
+          if($LASTEXITCODE -ne 0){throw 'RED_TRIAPP_READONLY_NOT_VERIFIED'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: red-panda-real-mrcao-ps-xd-ai-readiness
+          path: red_triapp_live_readonly.json
+          if-no-files-found: warn
+          retention-days: 14
