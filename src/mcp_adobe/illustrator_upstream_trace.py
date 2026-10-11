@@ -59,7 +59,26 @@ def install_trace(bridge_class: type) -> None:
             except Exception as exc:
                 log.warning("CEP_CALLBACK_PARSE_ERROR class=%s", type(exc).__name__)
             try:
+                # The upstream handler itself records matched late completions.
+                # Snapshot the exact fence before invoking it, then undo only
+                # an unauthorized stale-generation transition after handling.
+                stale_fence = None
+                stale_prior = None
+                if kind == "complete" and isinstance(envelope, dict):
+                    from illustrator_mcp.execution import get_coordinator
+                    upstream_coordinator = get_coordinator()
+                    candidate = upstream_coordinator.probe_fence
+                    if (isinstance(candidate, dict)
+                            and candidate.get("requestId") == request_id
+                            and candidate.get("requestToken") == envelope.get("requestToken")
+                            and isinstance(candidate.get("connectionGeneration"), int)
+                            and candidate["connectionGeneration"] != upstream_coordinator.connection_generation):
+                        stale_fence = candidate
+                        stale_prior = candidate.get("priorCompletionObserved")
                 result = await original_handle(self, message)
+                if stale_fence is not None and upstream_coordinator.probe_fence is stale_fence:
+                    stale_fence["priorCompletionObserved"] = stale_prior
+                    log.warning("CEP_STALE_GENERATION_IGNORED requestId=%s", str(request_id)[:48])
                 # A C013 result is terminal/unknown for this request, not a
                 # license to retry. Discard ONLY the cached epoch hint so a
                 # future safely admitted request can bind to the actual JSX
