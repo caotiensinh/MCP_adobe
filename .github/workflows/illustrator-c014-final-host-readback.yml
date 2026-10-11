@@ -1,0 +1,58 @@
+name: Illustrator C014 final host readback
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/illustrator-c014-final-host-readback.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  readback:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Illustrator trusted probe and actual document without mutations
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'C014_SETUP_FAILED'}
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def read(c,cap,args):
+              r=await c.call_tool("creative_read",{"application":"illustrator","capability":cap,"arguments":args})
+              if r.is_error or not isinstance(r.structured_content,dict):
+                  raise RuntimeError("C014_CAPABILITY_ERROR_"+cap)
+              return r.structured_content
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  raw=await read(c,"creative.health",{"probe":False,"timeout":5})
+                  d=raw.get("result",{}).get("connection",{}).get("data",{})
+                  p=(d.get("layers") or {}).get("panel") or {}
+                  q=(d.get("execution") or {}).get("unresolvedJobs")
+                  print("C014_PREFLIGHT="+json.dumps({"blockedAt":d.get("blockedAt"),"panel":p,"unresolved":q},default=str)[:2800],flush=True)
+                  if q or p.get("status")!="ok" or p.get("busy") is not False or p.get("activeRequestId") is not None:
+                      raise RuntimeError("C014_HOST_NOT_SAFE_TO_PROBE")
+                  verified=await read(c,"creative.health",{"probe":True,"timeout":30})
+                  v=verified.get("result",{}).get("connection",{}).get("data",{})
+                  print("C014_TRUSTED="+json.dumps({"ready":v.get("ready"),"probed":v.get("probed"),"blockedAt":v.get("blockedAt"),"layers":v.get("layers")},default=str)[:3500],flush=True)
+                  if v.get("probed") is not True or (v.get("layers") or {}).get("illustrator",{}).get("status")!="ok":
+                      raise RuntimeError("C014_ILLUSTRATOR_HOST_PROBE_FAILED")
+                  print("C014_HOST_PROBE=PASS",flush=True)
+                  doc=await read(c,"creative.document.info",{})
+                  result=doc.get("result") or {}
+                  print("C014_DOCUMENT_INFO="+json.dumps({"result":result},default=str)[:6500],flush=True)
+                  if result.get("execution")!="succeeded" or result.get("ok") is False:
+                      raise RuntimeError("C014_DOCUMENT_INFO_NOT_SUCCESSFUL")
+                  print("C014_DOCUMENT_READBACK=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath c014_final.py -Encoding UTF8
+          uv run python c014_final.py
+          if($LASTEXITCODE -ne 0){throw 'C014_FINAL_READBACK_FAILED'}
