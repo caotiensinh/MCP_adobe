@@ -1,0 +1,27 @@
+name: Illustrator C014 safe document snapshot unit regression
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-ai-readonly-c014-regression.yml"
+      - "src/mcp_adobe/illustrator_cep.py"
+      - "src/mcp_adobe/illustrator.py"
+      - "tests/test_illustrator_cep.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.17'
+      - name: Sync exact 3.12 runtime
+        run: uv sync --python 3.12
+      - name: Verify C014 fast snapshot is read-only and uses one host call
+        run: |
+          uv run python -m unittest tests.test_illustrator_cep -v
+          uv run python -m unittest tests.test_illustrator -v
