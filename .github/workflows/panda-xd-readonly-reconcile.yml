@@ -55,5 +55,20 @@ jobs:
               print('XD_DIAG_READ_ONLY=COMPLETE',flush=True)
           asyncio.run(main())
           '@ | Set-Content -LiteralPath xd_reconcile_readonly.py -Encoding UTF8
+          Write-Host "XD_DIAG_DESKTOP_SESSION=$([System.Diagnostics.Process]::GetCurrentProcess().SessionId)"
+          foreach($proc in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {$_.Name -match '^XD.exe$|^Adobe XD.exe$|ApplicationFrameHost.exe|^Illustrator.exe$'})){
+            Write-Host "XD_DIAG_PROCESS name=$($proc.Name) pid=$($proc.ProcessId) session=$($proc.SessionId) exe=$($proc.ExecutablePath)"
+          }
+          foreach($port in @(8787,8765,8081)){
+            foreach($con in @(Get-NetTCPConnection -LocalPort $port -ErrorAction SilentlyContinue)){
+              Write-Host "XD_DIAG_TCP port=$port state=$($con.State) pid=$($con.OwningProcess)"
+            }
+          }
+          $log=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\logs\local-host.log'
+          if(Test-Path -LiteralPath $log){
+            Write-Host 'XD_DIAG_GATEWAY_LOG_BEGIN'
+            Get-Content -LiteralPath $log -Tail 75
+            Write-Host 'XD_DIAG_GATEWAY_LOG_END'
+          }
           uv run python xd_reconcile_readonly.py
           if($LASTEXITCODE -ne 0){throw 'XD_READ_ONLY_DIAGNOSTIC_FAILED'}
