@@ -21,11 +21,17 @@ jobs:
           if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){
             throw 'PANDA_AI_MODAL_WRONG_DESKTOP'
           }
-          $p=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'"|Where-Object {$_.SessionId -eq 1})
-          if($p.Count -ne 1){throw 'PANDA_AI_MODAL_PROCESS_AMBIGUOUS'}
-          $pidTarget=[int]$p[0].ProcessId
-          $proc=Get-Process -Id $pidTarget
-          Write-Host "PANDA_AI_MODAL_MAIN pid=$pidTarget mainHandle=$($proc.MainWindowHandle) title=$($proc.MainWindowTitle) respond=$($proc.Responding)"
+          $all=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'Illustrator|CEPHtmlEngine'})
+          foreach($entry in $all){
+            Write-Host "PANDA_AI_PROCESS_ENTRY name=$($entry.Name) pid=$($entry.ProcessId) session=$($entry.SessionId)"
+          }
+          $p=@($all|Where-Object {$_.Name -eq 'Illustrator.exe' -and $_.SessionId -eq 1})
+          Write-Host "PANDA_AI_ILLUSTRATOR_DESKTOP_PROCESS_COUNT=$($p.Count)"
+          $ids=@($p|ForEach-Object {[int]$_.ProcessId})
+          foreach($id in $ids){
+            $proc=Get-Process -Id $id -ErrorAction SilentlyContinue
+            if($proc){Write-Host "PANDA_AI_MODAL_MAIN pid=$id handle=$($proc.MainWindowHandle) title=$($proc.MainWindowTitle) respond=$($proc.Responding)"}
+          }
           Add-Type -AssemblyName UIAutomationClient
           Add-Type -AssemblyName UIAutomationTypes
           $root=[System.Windows.Automation.AutomationElement]::RootElement
@@ -37,7 +43,7 @@ jobs:
               $id=$w.Current.ProcessId
               $name=[string]$w.Current.Name
               $class=[string]$w.Current.ClassName
-              if($id -ne $pidTarget -and $name -notmatch 'Adobe Illustrator|Illustrator|New Document|Save As|Open Document|Save Document'){continue}
+              if($id -notin $ids -and $name -notmatch 'Adobe Illustrator|Illustrator|New Document|Save As|Open Document|Save Document'){continue}
               $found++
               $pattern=$null
               $isWindow=$w.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern,[ref]$pattern)
