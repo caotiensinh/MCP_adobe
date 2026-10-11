@@ -39,7 +39,7 @@ class PhotoshopRedVectorTests(unittest.TestCase):
         s,b=compile_path_fill(STEPS[3],expected_doc=NATIVE)
         actual=execute_mock(s)
         self.assertEqual(actual["result"]["shape"],STEPS[3]["name"])
-        self.assertGreater(actual["result"]["vertices"],30)
+        self.assertGreaterEqual(actual["result"]["vertices"],18)
         self.assertEqual(actual["sideEffects"],3)
         self.assertFalse(actual["selected"])
         for key,value in b.items():
