@@ -1,0 +1,25 @@
+name: Panda red poster 60 separate editable objects validation
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-red-scene-blueprint-regression.yml"
+      - "scripts/panda_red_poster_blueprint.py"
+      - "tests/test_panda_red_blueprint.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  scene:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate 60 real component primitives and bounds safety
+        run: |
+          python -m py_compile scripts/panda_red_poster_blueprint.py tests/test_panda_red_blueprint.py
+          python -m unittest tests.test_panda_red_blueprint -v
+          python scripts/panda_red_poster_blueprint.py
