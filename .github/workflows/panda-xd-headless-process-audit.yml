@@ -50,10 +50,10 @@ jobs:
                                 [System.Windows.Automation.Condition]::TrueCondition)
           foreach($element in $top){
             $title=[string]$element.Current.Name
-            $pid=[int]$element.Current.ProcessId
+            $ownerPid=[int]$element.Current.ProcessId
             if($title -match 'Adobe XD|Untitled|Save As' -or
-              (@($xd | Select-Object -ExpandProperty Id) -contains $pid)){
-              Write-Host "XD_HEADLESS_TOP_WINDOW name=$title pid=$pid class=$($element.Current.ClassName)"
+              (@($xd | Select-Object -ExpandProperty Id) -contains $ownerPid)){
+              Write-Host "XD_HEADLESS_TOP_WINDOW name=$title pid=$ownerPid class=$($element.Current.ClassName)"
             }
           }
           foreach($logName in @('Microsoft-Windows-AppModel-Runtime/Admin','Microsoft-Windows-TWinUI/Operational')){
