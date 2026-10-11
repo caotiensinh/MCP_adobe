@@ -1,8 +1,9 @@
 name: Illustrator house gateway job status
 on:
-  push:
-    branches: [feat/canvas-region-targeting]
+  pull_request:
+    branches: [main]
     paths: [".github/workflows/illustrator-house-gateway-job-status.yml"]
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
