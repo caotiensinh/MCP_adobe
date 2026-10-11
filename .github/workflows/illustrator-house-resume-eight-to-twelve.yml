@@ -1,9 +1,5 @@
 name: Illustrator house resume 8 to 12 real objects
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/illustrator-house-resume-eight-to-twelve.yml"
   workflow_dispatch:
 permissions:
   contents: read
