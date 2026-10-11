@@ -65,59 +65,8 @@ $saveCandidates=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendan
        [System.Windows.Automation.AutomationElement]::AutomationIdProperty,'1')))
 $save=$null
 foreach($item in $saveCandidates){
-  $saveCandidateName=[string]$item.Current.Name
-  if($saveCandidateName -match 'Save|保存'){
-    $save=$item
-    break
-  }
-}
-if(-not $save){throw 'XD_PICKER_SAVE_BUTTON_NOT_IDENTIFIED'}
-Write-Host "XD_PICKER_SAVE_CONTROL_IDENTIFIED=PASS name=$($save.Current.Name) type=$($save.Current.ControlType.ProgrammaticName)"
-$clicked=$false
-try{
-  $invoke=$save.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-  $invoke.Invoke()
-  $clicked=$true
-  Write-Host 'XD_PICKER_SAVE_INVOKED=PASS method=InvokePattern'
-}catch{
-  try{
-    $legacy=$save.GetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern)
-    $legacy.DoDefaultAction()
-    $clicked=$true
-    Write-Host 'XD_PICKER_SAVE_INVOKED=PASS method=LegacyDefault'
-  }catch{
-    Write-Host "XD_PICKER_NATIVE_SAVE_PATTERN_NOT_SUPPORTED=$($_.Exception.Message)"
-  }
-}
-if(-not $clicked){throw 'XD_PICKER_SAVE_CLICK_NOT_SUPPORTED_STOP_NO_REPLAY'}
-$deadline=(Get-Date).AddSeconds(35)
-while(-not (Test-Path -LiteralPath $target) -and (Get-Date) -lt $deadline){
-  Start-Sleep -Milliseconds 650
-}
-if(-not (Test-Path -LiteralPath $target)){throw 'XD_PICKER_FILE_NOT_CREATED'}
-$file=Get-Item -LiteralPath $target
-if($file.Length -lt 1000){throw 'XD_PICKER_NATIVE_FILE_TOO_SMALL'}
-$hash=(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
-Write-Host "XD_PICKER_NATIVE_XD_VERIFIED=PASS bytes=$($file.Length) path=$target sha256=$hash"
-)
-    if($matchesName -or $matchesId){
-      Write-Host "XD_PICKER_CONTROL name=$name id=$id type=$tp"
-    }
-    if($tp -eq 'ControlType.Edit' -and ($id -eq '1001' -or $id -match 'FileName')){
-      $edit=$element
-    }
-  }
-}
-if(-not $edit){throw 'XD_PICKER_FILENAME_EDIT_NOT_UNIQUE_REFUSE_TYPING'}
-$value=$edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-$value.SetValue($target)
-Write-Host "XD_PICKER_PATH_SET=PASS target=$target"
-$saveCandidates=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,
-     (New-Object System.Windows.Automation.PropertyCondition(
-       [System.Windows.Automation.AutomationElement]::AutomationIdProperty,'1')))
-$save=null
-foreach($item in $saveCandidates){
-  if([string]$item.Current.Name -match 'Save|保存'){
+  $label=[string]$item.Current.Name
+  if($label -match 'Save|保存'){
     $save=$item
     break
   }
