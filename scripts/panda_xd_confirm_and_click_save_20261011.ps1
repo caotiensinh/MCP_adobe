@@ -168,15 +168,10 @@ if($buttonClass -ne 'Button'){throw "XD_NATIVE_SAVE_UNEXPECTED_BUTTON_CLASS=$but
 $buttonText=NativeText $buttonHwnd
 if($buttonText -notmatch 'Save'){throw "XD_NATIVE_SAVE_BUTTON_LABEL_CHANGED=$buttonText"}
 # One verifiable Win32 native click on the EXACT Save button, not on Chrome.
-[void][PandaXdNative]::SetForegroundWindow($dialogHwnd)
-Start-Sleep -Milliseconds 240
-$fg=[PandaXdNative]::GetForegroundWindow()
-$fgPid=[uint32]0
-if($fg -ne [IntPtr]::Zero){[void][PandaXdNative]::GetWindowThreadProcessId($fg,[ref]$fgPid)}
-Write-Host "XD_NATIVE_SAVE_FOCUS_BEFORE_CLICK foregroundPid=$fgPid pickerPid=$pickerPid"
-if([int]$fgPid -ne $pickerPid -and [int]$fgPid -ne $xdPid){
-  throw 'XD_NATIVE_SAVE_FOREIGN_FOREGROUND_REFUSE_SAVE'
-}
+# Do not target the desktop foreground (Chrome is active on this shared
+# desktop). The verified native PickerHost Button HWND uniquely owns Save.
+# BM_CLICK is sent directly to HWND and cannot modify a Chrome control.
+Write-Host "XD_NATIVE_SAVE_DIRECT_BUTTON=READY pickerPid=$pickerPid hwnd=$buttonHwnd foreground_not_required"
 [void][PandaXdNative]::SendMessage($buttonHwnd,[uint32]245,[IntPtr]::Zero,[IntPtr]::Zero)
 Write-Host 'XD_NATIVE_SAVE_BUTTON=BM_CLICK_ONCE'
 $deadline=(Get-Date).AddSeconds(30)
