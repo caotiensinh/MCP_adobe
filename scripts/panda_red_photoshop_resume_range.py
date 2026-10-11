@@ -95,6 +95,39 @@ async def paint(c,part,ordinal):
         "bounds":actual,"source_sha256":previous,"sha256":updated,
         "bytes":TARGET.stat().st_size},ensure_ascii=False),flush=True)
 
+async def paint_text(c,part,ordinal):
+    # Photoshop creates an editable native Type layer itself.
+    params={"text":str(part["text"]),"x":float(part["x"]),"y":float(part["y"]),
+            "fontSize":float(part["fontSize"]),**rgb(part["fill"])}
+    await call(c,"creative_write","creative.text.create",params)
+    initial=await state(c)
+    active=initial.get("activeLayer") or {}
+    if "TEXT" not in str(active.get("kind","")).upper():
+        raise RuntimeError("RED_PS_RANGE_TEXT_LAYER_KIND_UNVERIFIED_NO_REPLAY")
+    await call(c,"creative_write","creative.layer.rename",{"name":part["name"]})
+    after=await state(c)
+    layer=after.get("activeLayer") or {}
+    bounds=layer.get("bounds") or {}
+    if layer.get("name")!=part["name"]:
+        raise RuntimeError("RED_PS_RANGE_TEXT_NAME_NOT_VERIFIED")
+    # Point text uses a baseline anchor; check actual visible glyph bounds.
+    if (float(bounds.get("right",-999))-float(bounds.get("left",0))<=0 or
+        float(bounds.get("bottom",-999))-float(bounds.get("top",0))<=0):
+        raise RuntimeError("RED_PS_RANGE_TEXT_GLYPH_BOUNDS_DEGENERATE")
+    names=await layer_names(c)
+    expected={s["name"] for s in STEPS[:ordinal]}
+    if not expected.issubset(names) or len([n for n in names if n in expected])!=ordinal:
+        raise RuntimeError("RED_PS_RANGE_TEXT_LAYER_READBACK_INCOMPLETE")
+    before=sha(TARGET)
+    await call(c,"creative_write","creative.document.save",{"path":str(TARGET),"format":"PSD"})
+    after_sha=sha(TARGET)
+    if after_sha==before:
+        raise RuntimeError("RED_PS_RANGE_TEXT_PSD_NOT_PERSISTED")
+    print("RED_PS_COMPONENT_PERSISTED="+json.dumps({
+        "ordinal":ordinal,"name":part["name"],"kind":"text",
+        "bounds":bounds,"source_sha256":before,"sha256":after_sha,
+        "bytes":TARGET.stat().st_size},ensure_ascii=False),flush=True)
+
 async def main() -> None:
     preflight()
     ROOT.mkdir(parents=True,exist_ok=True)
