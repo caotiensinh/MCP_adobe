@@ -64,70 +64,13 @@ def node_map(x):
             if guid: result[a["name"]]=str(guid)
     return result
 def apply_one():
-    """Invoke the actual Adobe XD UXP Apply menu item once.
+    """Apply one previously verified queued XD operation through hot UIA host.
 
-    Unlike SendKeys, UI Automation targets an exact enabled menu entry in the
-    verified saved document, even when Chrome owns Windows foreground.
-    The caller must verify one owned queued operation before invoking this.
-    On ambiguous UI result we stop; we do not resend.
+    The caller must still inspect the exact queue status and live scenegraph.
+    No fallback/rerun when the worker reports an uncertain UI invocation.
     """
-    cmd=r"""
-Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-$sourceRun=[string]$env:PANDA_XD_SOURCE_RUN_ID
-if($sourceRun -notmatch '^[0-9]{8,20}$'){throw 'XD_APPLY_SOURCE_RUN_NOT_SPECIFIED'}
-$root=[System.Windows.Automation.AutomationElement]::RootElement
-$windows=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
-$documents=@()
-foreach($w in $windows){
-  if([string]$w.Current.Name -match "^MCP_Mode1_Panda_XD_$($sourceRun).*Adobe XD$" -and
-     [string]$w.Current.ClassName -eq 'ApplicationFrameWindow'){$documents+=,$w}
-}
-if($documents.Count -ne 1){throw "XD_APPLY_DOCUMENT_NOT_UNIQUE count=$($documents.Count)"}
-$document=$documents[0]
-$condition=New-Object System.Windows.Automation.PropertyCondition(
-  [System.Windows.Automation.AutomationElement]::AutomationIdProperty,'AppMenuBar_Plugins')
-$menu=$document.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
-if(-not $menu -or -not $menu.Current.IsEnabled){throw 'XD_APPLY_PLUGINS_MENU_NOT_ENABLED'}
-$exp=$menu.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
-if($exp.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$exp.Expand()}
-Start-Sleep -Milliseconds 180
-$items=$document.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
-$parents=@()
-foreach($n in $items){
-  if([string]$n.Current.Name -ne 'MCP Adobe Bridge' -or
-     [string]$n.Current.ControlType.ProgrammaticName -ne 'ControlType.MenuItem'){continue}
-  try {
-    $pattern=$n.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
-    $parents+=,$n
-  }catch{}
-}
-if($parents.Count -ne 1){throw "XD_APPLY_PARENT_MENU_AMBIGUOUS count=$($parents.Count)"}
-$submenu=$parents[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
-if($submenu.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$submenu.Expand()}
-Start-Sleep -Milliseconds 180
-$all=$document.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
-$matches=@()
-foreach($n in $all){
-  if([string]$n.Current.Name -eq 'MCP Adobe Apply' -and
-     [string]$n.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and
-     $n.Current.IsEnabled){$matches+=,$n}
-}
-if($matches.Count -ne 1){throw "XD_APPLY_MENU_ACTION_AMBIGUOUS count=$($matches.Count)"}
-$action=$matches[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
-try{
-  $action.Invoke()
-  Write-Output "XD_APPLY_REAL_PLUGIN_MENU_INVOKED=ONCE document=$($document.Current.Name)"
-}catch{
-  throw "XD_APPLY_MENU_INVOKE_UNCERTAIN_NO_REPEAT $($_.Exception.Message)"
-}
-"""
-    p=subprocess.run(["powershell","-NoProfile","-NonInteractive","-Command",cmd],
-                     capture_output=True,text=True,timeout=22)
-    print("XD_APPLY_UI="+json.dumps({"rc":p.returncode,"stdout":p.stdout[-1200:],
-          "stderr":p.stderr[-1200:]}),flush=True)
-    if p.returncode or "XD_APPLY_REAL_PLUGIN_MENU_INVOKED=ONCE" not in p.stdout:
-        raise RuntimeError("XD_APPLY_MENU_NOT_VERIFIED_STOP_NO_REPLAY")
+    from panda_xd_apply_hot import apply_one as hot_apply_once
+    hot_apply_once()
 
 async def call(c,tool,cap,args=None):
     r=await c.call_tool(tool,{"application":"xd","capability":cap,"arguments":args or {}})
