@@ -1,0 +1,71 @@
+name: Panda Illustrator post-upgrade fast snapshot failure log triage read only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-ai-postupgrade-c014-root-cause-log.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - name: Show last relevant gateway errors after the exact failed snapshot; never enqueue Illustrator jobs
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'PANDA_AI_LOG_WRONG_HOST'}
+          $log=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\logs\local-host.log'
+          if(-not(Test-Path -LiteralPath $log -PathType Leaf)){throw 'PANDA_AI_LOG_NOT_FOUND'}
+          $filter='illustrator|execute_script|creative_read|snapshot|missing_descriptor|C014|C013|traceback|exception|error|timed out|timeout|unresolved'
+          $lines=@(Get-Content -LiteralPath $log -Tail 1600)
+          $found=0
+          foreach($line in $lines){
+            $safe=([string]$line) -replace '(?i)(token|password|secret|authorization|api[_-]?key|cookie)\s*[:=]\s*[^\s,}]+','$1=[REDACTED]'
+            if($safe -match $filter){
+              $found++
+              if($safe.Length -gt 650){$safe=$safe.Substring(0,650)}
+              Write-Host "PANDA_AI_LOG_SIGNAL=$safe"
+            }
+          }
+          Write-Host "PANDA_AI_GATEWAY_LOG_MATCHES=$found"
+          $listeners=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+          if($listeners.Count -ne 1){throw 'PANDA_AI_GATEWAY_LISTENER_AMBIGUOUS'}
+          Write-Host "PANDA_AI_GATEWAY_PID=$($listeners[0].OwningProcess)"
+      - name: Read-only precise Illustrator C014 state without probe or callback
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          @'
+          import asyncio,json,time
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  for app in ("illustrator","xd"):
+                      r=await asyncio.wait_for(c.call_tool("creative_read",{
+                        "application":app,"capability":"creative.health",
+                        "arguments":{"probe":False,"timeout":5} if app=="illustrator" else {}}),timeout=13)
+                      p=r.structured_content or {}
+                      data=(p.get("result") or {})
+                      if app=="illustrator":
+                          state=(data.get("connection") or {}).get("data") or {}
+                          out={"app":app,"error":r.is_error,"blockedAt":state.get("blockedAt"),
+                              "execution":state.get("execution"),"blocking":state.get("blocking"),
+                              "panel":(state.get("layers") or {}).get("panel")}
+                      else:
+                          out={"app":app,"error":r.is_error,
+                              "bridge":data.get("bridge"),"pending_count":data.get("pending_count")}
+                      print("PANDA_AI_AFTER_FAILURE_HEALTH="+json.dumps(out,default=str),flush=True)
+                  print("PANDA_AI_ROOT_CAUSE_AUDIT=PASS no host operation created",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\panda_log_triage.py -Encoding UTF8
+          uv run --python 3.12 python .\panda_log_triage.py
+          if($LASTEXITCODE -ne 0){throw 'PANDA_AI_POSTFAILURE_HEALTH_UNAVAILABLE'}
