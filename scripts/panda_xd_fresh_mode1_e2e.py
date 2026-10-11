@@ -12,10 +12,13 @@ from mcp import Client
 from panda_xd_mode1_e2e import STEPS, call, apply_one, node_map, find, save_checkpoint
 import panda_xd_mode1_e2e as old
 
-RUN=os.environ["GITHUB_RUN_ID"]
+RUN=os.environ.get("PANDA_XD_WORK_ID") or os.environ["GITHUB_RUN_ID"]
 ROOT=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"
 CHECKPOINT=ROOT/f"MCP_Mode1_Panda_XD_{RUN}.json"
 URL="http://127.0.0.1:8787/mcp"
+SOURCE=ROOT/"MCP_Mode1_Panda_XD_38136531800.xd"
+if not SOURCE.is_file() or SOURCE.stat().st_size<4096:
+    raise RuntimeError("XD_SOURCE_NATIVE_ORIGINAL_MISSING_NO_WRITES")
 # Checkpoint from prior LOST unsaved document is evidence only, never a source
 # from which pixel paths or an already-applied operation is blindly replayed.
 PREVIOUS=ROOT/"MCP_Mode1_Panda_XD_38114632173.json"
