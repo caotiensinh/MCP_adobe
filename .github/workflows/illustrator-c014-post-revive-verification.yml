@@ -1,9 +1,5 @@
 name: Illustrator C014 post-revive verification
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/illustrator-c014-post-revive-verification.yml"
   workflow_dispatch:
 permissions:
   contents: read
