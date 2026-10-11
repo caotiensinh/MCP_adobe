@@ -81,6 +81,33 @@ assert.equal(nodes[2].globalBounds.y,780,'text should use global document Y');
 assert.equal(label.bounds.x,0);
 assert.throws(()=>mutate('xd.queue.rectangle_create',{x:'invalid',y:0,width:10,height:10}),/invalid global placement geometry/);
 
+// Live XD run 38144202799 proved all old Rectangles shifted +491,+220.
+nodes=[new Rectangle()];
+nodes[0].guid='33333333-3333-4333-8333-333333333333';
+nodes[0].name='01 XD Panda Garden';
+nodes[0].width=880;nodes[0].height=640;
+const oldRect=nodes[0];
+const request={document_id:rootGuid,guid:oldRect.guid,name:oldRect.name,
+  beforeX:491,beforeY:220,x:0,y:0};
+const repairedRect=mutate('xd.queue.rectangle_position_repair',request);
+assert.equal(repairedRect.repaired,true);
+assert.equal(repairedRect.before.x,491);
+assert.equal(repairedRect.before.y,220);
+assert.equal(repairedRect.after.x,0);
+assert.equal(repairedRect.after.y,0);
+assert.equal(nodes[0],oldRect,'GUID repair must not replace/duplicate the Rectangle');
+assert.equal(nodes[0].guid,request.guid);
+assert.equal(nodes[0].width,880);
+assert.equal(nodes[0].height,640);
+assert.equal(nodes.length,1);
+assert.throws(()=>mutate('xd.queue.rectangle_position_repair',request),/source changed or already fixed/);
+assert.throws(()=>mutate('xd.queue.rectangle_position_repair',
+    {...request,beforeX:492}),/source changed or already fixed/);
+assert.throws(()=>mutate('xd.queue.rectangle_position_repair',
+    {...request,document_id:'other'}),/document identity or input is invalid/);
+assert.throws(()=>mutate('xd.queue.rectangle_position_repair',
+    {...request,guid:'44444444-4444-4444-8444-444444444444'}),/GUID\\/name\\/type mismatch/);
+
 // Every path represents exactly one independent editable vector shape.
 nodes=[];
 const curve=mutate('xd.queue.path_create',{name:'Panda hand outline',
