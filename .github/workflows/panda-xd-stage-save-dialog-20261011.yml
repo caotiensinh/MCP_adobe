@@ -1,0 +1,33 @@
+name: PANDA XD stage fresh document and native Save As
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-stage-save-dialog-20261011.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate and open one new real XD document and its native Save As dialog
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $s=Join-Path $PWD 'scripts/panda_xd_stage_clean_save_dialog_20261011.ps1'
+          $tokens=$null;$errs=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($s,[ref]$tokens,[ref]$errs)
+          if(@($errs).Count -gt 0){
+            foreach($e in $errs){Write-Host "XD_STAGE_PARSE_ERROR line=$($e.Extent.StartLineNumber) message=$($e.Message)"}
+            throw 'XD_STAGE_SCRIPT_PARSER_INVALID'
+          }
+          Write-Host 'XD_STAGE_PARSER=PASS'
+          powershell -NoProfile -ExecutionPolicy Bypass -File $s
+          if($LASTEXITCODE -ne 0){throw 'XD_STAGE_REAL_DOCUMENT_OR_PICKER_NOT_VERIFIED'}
+          Write-Host 'XD_STAGE_ONLY=SAVE_AS_DIALOG_OPEN_NATIVE_DOCUMENT_NOT_SAVED_YET'
