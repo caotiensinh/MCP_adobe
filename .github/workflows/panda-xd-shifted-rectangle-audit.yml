@@ -18,7 +18,7 @@ jobs:
       UV_LINK_MODE: copy
     steps:
       - uses: actions/checkout@v4
-      - name: Verify MRCAO live document SHA and 11 original rectangle positions without GUI writes
+      - name: Reconcile 11 rectangle positions now that original 32-node XD session has reconnected
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
