@@ -17,12 +17,12 @@ from mcp import Client
 if __package__:
     from .panda_red_poster_blueprint import STEPS, WIDTH, HEIGHT, validate
     from .panda_red_photoshop_resume_3shapes import call, sha, state, layer_names, inspect, rgb
-    from .panda_red_photoshop_vector_fill import compile_path_fill
+    from .panda_red_photoshop_fast_native import compile_native_shape
     from .panda_red_photoshop_resume_5shapes import native_polygon
 else:
     from panda_red_poster_blueprint import STEPS, WIDTH, HEIGHT, validate
     from panda_red_photoshop_resume_3shapes import call, sha, state, layer_names, inspect, rgb
-    from panda_red_photoshop_vector_fill import compile_path_fill
+    from panda_red_photoshop_fast_native import compile_native_shape
     from panda_red_photoshop_resume_5shapes import native_polygon
 
 ROOT=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"
@@ -54,24 +54,11 @@ def preflight() -> None:
 async def paint(c,part,ordinal):
     if part["kind"]=="text":
         return await paint_text(c,part,ordinal)
-    await call(c,"creative_write","creative.layer.create",{"name":part["name"]})
-    before=await state(c)
-    if (before.get("activeLayer") or {}).get("name")!=part["name"]:
-        raise RuntimeError("RED_PS_RANGE_NEW_LAYER_NOT_ACTIVE_NO_REPLAY")
-    if part["kind"]=="path":
-        source,bounds=compile_path_fill(part,expected_doc=TARGET.name)
-        await native_polygon(c,source,bounds)
-    elif part["kind"] in ("ellipse","rectangle"):
-        x,y=float(part["x"]),float(part["y"])
-        bounds={"left":x,"top":y,"right":x+part["width"],"bottom":y+part["height"]}
-        await call(c,"creative_write","creative.selection."+part["kind"],bounds)
-        selected=await state(c)
-        if (selected.get("document") or {}).get("hasSelection") is not True:
-            raise RuntimeError("RED_PS_RANGE_SELECTION_UNVERIFIED_NO_FILL")
-        await call(c,"creative_authorized_write","creative.style.fill",rgb(part["fill"]),authorized=True)
-        await call(c,"creative_write","creative.selection.clear")
-    else:
-        raise RuntimeError("RED_PS_RANGE_UNSUPPORTED_COMPONENT_KIND_NO_WRITE")
+    # ONE bounded native Adobe operation inserts the named layer and draws it.
+    # The shape is never replayed after an ambiguous result. Each operation
+    # still gets its own scenegraph/pixel-bounds readback and native PSD save.
+    source,bounds=compile_native_shape(part,document=TARGET.name,ordinal=ordinal)
+    await native_polygon(c,source,bounds)
     after=await state(c)
     actual=(after.get("activeLayer") or {}).get("bounds") or {}
     if (after.get("activeLayer") or {}).get("name")!=part["name"]:
