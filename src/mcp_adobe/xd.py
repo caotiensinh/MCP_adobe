@@ -30,6 +30,7 @@ _BINDINGS: dict[str, ToolBinding] = {
     "creative.shape.ellipse": ToolBinding("xd.queue.ellipse_create", RiskClass.WRITE_REVERSIBLE),
     "creative.text.create": ToolBinding("xd.queue.text_create", RiskClass.WRITE_REVERSIBLE),
     "xd.queue.status": ToolBinding("xd.queue.status", RiskClass.READ),
+    "xd.export.png": ToolBinding("xd.export.png", RiskClass.FILE_WRITE),
     "xd.queue.clear": ToolBinding("xd.queue.clear", RiskClass.WRITE_REVERSIBLE),
     "xd.queue.rectangle_create": ToolBinding("xd.queue.rectangle_create", RiskClass.WRITE_REVERSIBLE),
     "xd.queue.ellipse_create": ToolBinding("xd.queue.ellipse_create", RiskClass.WRITE_REVERSIBLE),
