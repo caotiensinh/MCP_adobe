@@ -47,7 +47,8 @@ if(-not $edit){
     $id=[string]$element.Current.AutomationId
     $tp=[string]$element.Current.ControlType.ProgrammaticName
     $matchesName=[regex]::IsMatch($name,'File name|Save|保存|ファイル名')
-    $matchesId=[regex]::IsMatch($id,'FileName|1001|^1
+    $matchesId=[regex]::IsMatch($id,'FileName|1001|^1$')
+    if($matchesName -or $matchesId){
       Write-Host "XD_PICKER_CONTROL name=$name id=$id type=$tp"
     }
     if($tp -eq 'ControlType.Edit' -and ($id -eq '1001' -or $id -match 'FileName')){
