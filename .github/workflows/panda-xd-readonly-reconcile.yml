@@ -44,6 +44,8 @@ jobs:
               procs=__import__('subprocess').run(['powershell','-NoProfile','-Command',"Get-Process -ErrorAction SilentlyContinue | Where-Object {$_.ProcessName -match '^(XD|AdobeXD)$'} | Select-Object Id,SessionId,MainWindowTitle | ConvertTo-Json -Compress"],capture_output=True,text=True,timeout=12)
               print('XD_WINDOWS='+json.dumps({'stdout':procs.stdout[-3000:],'stderr':procs.stderr[-700:]},default=str),flush=True)
               async with Client('http://127.0.0.1:8787/mcp') as c:
+                  discovered=await c.call_tool('creative_discover',{})
+                  print('XD_RUNTIME_CAPABILITY_DISCOVERY='+json.dumps({'is_error':discovered.is_error,'payload':discovered.structured_content,'errors':[str(x)[:600] for x in discovered.content] if discovered.is_error else []},default=str),flush=True)
                   for cap,args in [('creative.health',{}),('creative.scenegraph.list',{}),('xd.queue.status',{'operation_id':op})]:
                       try:
                           r=await c.call_tool('creative_read',{'application':'xd','capability':cap,'arguments':args})
