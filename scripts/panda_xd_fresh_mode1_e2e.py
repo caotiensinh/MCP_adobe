@@ -143,8 +143,21 @@ async def main():
         native=find(exported,"nativePath")
         if not isinstance(native,str) or not Path(native).is_file() or Path(native).stat().st_size<1000:
             raise RuntimeError("XD_RENDERED_PNG_FILE_NOT_FOUND")
-        print("XD_NATIVE_PNG_EXPORT=PASS "+json.dumps({"path":native,
-             "bytes":Path(native).stat().st_size}),flush=True)
+        import shutil,hashlib
+        source_png=Path(native)
+        if source_png.read_bytes()[:8]!=b"\x89PNG\r\n\x1a\n":
+            raise RuntimeError("XD_NATIVE_PNG_SIGNATURE_INVALID")
+        dest_png=ROOT/f"MCP_Mode1_Panda_XD_{RUN}.png"
+        if dest_png.exists():
+            raise RuntimeError("XD_NATIVE_PNG_CAPTURE_COLLISION_NO_OVERWRITE")
+        shutil.copyfile(source_png,dest_png)
+        if dest_png.stat().st_size != source_png.stat().st_size:
+            raise RuntimeError("XD_NATIVE_PNG_CAPTURE_SIZE_MISMATCH")
+        print("XD_NATIVE_PNG_EXPORT=PASS "+json.dumps({
+            "application_native":native,"captured":str(dest_png),
+            "bytes":dest_png.stat().st_size,
+            "sha256":hashlib.sha256(dest_png.read_bytes()).hexdigest()
+        }),flush=True)
 
 if __name__=="__main__":
     asyncio.run(main())
