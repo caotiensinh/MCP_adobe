@@ -67,3 +67,36 @@ def test_late_completion_only_marks_matching_fence(monkeypatch):
     asyncio.run(bridge._handle_message(json.dumps({"type":"complete","id":12,"requestToken":"correct-token"})))
     assert fence["priorCompletionObserved"] is True
     assert coordinator.probe_fence is fence
+
+def test_late_completion_from_stale_generation_never_marks_current_fence(monkeypatch):
+    import sys, json
+    fence = {"requestId": 12, "requestToken": "same-token",
+             "priorCompletionObserved": False, "connectionGeneration": 2}
+    coordinator = SimpleNamespace(probe_fence=fence, connection_generation=3)
+    monkeypatch.setitem(sys.modules, "illustrator_mcp", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "illustrator_mcp.execution",
+                        SimpleNamespace(get_coordinator=lambda: coordinator))
+
+    class Registry:
+        def get_pending(self, request_id):
+            return None
+
+    class Bridge:
+        def __init__(self):
+            self.registry = Registry()
+            self._panel_busy = False
+            self._panel_active_request = None
+
+        async def execute_script_async(self):
+            return {}
+
+        async def _handle_message(self, message):
+            return None
+
+    install_trace(Bridge)
+    bridge = Bridge()
+    asyncio.run(bridge._handle_message(json.dumps({
+        "type": "complete", "id": 12, "requestToken": "same-token"
+    })))
+    assert fence["priorCompletionObserved"] is False
+    assert coordinator.probe_fence is fence
