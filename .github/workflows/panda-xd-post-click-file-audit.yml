@@ -1,0 +1,67 @@
+name: PANDA XD audit native Save outcome after button click
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-post-click-file-audit.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect saved native XD file without any GUI actions
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_POST_CLICK_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_POST_CLICK_WRONG_SESSION'}
+          $p=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38132321143.xd'
+          if(Test-Path -LiteralPath $p -PathType Leaf){
+            $f=Get-Item -LiteralPath $p
+            $hash=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash
+            $bytes=@(Get-Content -LiteralPath $p -Encoding Byte -TotalCount 4)
+            Write-Host "XD_NATIVE_SAVE_POSTCLICK_FILE=FOUND bytes=$($f.Length) sha256=$hash magic=$($bytes -join '-') path=$p"
+            if($f.Length -lt 1000){throw 'XD_NATIVE_SAVE_FILE_TOO_SMALL'}
+            Copy-Item -LiteralPath $p -Destination (Join-Path $PWD 'verified_original.xd')
+            Write-Host 'XD_NATIVE_SAVE_POSTCLICK=PASS'
+          } else {
+            Write-Host 'XD_NATIVE_SAVE_POSTCLICK_FILE=ABSENT'
+            Add-Type -AssemblyName UIAutomationClient
+            Add-Type -AssemblyName UIAutomationTypes
+            $root=[System.Windows.Automation.AutomationElement]::RootElement
+            $tops=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+            foreach($win in $tops){
+              if([string]$win.Current.Name -match 'Adobe XD|Save As|Untitled'){
+                Write-Host "XD_POSTCLICK_WINDOW name=$($win.Current.Name) pid=$($win.Current.ProcessId)"
+                $sub=$win.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+                foreach($item in $sub){
+                  if([string]$item.Current.Name -eq 'Save As' -and [string]$item.Current.ControlType.ProgrammaticName -eq 'ControlType.Window'){
+                    Write-Host 'XD_POSTCLICK_SAVE_DIALOG=STILL_OPEN'
+                    $parts=$item.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+                    foreach($part in $parts){
+                      $id=[string]$part.Current.AutomationId
+                      $nm=[string]$part.Current.Name
+                      if($id -eq 'FileNameControlHost' -or $id -eq '1001' -or ($id -eq '1' -and $nm -eq 'Save')){
+                        Write-Host "XD_POSTCLICK_DIALOG_CONTROL id=$id name=$nm"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            throw 'XD_NATIVE_SAVE_POSTCLICK_NO_NATIVE_FILE'
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-xd-postclick-native-evidence
+          path: verified_original.xd
+          if-no-files-found: ignore
+          retention-days: 14
