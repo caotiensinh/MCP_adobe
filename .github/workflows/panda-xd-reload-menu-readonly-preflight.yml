@@ -57,6 +57,22 @@ jobs:
               try{[void]$n.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern);$matches+=,$n}catch{}
             }
           }
+          $candidateCount=0
+          foreach($n in $all){
+            $label=[string]$n.Current.Name
+            if([string]$n.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and $label -and $candidateCount -lt 45){
+              Write-Host "XD_RELOAD_UIA_DOC_MENU name=$label enabled=$($n.Current.IsEnabled)"
+              $candidateCount++
+            }
+          }
+          $rootMatches=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          foreach($n in $rootMatches){
+            $label=[string]$n.Current.Name
+            if($label -match 'Reload|re.?load|読|プラグイン|Development' -and
+               [string]$n.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'){
+              Write-Host "XD_RELOAD_UIA_POPUP_MATCH name=$label enabled=$($n.Current.IsEnabled) class=$($n.Current.ClassName)"
+            }
+          }
           Write-Host "XD_RELOAD_UIA_EXACT_COMMAND_COUNT=$($matches.Count)"
           if($matches.Count -ne 1){throw 'XD_RELOAD_UIA_COMMAND_NOT_ACCESSIBLE'}
           Write-Host 'XD_RELOAD_UIA_TARGET_VERIFIED=PASS no-reload-invoked'
