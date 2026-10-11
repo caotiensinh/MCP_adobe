@@ -1,0 +1,49 @@
+name: Illustrator C013 stage tested tracer
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/illustrator-c013-stage-tested-tracer.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage C013 tracer with backup, compile validation and no process restart
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw "C013_NOT_MRCAO"}
+          $src=Join-Path (Get-Location) 'src\mcp_adobe\illustrator_upstream_trace.py'
+          $dst=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\venv\Lib\site-packages\illustrator_mcp\_mcp_adobe_trace.py'
+          $py=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\venv\Scripts\python.exe'
+          if(-not(Test-Path $src) -or -not(Test-Path $dst) -or -not(Test-Path $py)){throw 'C013_TRACER_INSTALL_NOT_VERIFIED'}
+          $oldHash=(Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash
+          $newHash=(Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+          Write-Output "C013_PREVIOUS_HASH=$oldHash"
+          Write-Output "C013_TESTED_HASH=$newHash"
+          & $py -m py_compile $src
+          if($LASTEXITCODE -ne 0){throw 'C013_SOURCE_COMPILE_FAILED'}
+          $backupDir=Join-Path $env:LOCALAPPDATA 'MCPAdobe\tracer-backups'
+          New-Item -ItemType Directory -Path $backupDir -Force|Out-Null
+          if($oldHash -ne $newHash){
+            $backup=Join-Path $backupDir ("_mcp_adobe_trace."+$oldHash+".py")
+            if(-not(Test-Path $backup)){Copy-Item -LiteralPath $dst -Destination $backup -ErrorAction Stop}
+            Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
+          }
+          & $py -m py_compile $dst
+          if($LASTEXITCODE -ne 0){throw 'C013_INSTALLED_COMPILE_FAILED'}
+          if((Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -ne $newHash){throw 'C013_STAGED_HASH_MISMATCH'}
+          Write-Output "C013_TRACER_STAGED=PASS sha256=$newHash"
+          $gateway=@(Get-NetTCPConnection -State Listen -LocalPort 8787 -ErrorAction SilentlyContinue)
+          foreach($entry in $gateway){Write-Output "C013_RUNNING_GATEWAY_PID=$($entry.OwningProcess)"}
+          $ai=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'")
+          foreach($p in $ai){Write-Output "C013_ILLUSTRATOR_PRESERVED_PID=$($p.ProcessId)"}
+          Write-Output 'C013_TRACER_ACTIVATION=PENDING_VERIFIED_UPSTREAM_RESTART'
