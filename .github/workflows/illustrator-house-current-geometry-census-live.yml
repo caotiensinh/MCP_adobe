@@ -1,9 +1,5 @@
 name: Illustrator house current geometry readback
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/illustrator-house-current-geometry-census-live.yml"
   workflow_dispatch:
 permissions:
   contents: read
