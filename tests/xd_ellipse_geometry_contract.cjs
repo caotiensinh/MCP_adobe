@@ -72,7 +72,8 @@ assert.equal(second.bounds.width,60);
 const label=mutate('xd.queue.text_create',{name:'Title',x:350,y:780,text:'Kung Fu',fontSize:36});
 assert.equal(nodes[2].globalBounds.x,350,'text should use global document X');
 assert.equal(nodes[2].globalBounds.y,780,'text should use global document Y');
-assert.equal(label.bounds.x,350);
+// nodeInfo intentionally reports localBounds; scenegraph/globalBounds proves placement.
+assert.equal(label.bounds.x,0);
 assert.throws(()=>mutate('xd.queue.rectangle_create',{x:'invalid',y:0,width:10,height:10}),/invalid global placement geometry/);
 
 // Simulate the real E2E regression: Ellipse created with width/height (ignored).
