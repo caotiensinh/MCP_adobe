@@ -14,7 +14,7 @@ SOURCE=ROOT/f"MCP_Mode1_Panda_XD_{SRC_ID}.xd"
 ORIGINAL=ROOT/f"MCP_Mode1_Panda_XD_{SRC_ID}.json"
 REPAIR=ROOT/f"MCP_Mode1_Panda_XD_{SRC_ID}_ellipse_repair.json"
 PNG=ROOT/f"MCP_Mode1_Panda_XD_{SRC_ID}_repaired.png"
-SOURCE_SHA="598f79071cf7dbfc426f9feef50144cf94225d2e7bb384c89e2e4fe1d67fdad29"
+SOURCE_SHA="598f79071cf7dbfc426f9fef50144cf94225d2e7bb384c89e2e4fe1d67fdad29"
 DOCUMENT="98d6635b-3767-4254-b200-ec8442b69ad2"
 ELLIPSES=[step for step in STEPS if step[1]=="creative.shape.ellipse"]
 
