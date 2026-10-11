@@ -1,0 +1,65 @@
+name: PANDA XD inspect active Save As UI read only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-save-dialog-inspect.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read XD foreground and UI Automation state without clicks or keyboard
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'NOT_MRCAO'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'NOT_INTERACTIVE'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class XdReadOnlyFocus {
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+          }
+          '@
+          $h=[XdReadOnlyFocus]::GetForegroundWindow()
+          $pidOwner=[uint32]0
+          if($h -ne [IntPtr]::Zero){[void][XdReadOnlyFocus]::GetWindowThreadProcessId($h,[ref]$pidOwner)}
+          Write-Host "XD_FOCUS_READ_ONLY pid=$pidOwner"
+          $wins=@(Get-Process -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0 -and ($_.MainWindowTitle -match 'Adobe XD|Save As|名前を付けて保存' -or $_.ProcessName -match '^(XD|AdobeXD)$')})
+          foreach($w in $wins){
+            Write-Host "XD_WINDOW_READ_ONLY pid=$($w.Id) hwnd=$($w.MainWindowHandle) title=$($w.MainWindowTitle)"
+            try {
+              $el=[System.Windows.Automation.AutomationElement]::FromHandle($w.MainWindowHandle)
+              $desc=$el.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+              Write-Host "XD_AUTOMATION_NODE_COUNT=$($desc.Count)"
+              for($i=0;$i -lt [Math]::Min($desc.Count,240);$i++){
+                $n=$desc.Item($i)
+                $name=[string]$n.Current.Name
+                $id=[string]$n.Current.AutomationId
+                $type=[string]$n.Current.ControlType.ProgrammaticName
+                if($name -or $id){Write-Host "XD_UI_NODE ordinal=$i type=$type name=$name id=$id"}
+              }
+            } catch {Write-Host "XD_UI_READ_ERROR=$($_.Exception.Message)"}
+          }
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $children=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          foreach($n in $children){
+            $name=[string]$n.Current.Name
+            if($name -match 'XD|Save|保存|File|Untitled'){Write-Host "XD_ROOT_WINDOW name=$name class=$($n.Current.ClassName)"}
+          }
+          try {
+            $focus=[System.Windows.Automation.AutomationElement]::FocusedElement
+            Write-Host "XD_FOCUSED_CONTROL name=$($focus.Current.Name) type=$($focus.Current.ControlType.ProgrammaticName) id=$($focus.Current.AutomationId)"
+          } catch {Write-Host "XD_FOCUS_CONTROL_ERROR=$($_.Exception.Message)"}
+          Write-Host 'XD_UI_INSPECT_READ_ONLY=PASS'
