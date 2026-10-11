@@ -1,0 +1,36 @@
+name: Illustrator house complete garden trees and front facade
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/illustrator-house-finish-landscape-live.yml"
+      - "scripts/illustrator_house_finish_garden.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  complete:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Continue existing Illustrator artboard from confirmed checkpoint
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'NOT_APPROVED_MRCAO_HOST'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'ILLUSTRATOR_DEPENDENCY_SETUP_FAILED'}
+          uv run python scripts/illustrator_house_finish_garden.py
+          if($LASTEXITCODE -ne 0){throw 'ILLUSTRATOR_LANDSCAPE_INCOMPLETE_DO_NOT_REPLAY'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: illustrator-house-garden-29-actual-artboard
+          path: house_landscape_29_actual.png
+          if-no-files-found: ignore
+          retention-days: 14
