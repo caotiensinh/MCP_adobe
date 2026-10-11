@@ -1,0 +1,82 @@
+name: XD inspect queued MCP Apply menu without document writes
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-queued-apply-menu-audit.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read exact queued operation and inspect XD Plugins menu via UI Automation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_APPLY_AUDIT_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_APPLY_AUDIT_NO_DESKTOP'}
+          $f=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800_ellipse_repair.json'
+          $checkpoint=Get-Content -LiteralPath $f -Raw | ConvertFrom-Json
+          if($checkpoint.document_id -ne '98d6635b-3767-4254-b200-ec8442b69ad2' -or
+             @($checkpoint.repaired).Count -ne 0 -or
+             $checkpoint.pending.ordinal -ne 1 -or
+             $checkpoint.pending.operation_id -ne 'xd-1791723425452-1'){
+            throw 'XD_APPLY_AUDIT_CHECKPOINT_NOT_EXPECTED'
+          }
+          Write-Host "XD_APPLY_AUDIT_PENDING=PASS op=$($checkpoint.pending.operation_id)"
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$root.FindAll([System.Windows.Automation.TreeScope]::Children,
+              [System.Windows.Automation.Condition]::TrueCondition)
+          $candidates=@()
+          foreach($window in $top){
+            $name=[string]$window.Current.Name
+            if($name -match 'MCP_Mode1_Panda_XD_38136531800' -and $name -match 'Adobe XD'){
+              $candidates+=,$window
+            }
+          }
+          if($candidates.Count -ne 1){throw "XD_APPLY_AUDIT_SAVED_WINDOW_COUNT=$($candidates.Count)"}
+          $xd=$candidates[0]
+          Write-Host "XD_APPLY_AUDIT_DOCUMENT=PASS name=$($xd.Current.Name) pid=$($xd.Current.ProcessId)"
+          function Print-Menu($container,[string]$prefix){
+            $nodes=$container.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+              [System.Windows.Automation.Condition]::TrueCondition)
+            Write-Host "XD_APPLY_AUDIT_NODE_COUNT phase=$prefix count=$($nodes.Count)"
+            foreach($node in $nodes){
+              try{
+                $name=[string]$node.Current.Name
+                $id=[string]$node.Current.AutomationId
+                $type=[string]$node.Current.ControlType.ProgrammaticName
+                if($name -match 'Plugin|Adobe|MCP|Apply|Connect|Development|Reload' -or
+                   $id -match 'Plugin|MCP|Apply|Connect'){
+                  Write-Host "XD_APPLY_AUDIT_MENU phase=$prefix type=$type enabled=$($node.Current.IsEnabled) name=$name id=$id"
+                }
+              }catch{}
+            }
+          }
+          Print-Menu $xd 'BEFORE'
+          $prop=New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::AutomationIdProperty,'AppMenu_Plugins')
+          $plugins=$xd.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$prop)
+          if(-not $plugins){throw 'XD_APPLY_AUDIT_PLUGINS_MENU_NOT_FOUND'}
+          Write-Host "XD_APPLY_AUDIT_PLUGINS_MENU=FOUND enabled=$($plugins.Current.IsEnabled)"
+          try{
+            $expand=$plugins.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+            if($expand.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){
+              $expand.Expand()
+            }
+            Write-Host 'XD_APPLY_AUDIT_PLUGINS_EXPANDED=PASS'
+          }catch{
+            Write-Host "XD_APPLY_AUDIT_PLUGINS_NOT_EXPANDED=$($_.Exception.Message)"
+          }
+          Start-Sleep -Milliseconds 450
+          Print-Menu $xd 'AFTER'
+          Write-Host 'XD_APPLY_AUDIT_NO_DOCUMENT_WRITE=PASS'
