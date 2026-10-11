@@ -82,7 +82,7 @@ do{
                        [System.Windows.Automation.Condition]::TrueCondition)
   foreach($w in $windows){
     $t=[string]$w.Current.Name
-    if($t -match 'Save As|名前を付けて保存|Save.*Local|保存する|ローカルドキュメント'){
+    if($w.Current.ClassName -eq '#32770' -or $t -match 'Save As|Save.*Local'){
       $dialog=$w;break
     }
   }
@@ -100,7 +100,7 @@ $edit=$null
 foreach($candidate in $edits){
   $name=[string]$candidate.Current.Name;$id=[string]$candidate.Current.AutomationId
   Write-Host "XD_BOOTSTRAP_EDIT name=$name id=$id"
-  if($id -match '^1001$|FileName' -or $name -match 'File name|ファイル名'){$edit=$candidate;break}
+  if($id -match '^1001$|FileName' -or $name -match 'File name'){$edit=$candidate;break}
 }
 if(-not $edit){throw 'XD_BOOTSTRAP_FILENAME_EDIT_NOT_FOUND'}
 $pattern=$edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
@@ -111,7 +111,7 @@ $buttonCondition=New-Object System.Windows.Automation.PropertyCondition(
 $buttons=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,$buttonCondition)
 $saveButton=$null
 foreach($b in $buttons){
-  if(([string]$b.Current.Name) -match '^Save|^保存'){$saveButton=$b;break}
+  if(([string]$b.Current.Name) -match '^Save' -or ([string]$b.Current.AutomationId) -eq '1'){$saveButton=$b;break}
 }
 if(-not $saveButton){throw 'XD_BOOTSTRAP_SAVE_BUTTON_NOT_FOUND'}
 $invoke=$saveButton.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
