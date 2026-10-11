@@ -290,4 +290,5 @@ async def main():
         }),flush=True)
 
 if __name__ == "__main__":
+    if __name__ == '__main__':
     asyncio.run(main())
