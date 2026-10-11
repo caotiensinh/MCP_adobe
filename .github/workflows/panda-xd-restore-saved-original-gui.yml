@@ -1,0 +1,43 @@
+name: XD restore saved native panda document and UXP bridge
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - '.github/workflows/panda-xd-restore-saved-original-gui.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  restore:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse safe open-source-file GUI recovery and start XD once
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $p=Join-Path $PWD 'scripts/panda_xd_restore_saved_file_gui.ps1'
+          $tokens=$null;$errors=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($p,[ref]$tokens,[ref]$errors)
+          if(@($errors).Count -ne 0){
+            foreach($e in $errors){Write-Host "XD_RESTORE_PARSE_ERROR line=$($e.Extent.StartLineNumber) message=$($e.Message)"}
+            throw 'XD_RESTORE_SCRIPT_PARSE_INVALID'
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File $p
+          if($LASTEXITCODE -ne 0){throw 'XD_RESTORE_NOT_VERIFIED_NO_BLIND_RETRY'}
+      - name: Readback real 32 objects and degenerate ellipse geometry before editing
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'XD_RESTORE_UV_SYNC_ERROR'}
+          uv run python scripts/panda_xd_ellipse_fix_preflight.py
+          if($LASTEXITCODE -ne 0){throw 'XD_RESTORE_MCP_READBACK_NOT_VERIFIED'}
