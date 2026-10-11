@@ -365,6 +365,8 @@ function dispatch(method, params) {
     return { items: latestSnapshot.selection || [] };
   }
 
+  if (method === "xd.export.png") return exportPandaPng(params || {});
+
   if (method === "xd.queue.clear") {
     return clearPending(params && params.reason ? String(params.reason) : "MCP queue reset");
   }
@@ -386,6 +388,34 @@ function dispatch(method, params) {
   }
 
   throw new Error(`unsupported Adobe XD bridge method: ${method}`);
+}
+
+async function exportPandaPng(params) {
+  // A real XD rendition from its actual scenegraph, never an imported image.
+  const filename = String((params && params.filename) || "");
+  if (!/^MCP_Mode1_Panda_XD_[A-Za-z0-9_-]+\.png$/.test(filename)) {
+    throw new Error("export filename must be a bounded unique panda PNG");
+  }
+  const root = scenegraph.root;
+  let artboard = null;
+  for (let i = 0; root && root.children && i < root.children.length; i += 1) {
+    const node = root.children.at(i);
+    if (node && node.constructor && node.constructor.name === "Artboard") {
+      artboard = node;
+      break;
+    }
+  }
+  if (!artboard) throw new Error("XD has no artboard for PNG rendition");
+  const fs = require("uxp").storage.localFileSystem;
+  const folder = await fs.getDataFolder();
+  const file = await folder.createFile(filename, {overwrite: false});
+  await application.createRenditions([{
+    node: artboard,
+    outputFile: file,
+    type: application.RenditionType.PNG,
+    scale: 1
+  }]);
+  return {status: "exported", filename, nativePath: file.nativePath, artboardGuid: artboard.guid};
 }
 
 function send(payload) {
@@ -423,8 +453,10 @@ function connect() {
     let request;
     try {
       request = JSON.parse(event.data);
-      const result = dispatch(request.method, request.params || {});
-      send({ id: request.id, ok: true, result });
+      Promise.resolve(dispatch(request.method, request.params || {}))
+        .then(result => send({ id: request.id, ok: true, result }))
+        .catch(error => send({ id: request.id, ok: false,
+          error: error && error.message ? error.message : String(error) }));
     } catch (error) {
       send({
         id: request && request.id ? request.id : null,
