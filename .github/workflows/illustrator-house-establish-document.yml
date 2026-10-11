@@ -1,8 +1,9 @@
 name: Illustrator house establish actual document
 on:
-  push:
-    branches: [feat/canvas-region-targeting]
+  pull_request:
+    branches: [main]
     paths: [".github/workflows/illustrator-house-establish-document.yml"]
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -35,7 +36,7 @@ jobs:
                   h=await call(c,"creative_read","creative.health",{"probe":True,"timeout":30})
                   d=h["result"]["connection"]["data"]
                   print("HOUSE_CREATE_PREFLIGHT="+json.dumps({"illustrator":d["layers"]["illustrator"],"document":d["layers"]["document"],"blocking":d.get("blocking"),"unresolved":d["execution"]["unresolvedJobs"]}),flush=True)
-                  if d.get("blocking") or d["execution"]["unresolvedJobs"] or d["layers"]["illustrator"].get("status")!="ok":
+                  if d.get("blocking") or d["execution"]["unresolvedJobs"] or d["layers"]["illustrator"].get("status")!="ok" or d["layers"]["panel"].get("status")!="ok":
                       raise RuntimeError("NOT_SAFE_TO_CREATE")
                   if d["layers"]["document"].get("status")!="none_open":
                       print("HOUSE_CREATE_SKIPPED=DOCUMENT_ALREADY_OPEN",flush=True)
