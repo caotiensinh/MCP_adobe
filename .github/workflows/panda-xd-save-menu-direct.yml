@@ -4,6 +4,7 @@ on:
     branches: [feat/canvas-region-targeting]
     paths:
       - ".github/workflows/panda-xd-save-menu-direct.yml"
+      - "scripts/panda_xd_save_menu_direct.ps1"
   workflow_dispatch:
 permissions:
   contents: read
