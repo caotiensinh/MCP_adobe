@@ -52,6 +52,8 @@ def preflight() -> None:
         raise RuntimeError("RED_PS_INVALID_COMPONENT_IDENTITIES")
 
 async def paint(c,part,ordinal):
+    if part["kind"]=="text":
+        return await paint_text(c,part,ordinal)
     await call(c,"creative_write","creative.layer.create",{"name":part["name"]})
     before=await state(c)
     if (before.get("activeLayer") or {}).get("name")!=part["name"]:
