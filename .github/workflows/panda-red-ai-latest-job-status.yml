@@ -1,0 +1,51 @@
+name: Red Panda Illustrator second unresolved job exact C014 evidence no replay
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-ai-latest-job-status.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  status:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read precisely job_ca9e56b3e70c and host barrier, never finalize or replay
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'RED_AI_JOB_STATUS_WRONG_HOST'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json
+          from mcp import Client
+          ID="job_ca9e56b3e70c"
+          async def main():
+            async with Client("http://127.0.0.1:8787/mcp") as c:
+              r=await asyncio.wait_for(c.call_tool("creative_read",{
+                "application":"illustrator","capability":"creative.job.status",
+                "arguments":{"jobId":ID,"detail":"full"}}),timeout=20)
+              print("RED_AI_EXACT_JOB_STATUS="+json.dumps({"job_id":ID,"is_error":r.is_error,
+                "payload":r.structured_content,"content":[str(x)[:900] for x in r.content]},
+                default=str)[:18000],flush=True)
+              h=await asyncio.wait_for(c.call_tool("creative_read",{
+                "application":"illustrator","capability":"creative.health",
+                "arguments":{"probe":False,"timeout":5}}),timeout=18)
+              p=(h.structured_content or {}).get("result") or {}
+              d=(p.get("connection") or {}).get("data") or {}
+              print("RED_AI_EXACT_JOB_AFTER_HEALTH="+json.dumps({"is_error":h.is_error,
+                "panel":(d.get("layers") or {}).get("panel"),
+                "document":(d.get("layers") or {}).get("document"),
+                "blockedAt":d.get("blockedAt"),"blocking":d.get("blocking"),
+                "execution":d.get("execution")},default=str)[:12000],flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\red_ai_exact_job_read.py -Encoding UTF8
+          uv run --python 3.12 python .\red_ai_exact_job_read.py
+          if($LASTEXITCODE -ne 0){throw 'RED_AI_EXACT_JOB_QUERY_FAILED'}
