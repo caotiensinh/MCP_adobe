@@ -21,10 +21,30 @@ public static class XdBootstrapNative {
 }
 '@
 function Find-XdWindow {
-  @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
-    ($_.ProcessName -match '^(XD|AdobeXD)$' -or $_.MainWindowTitle -match 'Adobe XD') -and
-    $_.MainWindowHandle -ne 0 -and $_.SessionId -eq 1
-  } | Select-Object -First 1)[0]
+  # Windows UWP separates the XD.exe app process from its actual desktop
+  # ApplicationFrameHost window. Get-Process.MainWindowTitle can be blank
+  # even though the real Adobe XD window is present.
+  $root=[System.Windows.Automation.AutomationElement]::RootElement
+  $windows=$root.FindAll([System.Windows.Automation.TreeScope]::Children,
+                          [System.Windows.Automation.Condition]::TrueCondition)
+  $found=@()
+  foreach($element in $windows){
+    try{
+      $title=[string]$element.Current.Name
+      $cls=[string]$element.Current.ClassName
+      if($title -notmatch 'Adobe XD' -or $cls -ne 'ApplicationFrameWindow'){continue}
+      $ownerId=[int]$element.Current.ProcessId
+      $handle=[IntPtr]$element.Current.NativeWindowHandle
+      $process=Get-Process -Id $ownerId -ErrorAction SilentlyContinue
+      if(-not $process -or $process.SessionId -ne 1 -or $handle -eq [IntPtr]::Zero){continue}
+      $found+=,[pscustomobject]@{
+        Id=$ownerId;MainWindowHandle=$handle;MainWindowTitle=$title
+      }
+    }catch{}
+  }
+  if($found.Count -gt 1){throw "XD_BOOTSTRAP_MULTIPLE_UIA_WINDOWS_REFUSE_ACTION count=$($found.Count)"}
+  if($found.Count -eq 1){return $found[0]}
+  return $null
 }
 function Foreground-Pid {
   $owner=[uint32]0;$h=[XdBootstrapNative]::GetForegroundWindow()
