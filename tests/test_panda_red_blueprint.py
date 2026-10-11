@@ -12,7 +12,7 @@ class RedPosterBlueprintTests(unittest.TestCase):
         self.assertEqual((scene.WIDTH, scene.HEIGHT), (880,1265))
         self.assertLess(abs(scene.ASPECT-297/427), .003)
         self.assertGreaterEqual(sum(p["kind"]=="path" for p in scene.STEPS), 20)
-        self.assertEqual([p["kind"] for p in scene.STEPS[-3:]], ["text","text","text"] if False else ["text","text","path"])
+        self.assertEqual([p["kind"] for p in scene.STEPS[-3:]], ["text","text","path"])
         self.assertEqual([p["text"] for p in scene.STEPS if p["kind"]=="text"], ["KUNG FU","PANDA","4"])
 
     def test_background_staff_and_grip_composite_order(self):
