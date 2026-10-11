@@ -125,7 +125,9 @@ async def main():
             receipt=await read(c,"xd.queue.status",{"operation_id":op})
             status=receipt.get("status")
             if status=="queued":
-                if info["pending_count"]!=1:raise RuntimeError("XD_REPAIR_QUEUED_QUEUE_DEPTH_NOT_ONE")
+                latest=await read(c,"creative.health")
+                if latest.get("pending_count")!=1:
+                    raise RuntimeError("XD_REPAIR_QUEUED_QUEUE_DEPTH_NOT_ONE")
                 apply_one()
                 for _ in range(22):
                     await asyncio.sleep(.32)
@@ -154,7 +156,8 @@ async def main():
         if PNG.exists():raise RuntimeError("XD_REPAIR_PNG_ALREADY_EXISTS_REFUSE_EXPORT_OVERWRITE")
         filename=f"MCP_Mode1_Panda_XD_{SRC_ID}_repaired.png"
         resp=await call(c,"creative_write","xd.export.png",{"filename":filename})
-        source=resp.get("result",{}).get("nativePath")
+        from panda_xd_mode1_e2e import find
+        source=find(resp,"nativePath")
         if not isinstance(source,str) or not Path(source).is_file():
             raise RuntimeError("XD_REPAIR_NATIVE_PNG_EXPORT_NOT_CONFIRMED")
         raw=Path(source).read_bytes()
