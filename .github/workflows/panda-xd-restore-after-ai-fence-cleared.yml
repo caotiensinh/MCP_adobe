@@ -33,8 +33,21 @@ jobs:
           if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne '3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'){
             throw 'PANDA_XD_RESTORE_ORIGINAL_DOCUMENT_CHANGED_NO_LAUNCH'
           }
+          # This is a PowerShell script, not an external executable:
+          # $LASTEXITCODE is sticky from preceding native processes and is not
+          # authoritative here. Throwing inside the script is fail-closed.
           & $script
-          if($LASTEXITCODE -ne 0){throw 'PANDA_XD_RESTORE_HOST_NOT_VERIFIED'}
+          if(-not $?){throw 'PANDA_XD_RESTORE_POWERSHELL_SCRIPT_FAILED'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $uiRoot=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$uiRoot.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $homes=0
+          foreach($win in $top){
+            if([string]$win.Current.Name -eq 'Adobe XD'){$homes++}
+          }
+          if($homes -lt 1){throw 'PANDA_XD_RESTORE_HOME_WINDOW_MISSING_AFTER_SCRIPT'}
+          Write-Host "PANDA_XD_RESTORE_READBACK=PASS home_windows=$homes"
           if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne '3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'){
             throw 'PANDA_XD_RESTORE_ORIGINAL_DOCUMENT_MODIFIED'
           }
