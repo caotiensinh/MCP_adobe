@@ -1,0 +1,53 @@
+name: Red Photoshop actual active document state audit no mutation
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-ps-document-state-audit.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect Photoshop existing document name, save flag, layers and native file SHA
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'PS_AUDIT_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'PS_AUDIT_WRONG_SESSION'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,hashlib,json,os
+          from pathlib import Path
+          from mcp import Client
+          src=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"/"MCP_KFP4_Red_PS_38146001775.psd"
+          async def main():
+            async with Client("http://127.0.0.1:8787/mcp") as c:
+              for cap in ("creative.health","creative.document.info","creative.layer.list"):
+                r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"photoshop","capability":cap,"arguments":{}}),timeout=10)
+                p=r.structured_content or {}
+                result=p.get("result") or {}
+                if cap=="creative.document.info":
+                  result={k:v for k,v in result.items() if k in ("hasDocument","openDocumentCount","document","activeLayer","documents")}
+                  if isinstance(result.get("document"),dict):
+                    result["document"]={k:v for k,v in result["document"].items() if k in ("name","width","height","saved","layerCount","hasSelection","id")}
+                if cap=="creative.layer.list":
+                  result=str(result)[:1000]
+                print("PS_LIVE_DOCUMENT_AUDIT="+json.dumps({"cap":cap,"is_error":r.is_error,
+                   "ok":p.get("ok"),"state":result,"error_content":[str(x)[:200] for x in r.content] if r.is_error else []},default=str),flush=True)
+                if cap=="creative.document.info" and (r.is_error or p.get("ok") is not True):
+                  raise RuntimeError("PS_LIVE_DOCUMENT_READ_FAILED")
+            print("PS_SOURCE_SHA256="+json.dumps({"exists":src.is_file(),"sha":hashlib.sha256(src.read_bytes()).hexdigest() if src.is_file() else None}),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\ps_actual_document_audit.py -Encoding UTF8
+          uv run --python 3.12 python .\ps_actual_document_audit.py
+          if($LASTEXITCODE -ne 0){throw 'PS_AUDIT_READ_FAILED'}
