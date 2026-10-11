@@ -74,6 +74,15 @@ jobs:
           $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
           uv run python scripts/panda_xd_audit_native_geometry.py
           if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_NATIVE_GEOMETRY_STILL_INVALID'}
+      - name: Reject visually invisible panda even if all 21 receipts applied
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $png=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800_repaired.png'
+          if(-not (Test-Path -LiteralPath $png -PathType Leaf)){throw 'XD_RADIUS_NATIVE_EXPORTED_PNG_MISSING'}
+          uv run --python 3.12 --with 'Pillow>=10,<13' python scripts/panda_xd_visual_acceptance.py --png $png
+          if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_REAL_PNG_HAS_NO_VISIBLE_PANDA'}
       - name: Collect native Adobe XD, corrected PNG, all repair receipts and original backup
         if: always()
         shell: powershell
