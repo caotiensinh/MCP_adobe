@@ -91,6 +91,14 @@ def test_late_completion_from_stale_generation_never_marks_current_fence(monkeyp
             return {}
 
         async def _handle_message(self, message):
+            # Model the installed upstream handler: it marks the matching
+            # fence without checking the coordinator's current generation.
+            payload = json.loads(message)
+            active_fence = coordinator.probe_fence
+            if (payload.get("type") == "complete"
+                    and payload.get("id") == active_fence.get("requestId")
+                    and payload.get("requestToken") == active_fence.get("requestToken")):
+                active_fence["priorCompletionObserved"] = True
             return None
 
     install_trace(Bridge)
