@@ -1,0 +1,89 @@
+name: Panda Illustrator second rectangle C014 exact non host job inspection
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-ai-second-rectangle-unknown-inspection.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit existing Illustrator file and GUI after unknown rectangle; zero mutation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){
+            throw 'PAN_AI_RECT2_AUDIT_WRONG_DESKTOP'
+          }
+          $folder=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          foreach($name in @('MCP_KFP4_Red_AI_Fresh_38157335430.ai','MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai')){
+            $file=Join-Path $folder $name
+            if(Test-Path -LiteralPath $file -PathType Leaf){
+              $obj=Get-Item -LiteralPath $file
+              Write-Host "PAN_AI_RECT2_NATIVE file=$name sha256=$((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash) bytes=$($obj.Length) modifiedUTC=$($obj.LastWriteTimeUtc.ToString('o'))"
+            }
+          }
+          foreach($app in @('Illustrator','XD','Photoshop')){
+            foreach($p in @(Get-Process -Name $app -ErrorAction SilentlyContinue)){
+              Write-Host "PAN_AI_RECT2_PROCESS name=$app pid=$($p.Id) session=$($p.SessionId) responding=$($p.Responding) title=$($p.MainWindowTitle)"
+            }
+          }
+      - name: Read only active Illustrator coordinator fence and exact previous job status
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json
+          from pathlib import Path
+          from mcp import Client
+          async def safe(c,cap,args):
+            r=await asyncio.wait_for(c.call_tool("creative_read",{
+              "application":"illustrator","capability":cap,"arguments":args}),timeout=20)
+            p=r.structured_content or {}
+            if r.is_error or p.get("ok") is not True:
+              raise RuntimeError("PAN_AI_RECT2_STATUS_FAILED:"+cap)
+            return p.get("result") or {}
+          async def main():
+            out={"schema":"panda-ai-unknown-rect2-v1","source_run":"38157628243",
+              "adobe_write_count":0,"host_request_count":0}
+            async with Client("http://127.0.0.1:8787/mcp") as c:
+              h=await safe(c,"creative.health",{"probe":False,"timeout":5})
+              d=((h.get("connection") or {}).get("data") or {})
+              q=d.get("execution") or {}
+              panel=(d.get("layers") or {}).get("panel") or {}
+              ids=q.get("unresolvedJobs") or []
+              out["health"]={"blocked_at":d.get("blockedAt"),
+                "unresolved_jobs":ids,"active_job":q.get("activeJob"),
+                "waiting":q.get("waiting"),"connection_generation":q.get("connectionGeneration"),
+                "panel_status":panel.get("status"),"panel_busy":panel.get("busy"),
+                "panel_active":panel.get("activeRequestId")}
+              if len(ids)==1:
+                status=await safe(c,"creative.job.status",{"jobId":ids[0],"detail":"full"})
+                job=((status.get("data") or {}).get("job") or {})
+                out["job"]={k:job.get(k) for k in ("jobId","status","label","error",
+                    "awaitingHost","outcomeSource","durationMs","journal","effects")}
+              print("PAN_AI_RECT2_UNKNOWN_STATE="+json.dumps(out,default=str)[:15000],flush=True)
+            Path("panda_ai_rect2_unknown.json").write_text(json.dumps(out,indent=2,default=str),encoding="utf8")
+            print("PAN_AI_RECT2_NONHOST_AUDIT=PASS no new host operations",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\panda_ai_rect2_unknown_check.py -Encoding UTF8
+          uv run --python 3.12 python .\panda_ai_rect2_unknown_check.py
+          if($LASTEXITCODE -ne 0){throw 'PAN_AI_RECT2_UNKNOWN_JOB_AUDIT_FAILED'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-ai-second-rectangle-unknown-state
+          path: panda_ai_rect2_unknown.json
+          if-no-files-found: warn
+          retention-days: 14
