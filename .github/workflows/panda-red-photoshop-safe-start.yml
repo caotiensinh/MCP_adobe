@@ -57,7 +57,7 @@ jobs:
           from mcp import Client
           async def main():
               async with Client("http://127.0.0.1:8787/mcp") as c:
-                  for capability in ("creative.health","creative.document.info","creative.layer.list"):
+                  for capability in ("creative.health","creative.document.info"):
                       t=time.perf_counter()
                       try:
                           r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"photoshop",
@@ -70,6 +70,15 @@ jobs:
                       print("RED_PS_LIVE_PROBE="+json.dumps(obj),flush=True)
                       if r.is_error or (r.structured_content or {}).get("ok") is not True:
                           raise RuntimeError("RED_PS_READBACK_INVALID_NO_CANVAS_WRITES")
+                      if capability=="creative.document.info":
+                          state=(r.structured_content or {}).get("result") or {}
+                          if state.get("hasDocument") is False:
+                              print("RED_PS_EMPTY_DOCUMENT=PASS no-layer-list-without-document",flush=True)
+                          else:
+                              layers=await asyncio.wait_for(c.call_tool("creative_read",{
+                                  "application":"photoshop","capability":"creative.layer.list","arguments":{}}),timeout=15)
+                              if layers.is_error or (layers.structured_content or {}).get("ok") is not True:
+                                  raise RuntimeError("RED_PS_LAYER_READBACK_FAILED_ACTIVE_DOC")
                   print("RED_PS_SAFE_READY_FOR_DOCUMENT_GATED_E2E=PASS",flush=True)
           asyncio.run(main())
           '@ | Set-Content -LiteralPath .\red_ps_live_probe.py -Encoding UTF8
