@@ -39,6 +39,31 @@ jobs:
           powershell -ExecutionPolicy Bypass -File scripts/install_xd_plugin.ps1 -NoReloadHint
           if($LASTEXITCODE -ne 0){throw 'XD_PANDA_PLUGIN_INSTALL_FAIL'}
           Write-Host 'XD_PANDA_MRCAO_SESSION_AND_PLUGIN=PASS'
+      - name: Refresh only stale owned MCP gateway after real XD checkpoint preflight
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run python scripts/panda_xd_gateway_refresh_gate.py before
+          if($LASTEXITCODE -ne 0){throw 'XD_PRE_REFRESH_LIVE_STATE_NOT_SAFE'}
+          $flag=Join-Path $env:RUNNER_TEMP 'xd_gateway_refresh_required.flag'
+          if(Test-Path -LiteralPath $flag){
+            Write-Host 'XD_STALE_GATEWAY_REFRESH=START_OWNED_PROCESSES_ONLY'
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_local_host.ps1 -SkipStartupRegistration
+            if($LASTEXITCODE -ne 0){throw 'XD_VERSIONED_GATEWAY_INSTALL_FAILED_CHECK_ROLLBACK'}
+            Write-Host 'XD_STALE_GATEWAY_REFRESH=INSTALL_COMPLETE_VERIFY_RUNTIME'
+          }else{
+            Write-Host 'XD_GATEWAY_REFRESH=SKIPPED_VERSION_ALREADY_CORRECT'
+          }
+          $verified=$false
+          for($i=1;$i -le 6;$i++){
+            uv run python scripts/panda_xd_gateway_refresh_gate.py after
+            if($LASTEXITCODE -eq 0){$verified=$true;break}
+            Write-Host "XD_GATEWAY_RECONNECT_READONLY_CHECK=$i/6"
+            Start-Sleep -Seconds 3
+          }
+          if(-not $verified){throw 'XD_GATEWAY_POST_INSTALL_CAPABILITY_OR_DOCUMENT_MISMATCH'}
+          Write-Host 'XD_GATEWAY_REFRESH_RESULT=PASS_PRESERVED_DOCUMENT'
       - name: Launch and connect real XD panel in interactive desktop
         shell: powershell
         run: |
