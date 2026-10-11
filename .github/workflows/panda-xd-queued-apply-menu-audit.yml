@@ -64,7 +64,7 @@ jobs:
           }
           Print-Menu $xd 'BEFORE'
           $prop=New-Object System.Windows.Automation.PropertyCondition(
-            [System.Windows.Automation.AutomationElement]::AutomationIdProperty,'AppMenu_Plugins')
+            [System.Windows.Automation.AutomationElement]::AutomationIdProperty,'AppMenuBar_Plugins')
           $plugins=$xd.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$prop)
           if(-not $plugins){throw 'XD_APPLY_AUDIT_PLUGINS_MENU_NOT_FOUND'}
           Write-Host "XD_APPLY_AUDIT_PLUGINS_MENU=FOUND enabled=$($plugins.Current.IsEnabled)"
@@ -75,7 +75,14 @@ jobs:
             }
             Write-Host 'XD_APPLY_AUDIT_PLUGINS_EXPANDED=PASS'
           }catch{
-            Write-Host "XD_APPLY_AUDIT_PLUGINS_NOT_EXPANDED=$($_.Exception.Message)"
+            Write-Host "XD_APPLY_AUDIT_EXPAND_NOT_AVAILABLE=$($_.Exception.Message)"
+            try{
+              $invoke=$plugins.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+              $invoke.Invoke()
+              Write-Host 'XD_APPLY_AUDIT_PLUGINS_INVOKED=PASS'
+            }catch{
+              Write-Host "XD_APPLY_AUDIT_MENU_NONINTERACTIVE=$($_.Exception.Message)"
+            }
           }
           Start-Sleep -Milliseconds 450
           Print-Menu $xd 'AFTER'
