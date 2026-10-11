@@ -22,6 +22,21 @@ def install_trace(bridge_class: type) -> None:
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         log.addHandler(handler)
     log.setLevel(logging.WARNING)
+    # The JSX payload epoch changes when the Illustrator host reloads. Never
+    # carry a cached hostSession pin into a new CEP WebSocket connection.
+    # Old in-flight receivers retain their own descriptor expectations.
+    original_disconnect = getattr(bridge_class, "_handle_disconnect", None)
+    if original_disconnect is not None and not getattr(original_disconnect, "_mcp_adobe_epoch_reset", False):
+        async def traced_disconnect(self: Any, *args: Any, **kwargs: Any) -> Any:
+            try:
+                return await original_disconnect(self, *args, **kwargs)
+            finally:
+                if getattr(self, "_host_payload_session", None) is not None:
+                    self._host_payload_session = None
+                    log.warning("CEP_HOST_EPOCH_CACHE_INVALIDATED reason=disconnect")
+        traced_disconnect._mcp_adobe_epoch_reset = True
+        bridge_class._handle_disconnect = traced_disconnect
+
     original_handle = getattr(bridge_class, '_handle_message', None)
     if original_handle is not None and not getattr(original_handle, "_mcp_adobe_trace", False):
         async def traced_handle(self: Any, message: str) -> Any:
@@ -45,6 +60,14 @@ def install_trace(bridge_class: type) -> None:
                 log.warning("CEP_CALLBACK_PARSE_ERROR class=%s", type(exc).__name__)
             try:
                 result = await original_handle(self, message)
+                # A C013 result is terminal/unknown for this request, not a
+                # license to retry. Discard ONLY the cached epoch hint so a
+                # future safely admitted request can bind to the actual JSX
+                # payload-store epoch after reconciliation.
+                if (kind == "complete" and isinstance(envelope, dict)
+                        and envelope.get("payloadError") == "stale_host_session"):
+                    self._host_payload_session = None
+                    log.warning("CEP_HOST_EPOCH_CACHE_INVALIDATED reason=C013")
                 # Correlate a late completion after the original handler safely
                 # discarded/ACKed it. Never unlock here: only establish the
                 # observed predecessor completion required by a later trusted probe.
