@@ -277,6 +277,54 @@ function applyMutation(item, selection) {
     return nodeInfo(node);
   }
 
+  if (item.method === "xd.queue.rectangle_position_repair") {
+    // Read-before-write optimistic concurrency: repair one known shifted
+    // Rectangle GUID only. Repeated or stale commands fail closed.
+    const documentId = String(params.document_id || "");
+    const guid = String(params.guid || "");
+    const name = String(params.name || "");
+    const x = Number(params.x), y = Number(params.y);
+    const beforeX = Number(params.beforeX), beforeY = Number(params.beforeY);
+    if (!/^[a-f0-9-]{36}$/.test(guid) || !documentId || !name ||
+        !scenegraph.root || scenegraph.root.guid !== documentId ||
+        ![x,y,beforeX,beforeY].every(Number.isFinite) ||
+        Math.abs(x)>100000 || Math.abs(y)>100000) {
+      throw new Error("XD rectangle repair document identity or input is invalid");
+    }
+    const matches = [];
+    function find(node) {
+      if (!node) return;
+      if (node.guid === guid) matches.push(node);
+      if (node.children) {
+        for (let i=0; i<node.children.length; i++) find(node.children.at(i));
+      }
+    }
+    find(scenegraph.root);
+    if (matches.length!==1 || !(matches[0] instanceof Rectangle) ||
+        matches[0].name!==name) {
+      throw new Error("XD rectangle repair target GUID/name/type mismatch");
+    }
+    const node=matches[0];
+    const actualBefore=node.globalBounds;
+    if (!actualBefore || ![actualBefore.x,actualBefore.y,
+        actualBefore.width,actualBefore.height].every(Number.isFinite) ||
+        !(actualBefore.width>0) || !(actualBefore.height>0) ||
+        Math.abs(actualBefore.x-beforeX)>1 || Math.abs(actualBefore.y-beforeY)>1 ||
+        (Math.abs(actualBefore.x-x)<=1 && Math.abs(actualBefore.y-y)<=1)) {
+      throw new Error("XD rectangle repair source changed or already fixed; no replay");
+    }
+    node.moveInParentCoordinates(x-actualBefore.x,y-actualBefore.y);
+    const after=node.globalBounds;
+    if (!after || Math.abs(after.x-x)>2 || Math.abs(after.y-y)>2 ||
+        Math.abs(after.width-actualBefore.width)>1 ||
+        Math.abs(after.height-actualBefore.height)>1) {
+      throw new Error("XD rectangle repair readback mismatch");
+    }
+    return {guid:node.guid,name:node.name,
+      before:{x:actualBefore.x,y:actualBefore.y},after:{x:after.x,y:after.y},
+      width:after.width,height:after.height,repaired:true};
+  }
+
   if (item.method === "xd.queue.ellipse_geometry_repair") {
     const guid = String(params.guid || "");
     const name = String(params.name || "");
@@ -514,6 +562,7 @@ function dispatch(method, params) {
     method === "xd.queue.rectangle_create" ||
     method === "xd.queue.path_create" ||
     method === "xd.queue.ellipse_create" ||
+    method === "xd.queue.rectangle_position_repair" ||
     method === "xd.queue.ellipse_geometry_repair" ||
     method === "xd.queue.text_create" ||
     method === "xd.queue.selection_resize" ||
