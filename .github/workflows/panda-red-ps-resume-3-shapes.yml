@@ -18,7 +18,7 @@ jobs:
       UV_LINK_MODE: copy
     steps:
       - uses: actions/checkout@v4
-      - name: Verify immutable initial Photoshop PSD and separate writable checkpoint
+      - name: Verify original PSD SHA, true live layer bounds, and separate writable checkpoint
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
