@@ -223,8 +223,8 @@ function applyMutation(item, selection) {
     const x = Number(params.x);
     const y = Number(params.y);
     if (typeof data !== "string" || data.length < 6 || data.length > 8192 ||
-        !/^[Mm][\\s,.+\\-0-9]/.test(data) ||
-        !/^[MmLlHhVvCcSsQqTtAaZz0-9.,+\\-\\sEe]+$/.test(data) ||
+        !/^M[ ,.0-9+-]/i.test(data) ||
+        !/^[-+0-9eE., MmLlHhVvCcSsQqTtAaZz]+$/.test(data) ||
         ![x,y].every(Number.isFinite) ||
         Math.abs(x) > 100000 || Math.abs(y) > 100000) {
       throw new Error("XD path requires bounded SVG path commands and finite global position");
