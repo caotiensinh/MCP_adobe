@@ -1,4 +1,4 @@
-name: Panda Illustrator C014 exact read only job fence recovery after GUI relaunch
+name: Panda Illustrator C014 recover exact stale fence with XD safely offline
 on:
   push:
     branches: [feat/canvas-region-targeting]
@@ -20,12 +20,21 @@ jobs:
       RED_AI_JOB: 'job_46074332a33c'
     steps:
       - uses: actions/checkout@v4
-      - name: Prove exact unknown read job, idle CEP, no other active queue, and live XD idle
+      - name: Prove exact unknown read job idle CEP and XD proven fully offline
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           if($env:COMPUTERNAME -ne 'MRCAO'){throw 'RED_AI_RECOVERY_WRONG_MACHINE'}
           if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RED_AI_RECOVERY_WRONG_DESKTOP'}
+          # Separate safety gate: Adobe XD is currently offline. Prove no
+          # live UXP stream and no XD process before skipping its health call.
+          $xdProcesses=@(Get-Process -Name XD -ErrorAction SilentlyContinue)
+          $xdConnections=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          if($xdProcesses.Count -ne 0 -or $xdConnections.Count -ne 0){
+            throw 'RED_AI_RECOVERY_XD_NOT_PROVEN_FULLY_QUIESCENT'
+          }
+          $env:RED_AI_XD_QUIESCENT='1'
+          Write-Host "RED_AI_XD_QUIESCENCE=PASS xd_processes=0 established=0"
           $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
           @'
           import asyncio,json,os
@@ -59,11 +68,9 @@ jobs:
                 raise RuntimeError("RED_AI_RECOVERY_JOB_IDENTITY_MISMATCH")
               if "missing_descriptor" not in str(job.get("error","")):
                 raise RuntimeError("RED_AI_RECOVERY_NOT_EXPECTED_C014_FAILURE")
-              # The XD runtime shares the gateway, do not disrupt pending GUI mutations.
-              xd=await rd(c,"xd","creative.health",{})
-              if xd.get("pending_count")!=0:
-                raise RuntimeError("RED_AI_RECOVERY_XD_MUTATION_PENDING_NO_RESTART")
-              print("RED_AI_RECOVERY_PREFLIGHT=PASS exact-unknown-read-job idle-CEP idle-XD",flush=True)
+              if os.environ.get("RED_AI_XD_QUIESCENT")!="1":
+                raise RuntimeError("RED_AI_RECOVERY_XD_QUIESCENCE_NOT_ASSERTED")
+              print("RED_AI_RECOVERY_PREFLIGHT=PASS exact-unknown-job idle-CEP verified-offline-XD",flush=True)
           asyncio.run(main())
           '@ | Set-Content -LiteralPath pre_recover.py -Encoding UTF8
           uv run --python 3.12 python .\pre_recover.py
@@ -101,6 +108,10 @@ jobs:
           if(-not [int]::TryParse((Get-Content -LiteralPath $pidfile -Raw).Trim(),[ref]$wrapperPid)){throw 'RED_AI_RECOVERY_SUPERVISOR_PID_INVALID'}
           $wrapper=Get-CimInstance Win32_Process -Filter "ProcessId=$wrapperPid" -ErrorAction SilentlyContinue
           if(-not $wrapper -or $wrapper.CommandLine -notmatch 'run-host.ps1'){throw 'RED_AI_RECOVERY_SUPERVISOR_OWNER_MISMATCH'}
+          if(@(Get-Process -Name XD -ErrorAction SilentlyContinue).Count -ne 0 -or
+             @(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue).Count -ne 0){
+            throw 'RED_AI_RECOVERY_XD_REAPPEARED_BEFORE_RESTART'
+          }
           $sockets=@(Get-NetTCPConnection -LocalPort 8787 -State Established -ErrorAction SilentlyContinue)
           Write-Host "RED_AI_RECOVERY_GATEWAY_OWNER=PASS oldPid=$oldPid wrapper=$wrapperPid established=$($sockets.Count) illustratorPid=$aiPid"
           # Gracefully stop only the owned gateway to retire the orphaned read-only coordinator fence.
