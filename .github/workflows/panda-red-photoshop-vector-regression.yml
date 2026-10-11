@@ -1,0 +1,28 @@
+name: Red Panda Photoshop bounded polygon one-by-one JSX contract
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-red-photoshop-vector-regression.yml"
+      - "scripts/panda_red_photoshop_vector_fill.py"
+      - "tests/test_panda_red_photoshop_vector_fill.py"
+      - "scripts/panda_red_vector_adapter.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  vector-mock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Execute native JSX template behavior against Photoshop DOM fixture and reject unsafe inputs
+        run: |
+          python -m py_compile scripts/panda_red_photoshop_vector_fill.py tests/test_panda_red_photoshop_vector_fill.py
+          python -m unittest tests.test_panda_red_photoshop_vector_fill -v
