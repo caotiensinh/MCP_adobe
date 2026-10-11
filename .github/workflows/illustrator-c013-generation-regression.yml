@@ -21,6 +21,6 @@ jobs:
           uv sync --python 3.12
           if($LASTEXITCODE -ne 0){throw 'C013_DEPENDENCIES_FAILED'}
           $env:PYTHONPATH=Join-Path (Get-Location) "src"
-          uv run python -m pytest -q tests/test_illustrator_upstream_trace.py
+          uv run --with pytest python -m pytest -q tests/test_illustrator_upstream_trace.py
           if($LASTEXITCODE -ne 0){throw 'C013_GENERATION_REGRESSION_FAILED'}
           Write-Output 'C013_GENERATION_REGRESSION=PASS'
