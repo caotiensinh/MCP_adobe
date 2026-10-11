@@ -1,0 +1,36 @@
+name: XD live warm connection and readback measured speed SLO
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-xd-warm-readback-speed.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Measure 30 successful warm XD health + 30 scenegraph reads + 10 new MCP sessions
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_SPEED_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_SPEED_WRONG_DESKTOP'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run --python 3.12 python scripts/panda_xd_live_warm_latency.py
+          if($LASTEXITCODE -ne 0){throw 'XD_REAL_WARM_BENCHMARK_FAILED'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xd-warm-health-and-scenegraph-latencies
+          path: xd_warm_latency.json
+          if-no-files-found: warn
+          retention-days: 14
