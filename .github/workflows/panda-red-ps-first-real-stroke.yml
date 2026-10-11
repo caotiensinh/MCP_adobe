@@ -27,6 +27,7 @@ jobs:
           $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
           $ps=@(Get-Process -Name Photoshop -ErrorAction SilentlyContinue |Where-Object {$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
           if($ps.Count -ne 1){throw 'RED_PS_LIVE_WINDOW_NOT_UNIQUE_NO_WRITES'}
+          Write-Host "RED_PS_SINGLE_GUI_OWNER=PASS pid=$($ps[0].Id) run=$env:GITHUB_RUN_ID"
           uv run --python 3.12 python -m py_compile scripts/panda_red_photoshop_first_stroke.py scripts/panda_red_poster_blueprint.py
           if($LASTEXITCODE -ne 0){throw 'RED_PS_SOURCE_INVALID'}
           uv run --python 3.12 python scripts/panda_red_photoshop_first_stroke.py
