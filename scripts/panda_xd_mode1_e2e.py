@@ -140,5 +140,11 @@ async def main():
             print("XD_MODE1_STROKE_READBACK="+json.dumps({"ordinal":i,"nodeCount":len(after),"nameFound":True,
                 "guid":after[name],"receipt":"applied","checkpointSHA256":digest}),flush=True)
         print("XD_MODE1_SCENEGRAPH_32_STROKES=PASS",flush=True)
-        print("XD_NATIVE_SAVE_AND_PNG_EXPORT=NOT_IMPLEMENTED_BLOCKED_CAPABILITY",flush=True)
+        exported=await call(c,"creative_write","xd.export.png",{"filename":f"MCP_Mode1_Panda_XD_{RUN}.png"})
+        native=find(exported,"nativePath")
+        if not isinstance(native,str) or not Path(native).is_file() or Path(native).stat().st_size<1000:
+            raise RuntimeError("XD_NATIVE_PNG_EXPORT_NOT_VERIFIED")
+        print("XD_NATIVE_PNG_EXPORT=PASS "+json.dumps({"nativePath":native,
+            "bytes":Path(native).stat().st_size}),flush=True)
+        print("XD_NATIVE_DOCUMENT_SAVE=UNVERIFIED_REQUIRES_GUI_SAVE_AS",flush=True)
 asyncio.run(main())
