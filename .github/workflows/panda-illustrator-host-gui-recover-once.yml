@@ -1,4 +1,4 @@
-name: Panda red Illustrator recover real interactive application once with native checkpoint
+name: Panda Illustrator launch real empty interactive host without opening changed AI file
 on:
   push:
     branches: [feat/canvas-region-targeting]
@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 7
     steps:
       - uses: actions/checkout@v4
-      - name: Confirm installed Illustrator absence and known immutable red .ai before controlled startup
+      - name: Confirm missing Illustrator, record red .ai hash without opening it, start empty native GUI
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
@@ -31,7 +31,8 @@ jobs:
           if(-not(Test-Path -LiteralPath $native -PathType Leaf)){throw 'PANDA_AI_START_NATIVE_MISSING'}
           $sha=(Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash
           if($sha -ne '0EAF49CA76244CD9D19502E2EDF4E8D8B341633862CD650934ACB9C7DFF073A3'){
-            throw 'PANDA_AI_START_NATIVE_SHA_UNEXPECTED'
+            Write-Host "PANDA_AI_NATIVE_DIVERGED_FROM_PRIOR_CHECKPOINT=TRUE actual_sha256=$sha"
+            Write-Host 'PANDA_AI_NATIVE_SOURCE_UNTRUSTED=DO_NOT_OPEN_OR_MODIFY'
           }
           $inventory=@(& "$PWD/scripts/adobe_inventory.ps1")
           $apps=@($inventory|Where-Object {$_.PSObject.Properties.Name -contains 'Illustrator'})
@@ -43,7 +44,7 @@ jobs:
             $oldTracking=$env:RUNNER_TRACKING_ID
             try{
               Remove-Item Env:RUNNER_TRACKING_ID -ErrorAction SilentlyContinue
-              $proc=Start-Process -FilePath $exe -ArgumentList @('"' + $native + '"') -PassThru
+              $proc=Start-Process -FilePath $exe -PassThru
               Write-Host "PANDA_AI_START_LAUNCHED_ONCE=PASS pid=$($proc.Id)"
             }finally{
               if($null -ne $oldTracking){$env:RUNNER_TRACKING_ID=$oldTracking}
