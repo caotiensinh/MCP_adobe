@@ -60,7 +60,8 @@ jobs:
               if r.is_error or not isinstance(p,dict) or not p.get("ok"):
                   raise RuntimeError("HOUSE_UNKNOWN_OR_ERROR_"+cap+" NO_REPLAY")
               result=p.get("result") or {}
-              if result.get("execution")!="succeeded":
+              execution=(result.get("connection") or {}).get("execution") if cap=="creative.health" else result.get("execution")
+              if execution!="succeeded":
                   raise RuntimeError("HOUSE_NOT_VERIFIED_"+cap+" NO_REPLAY")
               return p
 
