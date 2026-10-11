@@ -27,6 +27,13 @@ jobs:
           }
           $p=@($all|Where-Object {$_.Name -eq 'Illustrator.exe' -and $_.SessionId -eq 1})
           Write-Host "PANDA_AI_ILLUSTRATOR_DESKTOP_PROCESS_COUNT=$($p.Count)"
+          if($p.Count -eq 0){
+            Write-Host 'PANDA_AI_PROCESS_ABSENT=DIAGNOSTIC illustrator.exe not present in interactive session; no blind restart'
+          }elseif($p.Count -gt 1){
+            Write-Host "PANDA_AI_MULTIPLE_PROCESS=DIAGNOSTIC count=$($p.Count); enumerate each, no change"
+          }else{
+            Write-Host 'PANDA_AI_PROCESS_UNIQUE=PASS'
+          }
           $ids=@($p|ForEach-Object {[int]$_.ProcessId})
           foreach($id in $ids){
             $proc=Get-Process -Id $id -ErrorAction SilentlyContinue
