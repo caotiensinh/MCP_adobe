@@ -76,13 +76,30 @@ async def main():
         await call(c,"creative_read","creative.health")
         original=await state(c)
         if original.get("hasDocument"):
+            # Photoshop 2023's get_state can say saved=False and retain the
+            # transient title 'New Document' after save/export even when a
+            # verified native PSD exists. Never silently equate that bit with
+            # on-disk persistence OR discard the in-memory source.
             info=inspect(original,None)
+            names_before=await layer_names(c)
+            active=original.get("activeLayer") or {}
+            b=active.get("bounds") or {}
             if (str(info.get("name","")) not in (SOURCE.name, SOURCE.stem, "New Document")
-                or info.get("saved") is not True
-                or int(info.get("layerCount",-1))!=2):
-                raise RuntimeError("PS_FOREIGN_OR_UNSAVED_ACTIVE_DOCUMENT_NO_MUTATION")
+                or original.get("openDocumentCount")!=1
+                or int(info.get("layerCount",-1))!=2
+                or info.get("hasSelection") is not False
+                or set(names_before)!={STEPS[0]["name"],"Background"}
+                or len(names_before)!=2
+                or active.get("name")!=STEPS[0]["name"]
+                or any(abs(float(b.get(k,-9999))-v)>3 for k,v in (
+                     ("left",0),("top",0),("right",WIDTH),("bottom",HEIGHT)))):
+                raise RuntimeError("PS_FOREIGN_OR_UNVERIFIED_ACTIVE_DOCUMENT_NO_MUTATION")
             if not SOURCE.is_file() or sha(SOURCE)!=SOURCE_SHA:
                 raise RuntimeError("PS_SOURCE_SHA_CHANGED_DURING_PREFLIGHT")
+            print("RED_PS_UNSAVED_FLAG_DIAG="+json.dumps({
+                "original_title":info.get("name"),"reported_saved":info.get("saved"),
+                "source_sha256":SOURCE_SHA,"owner":active.get("name"),
+                "policy":"open_verified_copy_only_without_closing_or_modifying_original"}),flush=True)
         shutil.copy2(SOURCE,TARGET)
         if sha(TARGET)!=SOURCE_SHA:
             raise RuntimeError("PS_STAGED_COPY_SHA_MISMATCH")
