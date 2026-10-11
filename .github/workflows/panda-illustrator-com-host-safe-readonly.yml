@@ -1,0 +1,82 @@
+name: Panda Illustrator real COM host responsiveness and modal read-only gate
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-illustrator-com-host-safe-readonly.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  test:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Verify actual Illustrator desktop and immutable red AI without gateway host queue
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'PANDA_AI_COM_WRONG_DESKTOP'}
+          $p=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+          if($p.Count -ne 1){throw 'PANDA_AI_COM_HOST_NOT_UNIQUE_NO_COM'}
+          $pidTarget=$p[0].Id
+          Write-Host "PANDA_AI_COM_INTERACTIVE=PASS pid=$pidTarget title=$($p[0].MainWindowTitle) responding=$($p[0].Responding)"
+          $source=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_KFP4_Red_AI_38146162392.ai'
+          $sha=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+          if($sha -ne 'A44991466F8E3E17EBC92A03BD168B917EFACA04001655CB8932091ACE085091'){
+            throw 'PANDA_AI_COM_NATIVE_CHANGED_STOP'
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $windows=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $matched=0
+          for($i=0;$i -lt $windows.Count;$i++){
+            $el=$windows.Item($i)
+            try {
+              if($el.Current.ProcessId -ne $pidTarget){continue}
+              $matched++
+              $pattern=$null;$modal=$false
+              if($el.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern,[ref]$pattern) -and $null -ne $pattern){
+                $modal=$pattern.Current.IsModal
+              }
+              Write-Host "PANDA_AI_COM_WINDOW pid=$pidTarget name=$($el.Current.Name) modal=$modal enabled=$($el.Current.IsEnabled)"
+            }catch [System.Windows.Automation.ElementNotAvailableException]{}
+          }
+          Write-Host "PANDA_AI_COM_DESKTOP_AUDIT=PASS windows=$matched file_sha256=$sha"
+      - name: Bounded COM GetActiveObject only, never instantiate or create a document
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $probe=Join-Path $PWD 'panda_com_probe.ps1'
+          @'
+          $ErrorActionPreference='Stop'
+          try{
+            $app=[System.Runtime.InteropServices.Marshal]::GetActiveObject('Illustrator.Application')
+            $t=[Diagnostics.Stopwatch]::StartNew()
+            $docs=$app.Documents
+            $count=[int]$docs.Count
+            $t.Stop()
+            Write-Output "PANDA_AI_COM_HOST_READ=PASS documentCount=$count latencyMs=$($t.ElapsedMilliseconds)"
+          }catch{
+            $errType=$_.Exception.GetType().Name
+            Write-Output "PANDA_AI_COM_HOST_READ=UNAVAILABLE exceptionType=$errType"
+          }
+          '@ | Set-Content -LiteralPath $probe -Encoding UTF8
+          $out=Join-Path $PWD 'panda_com_read.stdout.txt'
+          $err=Join-Path $PWD 'panda_com_read.stderr.txt'
+          $p=Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-Sta','-ExecutionPolicy','Bypass','-File',('"' + $probe + '"')) -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+          try{
+            Wait-Process -Id $p.Id -Timeout 15 -ErrorAction Stop
+          }catch [System.TimeoutException]{
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            Write-Host 'PANDA_AI_COM_HOST_READ=TIMEOUT_CHILD_ONLY_NO_RETRY'
+          }
+          foreach($text in @(Get-Content -LiteralPath $out -ErrorAction SilentlyContinue)){
+            if($text -match '^PANDA_AI_COM_HOST_READ='){Write-Host $text}
+          }
+          $bytes=(Get-Item -LiteralPath $err).Length
+          if($bytes -gt 0){Write-Host "PANDA_AI_COM_CHILD_STDERR_BYTES=$bytes"}
+          Write-Host 'PANDA_AI_COM_READONLY_TEST=COMPLETE_NO_ADOBE_WRITE'
