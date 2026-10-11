@@ -37,6 +37,17 @@ $allEdits=$fileHost.FindAll([System.Windows.Automation.TreeScope]::Descendants,
      [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
      [System.Windows.Automation.ControlType]::Edit)))
 Write-Host "XD_PICKER_FILENAME_HOST_EDITS=$($allEdits.Count)"
+if($allEdits.Count -eq 0){
+  $everything=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition)
+  for($i=0;$i -lt [Math]::Min($everything.Count,180);$i++){
+    $el=$everything.Item($i)
+    $name=[string]$el.Current.Name
+    $id=[string]$el.Current.AutomationId
+    $typ=[string]$el.Current.ControlType.ProgrammaticName
+    Write-Host "XD_PICKER_DIALOG_UI ordinal=$i name=$name id=$id type=$typ"
+  }
+}
 $edit=$null
 if($allEdits.Count -eq 1){$edit=$allEdits.Item(0)}
 if(-not $edit){throw 'XD_PICKER_FILENAME_EDIT_NOT_UNIQUE_REFUSE_TYPING'}
