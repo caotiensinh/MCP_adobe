@@ -1,0 +1,175 @@
+name: Illustrator house resume 4 to 8 visible items
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/illustrator-house-resume-four-to-eight-live.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  draw:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Actually activate Illustrator and verify Windows foreground PID
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'HOUSE_WRONG_HOST'}
+          $ai=@(Get-Process Illustrator -ErrorAction SilentlyContinue|Where-Object {$_.MainWindowHandle -ne 0})
+          if($ai.Count -ne 1){throw 'HOUSE_ILLUSTRATOR_NOT_UNIQUE'}
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class RealHouseForeground {
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int c);
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr h);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+            [DllImport("user32.dll")] public static extern void SwitchToThisWindow(IntPtr h,bool altTab);
+          }
+          '@
+          [RealHouseForeground]::ShowWindow($ai[0].MainWindowHandle,9)|Out-Null
+          [RealHouseForeground]::BringWindowToTop($ai[0].MainWindowHandle)|Out-Null
+          [RealHouseForeground]::SetForegroundWindow($ai[0].MainWindowHandle)|Out-Null
+          Start-Sleep -Milliseconds 900
+          $p=[uint32]0
+          [void][RealHouseForeground]::GetWindowThreadProcessId([RealHouseForeground]::GetForegroundWindow(),[ref]$p)
+          if($p -ne [uint32]$ai[0].Id){
+            $w=New-Object -ComObject WScript.Shell
+            [void]$w.AppActivate([int]$ai[0].Id)
+            Start-Sleep -Milliseconds 800
+            [void][RealHouseForeground]::GetWindowThreadProcessId([RealHouseForeground]::GetForegroundWindow(),[ref]$p)
+          }
+          if($p -ne [uint32]$ai[0].Id){
+            [RealHouseForeground]::SwitchToThisWindow($ai[0].MainWindowHandle,$true)
+            Start-Sleep -Milliseconds 900
+            [void][RealHouseForeground]::GetWindowThreadProcessId([RealHouseForeground]::GetForegroundWindow(),[ref]$p)
+          }
+          Write-Output "HOUSE_ACTUAL_FOREGROUND_PID=$p target=$($ai[0].Id)"
+          if($p -ne [uint32]$ai[0].Id){throw 'HOUSE_REAL_FOREGROUND_NOT_ILLUSTRATOR'}
+          Write-Output 'HOUSE_REAL_ILLUSTRATOR_FOREGROUND=PASS'
+      - name: Draw four next house window objects with per-stroke readback and save
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'HOUSE_DEPS_FAILED'}
+          @'
+          import asyncio,json,os,hashlib
+          from pathlib import Path
+          from mcp import Client
+
+          TARGET=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"/"Two_Story_Red_Tile_House.ai"
+          def rect(name,x,y,w,h,r,g,b):
+              return name,{"name":name,"x":x,"y":y,"width":w,"height":h,"fill":{"r":r,"g":g,"b":b}}
+          STEPS=[
+              rect("05 Second Floor Left Window Frame",244,327,116,91,80,57,49),
+              rect("06 Second Floor Left Blue Glass",252,335,100,75,128,204,227),
+              rect("07 Second Floor Right Window Frame",535,327,116,91,80,57,49),
+              rect("08 Second Floor Right Blue Glass",543,335,100,75,128,204,227),
+          ]
+          async def call(c,tool,cap,args):
+              r=await c.call_tool(tool,{"application":"illustrator","capability":cap,"arguments":args})
+              p=r.structured_content
+              if r.is_error or not isinstance(p,dict) or not p.get("ok"):
+                  raise RuntimeError("HOUSE_MCP_ERROR_"+cap+"_NO_RETRY")
+              result=p.get("result") or {}
+              if result.get("execution") in ("unknown","failed"):
+                  raise RuntimeError("HOUSE_OUTCOME_UNCERTAIN_"+cap+"_NO_RETRY")
+              return p
+          async def document(c):
+              p=await call(c,"creative_read","creative.document.info",{})
+              if p["result"].get("execution")!="succeeded":
+                  raise RuntimeError("HOUSE_DOCUMENT_READ_NOT_PROVEN")
+              data=p["result"]["data"]
+              items=[it.get("name") for l in (data.get("layers") or []) for it in (l.get("items") or [])]
+              count=sum(int(l.get("itemCount",0)) for l in (data.get("layers") or []))
+              return data.get("document") or {},count,items
+          async def health(c):
+              p=await call(c,"creative_read","creative.health",{"probe":False,"timeout":5})
+              h=p["result"]["connection"]["data"]
+              e=h.get("execution") or {}
+              panel=(h.get("layers") or {}).get("panel") or {}
+              if (e.get("unresolvedJobs") or e.get("activeJob") is not None
+                  or e.get("waiting")!=0 or h.get("blocking")
+                  or panel.get("status")!="ok" or panel.get("busy") is not False
+                  or panel.get("activeRequestId") is not None or panel.get("heartbeatStale") is True):
+                  raise RuntimeError("HOUSE_HOST_NOT_IDLE_NO_RETRY")
+              return h
+          async def main():
+              if not TARGET.is_file() or TARGET.stat().st_size<1024:
+                  raise RuntimeError("HOUSE_ORIGINAL_FILE_MISSING")
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  await health(c)
+                  doc,count,names=await document(c)
+                  print("HOUSE_RESUME_PREFLIGHT="+json.dumps({"name":doc.get("name"),"count":count,"saved":doc.get("saved"),"width":doc.get("width"),"height":doc.get("height"),"names":names},default=str),flush=True)
+                  if doc.get("name")!="Two_Story_Red_Tile_House.ai" or count!=4 or doc.get("width")!=900 or doc.get("height")!=650:
+                      raise RuntimeError("HOUSE_CHECKPOINT_NOT_EXACTLY_4")
+                  if "04 Red Tile Sloped Roof" not in names:
+                      raise RuntimeError("HOUSE_EXPECTED_ROOF_NOT_OBSERVED")
+                  for ix,(name,args) in enumerate(STEPS,1):
+                      await health(c)
+                      print("HOUSE_RESUME_STROKE_START="+str(ix)+" "+name,flush=True)
+                      result=await call(c,"creative_write","creative.shape.rectangle",args)
+                      if (result.get("result") or {}).get("execution")!="succeeded":
+                          raise RuntimeError("HOUSE_STROKE_EXECUTION_UNVERIFIED_NO_REPLAY")
+                      doc,next_count,names=await document(c)
+                      print("HOUSE_RESUME_STROKE_READBACK="+json.dumps({"step":ix,"name":name,"count":next_count,"visibleName":name in names},default=str),flush=True)
+                      if next_count!=count+1 or name not in names:
+                          raise RuntimeError("HOUSE_STROKE_NOT_VERIFIED_NO_REPLAY")
+                      count=next_count
+                      await health(c)
+                      saved=await call(c,"creative_write","creative.document.save",{})
+                      if (saved.get("result") or {}).get("execution")!="succeeded":
+                          raise RuntimeError("HOUSE_SAVE_UNKNOWN_NO_REPLAY")
+                      if not TARGET.is_file() or TARGET.stat().st_size<1024:
+                          raise RuntimeError("HOUSE_SAVE_FILE_NOT_OBSERVED")
+                      print("HOUSE_RESUME_STROKE_SAVED="+json.dumps({"step":ix,"count":count,"bytes":TARGET.stat().st_size,"sha256":hashlib.sha256(TARGET.read_bytes()).hexdigest()}),flush=True)
+                      await asyncio.sleep(1.2)
+                  print("HOUSE_LIVE_8_OBJECTS=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath continue_house.py -Encoding UTF8
+          uv run python continue_house.py
+          if($LASTEXITCODE -ne 0){throw 'HOUSE_LIVE_RESUME_FAILED'}
+      - name: Capture Illustrator screen with measured active foreground PID
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          try {
+            Add-Type -AssemblyName System.Drawing
+            Add-Type -AssemblyName System.Windows.Forms
+            Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class HouseScreenshotOwner {
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+          }
+          '@
+            $pidOwner=[uint32]0
+            [void][HouseScreenshotOwner]::GetWindowThreadProcessId([HouseScreenshotOwner]::GetForegroundWindow(),[ref]$pidOwner)
+            Write-Output "HOUSE_SCREENSHOT_FOREGROUND_PID=$pidOwner"
+            $b=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $image=New-Object System.Drawing.Bitmap($b.Width,$b.Height)
+            $g=[System.Drawing.Graphics]::FromImage($image)
+            $g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size)
+            $image.Save((Join-Path (Get-Location) 'house_windows_live.png'),[System.Drawing.Imaging.ImageFormat]::Png)
+            $g.Dispose();$image.Dispose()
+            Write-Output 'HOUSE_SCREENSHOT_CAPTURED=PASS'
+          }catch{Write-Output "HOUSE_SCREENSHOT_CAPTURED=FAIL $($_.Exception.Message)"}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: illustrator-house-4-to-8-live-evidence
+          path: house_windows_live.png
+          if-no-files-found: warn
+          retention-days: 14
