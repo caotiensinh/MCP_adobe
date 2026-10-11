@@ -4,6 +4,7 @@ on:
     branches: [feat/canvas-region-targeting]
     paths:
       - ".github/workflows/panda-xd-complete-picker.yml"
+      - "scripts/panda_xd_complete_open_save_dialog.ps1"
   workflow_dispatch:
 permissions:
   contents: read
