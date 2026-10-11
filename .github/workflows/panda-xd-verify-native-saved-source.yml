@@ -1,0 +1,72 @@
+name: PANDA XD verify completed native file, SHA and live document
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-verify-native-saved-source.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Audit source XD bytes, archive integrity, and live desktop without GUI writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_SOURCE_AUDIT_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_SOURCE_AUDIT_WRONG_SESSION'}
+          $path=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          if(-not (Test-Path -LiteralPath $path -PathType Leaf)){throw 'XD_SOURCE_AUDIT_MISSING_ORIGINAL'}
+          $first=Get-Item -LiteralPath $path
+          Start-Sleep -Seconds 2
+          $second=Get-Item -LiteralPath $path
+          if($first.Length -ne $second.Length -or $second.Length -lt 4096){throw 'XD_SOURCE_AUDIT_NOT_STABLE_OR_TOO_SMALL'}
+          $hash=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+          $magic=@(Get-Content -LiteralPath $path -Encoding Byte -TotalCount 4)
+          Write-Host "XD_SOURCE_AUDIT_FILE=FOUND bytes=$($second.Length) sha256=$hash magic=$($magic -join '-')"
+          if($magic.Count -lt 4){throw 'XD_SOURCE_AUDIT_TOO_SHORT'}
+          Add-Type -AssemblyName System.IO.Compression
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive=$null
+          try{
+            $archive=[System.IO.Compression.ZipFile]::OpenRead($path)
+            $entries=@($archive.Entries)
+            if($entries.Count -lt 3){throw 'XD_SOURCE_AUDIT_ARCHIVE_TOO_FEW_ENTRIES'}
+            $names=@($entries | Select-Object -ExpandProperty FullName)
+            Write-Host "XD_SOURCE_AUDIT_ARCHIVE=PASS entries=$($entries.Count) sample=$($names[0..([Math]::Min(12,$names.Count-1))] -join ';')"
+            foreach($entry in $entries){
+              if($entry.Length -gt 0){
+                $stream=$entry.Open()
+                try{
+                  $buffer=New-Object byte[] 8192
+                  while($stream.Read($buffer,0,$buffer.Length) -gt 0){}
+                }finally{$stream.Dispose()}
+              }
+            }
+            Write-Host "XD_SOURCE_AUDIT_ALL_ARCHIVE_ENTRIES_READABLE=PASS count=$($entries.Count)"
+          }catch{
+            Write-Host "XD_SOURCE_AUDIT_ZIP_FAILED=$($_.Exception.Message)"
+            throw
+          }finally{if($archive){$archive.Dispose()}}
+          $screens=@(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.SessionId -eq 1 -and ($_.MainWindowTitle -match 'Adobe XD' -or $_.ProcessName -eq 'XD')
+          })
+          foreach($proc in $screens){
+            Write-Host "XD_SOURCE_AUDIT_PROCESS name=$($proc.ProcessName) pid=$($proc.Id) title=$($proc.MainWindowTitle)"
+          }
+          Write-Host 'XD_SOURCE_AUDIT_FINAL=PASS'
+          Copy-Item -LiteralPath $path -Destination (Join-Path $PWD 'xd_original_verified.xd')
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-xd-verified-saved-original
+          path: xd_original_verified.xd
+          if-no-files-found: ignore
+          retention-days: 14
