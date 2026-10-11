@@ -6,7 +6,10 @@ after exact target PSD, active layer and reference geometry have been verified.
 from __future__ import annotations
 import json,math
 from typing import Any,Mapping
-from panda_red_vector_adapter import sample_path
+if __package__:
+    from .panda_red_vector_adapter import sample_path
+else:
+    from panda_red_vector_adapter import sample_path
 
 def compile_path_fill(component:Mapping[str,Any],*,expected_doc:str) -> tuple[str,dict[str,float]]:
     if component.get("kind")!="path":
@@ -18,7 +21,9 @@ def compile_path_fill(component:Mapping[str,Any],*,expected_doc:str) -> tuple[st
         raise ValueError("Invalid exact layer identity")
     points=sample_path(component["pathData"],count=16)
     x=float(component["x"]); y=float(component["y"])
-    coords=[[round(x+px-min(px0 for px0,py0 in points),3),round(y+py-min(py0 for px0,py0 in points),3)] for px,py in points[:-1]]
+    min_x=min(px for px,py in points)
+    min_y=min(py for px,py in points)
+    coords=[[round(x+px-min_x,3),round(y+py-min_y,3)] for px,py in points[:-1]]
     if not (3<=len(coords)<=512) or any(not math.isfinite(v) or abs(v)>20000 for pt in coords for v in pt):
         raise ValueError("Unsafe vector point bounds")
     fill=component["fill"]
