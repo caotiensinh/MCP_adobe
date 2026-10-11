@@ -1,0 +1,47 @@
+name: Red Panda Illustrator installed gateway runtime versus branch hashes read only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-illustrator-installed-file-diff.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare exact persistent gateway files and source; never change install
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'AI_RUNTIME_DIFF_WRONG_HOST'}
+          $root=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway'
+          $python=Join-Path $root 'venv\Scripts\python.exe'
+          $install=Join-Path $root 'venv\Lib\site-packages\mcp_adobe'
+          if(-not(Test-Path -LiteralPath $python -PathType Leaf)){throw 'AI_RUNTIME_DIFF_NO_INSTALLED_PYTHON'}
+          $env:PYTHONUTF8='1'
+          & $python -c 'import mcp_adobe, mcp_adobe.illustrator, mcp_adobe.illustrator_cep;print("AI_RUNTIME_IMPORTED_PACKAGE="+str(mcp_adobe.__file__));print("AI_RUNTIME_IMPORTED_ADAPTER="+str(mcp_adobe.illustrator.__file__))'
+          if($LASTEXITCODE -ne 0){throw 'AI_RUNTIME_DIFF_PYTHON_IMPORT_FAILED'}
+          $items=@()
+          foreach($name in @('illustrator.py','illustrator_cep.py','server.py','photoshop.py','xd.py')){
+            $installed=Join-Path $install $name
+            $source=Join-Path $PWD ("src/mcp_adobe/$name")
+            if(-not(Test-Path -LiteralPath $installed -PathType Leaf)){throw "AI_RUNTIME_DIFF_INSTALLED_ABSENT $name"}
+            if(-not(Test-Path -LiteralPath $source -PathType Leaf)){throw "AI_RUNTIME_DIFF_CHECKOUT_ABSENT $name"}
+            $a=(Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash
+            $b=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+            $items+=@{name=$name;installed_sha256=$a;checkout_sha256=$b;match=($a -eq $b)}
+            Write-Host "AI_RUNTIME_DIFF name=$name match=$($a -eq $b) installed=$a checkout=$b"
+          }
+          $items|ConvertTo-Json -Depth 4|Set-Content -LiteralPath 'ai_installed_vs_checkout.json' -Encoding UTF8
+      - uses: actions/upload-artifact@v4
+        with:
+          name: red-illustrator-installed-runtime-sha-census
+          path: ai_installed_vs_checkout.json
+          if-no-files-found: error
+          retention-days: 14
