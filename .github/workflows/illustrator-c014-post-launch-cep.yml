@@ -1,9 +1,5 @@
 name: Illustrator C014 post-launch CEP
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/illustrator-c014-post-launch-cep.yml"
   workflow_dispatch:
 permissions:
   contents: read
