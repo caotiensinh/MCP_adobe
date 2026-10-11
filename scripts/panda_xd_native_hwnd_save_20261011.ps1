@@ -89,9 +89,20 @@ $field=$fields[0];$button=$buttons[0]
 $dialogHwnd=[IntPtr]$dialog.Current.NativeWindowHandle
 $editHwnd=[IntPtr]$field.Current.NativeWindowHandle
 $buttonHwnd=[IntPtr]$button.Current.NativeWindowHandle
-VerifyHandle $dialogHwnd $xdPid 'dialog'
-VerifyHandle $editHwnd $xdPid 'filename'
-VerifyHandle $buttonHwnd $xdPid 'save'
+$pickerOwner=[uint32]0
+[void][PandaXdNative]::GetWindowThreadProcessId($dialogHwnd,[ref]$pickerOwner)
+$pickerPid=[int]$pickerOwner
+$picker=Get-Process -Id $pickerPid -ErrorAction SilentlyContinue
+if(-not $picker -or $picker.SessionId -ne 1){
+  throw "XD_NATIVE_SAVE_PICKER_PID_INVALID=$pickerPid"
+}
+if([int]$dialog.Current.ProcessId -ne $pickerPid){
+  throw "XD_NATIVE_SAVE_PICKER_UIA_PID_DIFFERS native=$pickerPid uia=$($dialog.Current.ProcessId)"
+}
+Write-Host "XD_NATIVE_SAVE_VERIFIED_PICKER_PROCESS pid=$pickerPid name=$($picker.ProcessName) parentXdFramePid=$xdPid"
+VerifyHandle $dialogHwnd $pickerPid 'dialog'
+VerifyHandle $editHwnd $pickerPid 'filename'
+VerifyHandle $buttonHwnd $pickerPid 'save'
 Write-Host "XD_NATIVE_SAVE_GATE=PASS document=$($xdWindow.Current.Name) pid=$xdPid"
 # Descend ONLY from the verified filename control. Never target search box,
 # location bar, Chrome or another application.
@@ -125,7 +136,7 @@ else{
 }
 if($candidates.Count -ne 1){throw 'XD_NATIVE_SAVE_NO_EDITABLE_NATIVE_HANDLE_NO_INPUT'}
 $actualEdit=[IntPtr]$candidates[0]
-VerifyHandle $actualEdit $xdPid 'native_edit'
+VerifyHandle $actualEdit $pickerPid 'native_edit'
 Write-Host "XD_NATIVE_SAVE_MUTATION_START=ONCE path=$target"
 $response=[PandaXdNative]::SendMessage($actualEdit,[uint32]12,[IntPtr]::Zero,$target)
 Start-Sleep -Milliseconds 300
@@ -143,14 +154,14 @@ if($buttonClass -eq 'Button'){
   $foreground=[PandaXdNative]::GetForegroundWindow()
   $owner=[uint32]0
   if($foreground -ne [IntPtr]::Zero){[void][PandaXdNative]::GetWindowThreadProcessId($foreground,[ref]$owner)}
-  if([int]$owner -ne $xdPid){
-    [void][PandaXdNative]::SetForegroundWindow([IntPtr]$xdWindow.Current.NativeWindowHandle)
+  if([int]$owner -ne $xdPid -and [int]$owner -ne $pickerPid){
+    [void][PandaXdNative]::SetForegroundWindow($dialogHwnd)
     Start-Sleep -Milliseconds 300
     $foreground=[PandaXdNative]::GetForegroundWindow()
     $owner=[uint32]0
     if($foreground -ne [IntPtr]::Zero){[void][PandaXdNative]::GetWindowThreadProcessId($foreground,[ref]$owner)}
   }
-  if([int]$owner -ne $xdPid){throw 'XD_NATIVE_SAVE_CANNOT_PROVE_DIALOG_FOREGROUND_NO_CLICK'}
+  if([int]$owner -ne $xdPid -and [int]$owner -ne $pickerPid){throw 'XD_NATIVE_SAVE_CANNOT_PROVE_DIALOG_FOREGROUND_NO_CLICK'}
   $rect=$button.Current.BoundingRectangle
   $drect=$dialog.Current.BoundingRectangle
   $cx=[int][Math]::Floor($rect.Left+$rect.Width/2)
