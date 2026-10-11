@@ -33,6 +33,51 @@ jobs:
           if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_PYTHON_INVALID'}
           uv run python scripts/panda_xd_ellipse_fix_preflight.py
           if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_SOURCE_NOT_PRISTINE_NO_PLUGIN_RELOAD'}
+      - name: Upgrade installed gateway adapter while source is saved and XD queue idle
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $root=Join-Path $env:LOCALAPPDATA 'MCPAdobe'
+          $backup=Join-Path $root 'gateway.previous'
+          if(Test-Path -LiteralPath $backup){
+            $exe=Join-Path $backup 'venv\Scripts\mcp-adobe.exe'
+            $metadata=Join-Path $backup 'install-metadata.json'
+            if(-not (Test-Path -LiteralPath $exe) -or -not (Test-Path -LiteralPath $metadata)){
+              throw 'XD_RADIUS_GATEWAY_EXISTING_BACKUP_NOT_RECOGNIZED'
+            }
+            $meta=Get-Content -LiteralPath $metadata -Raw | ConvertFrom-Json
+            if($meta.gateway_port -ne 8787 -or $meta.xd_port -ne 8765){
+              throw 'XD_RADIUS_GATEWAY_BACKUP_PORTS_WRONG'
+            }
+            foreach($proc in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)){
+              if(([string]$proc.ExecutablePath).StartsWith($backup,[StringComparison]::OrdinalIgnoreCase) -or
+                ([string]$proc.CommandLine).IndexOf($exe,[StringComparison]::OrdinalIgnoreCase) -ge 0){
+                throw "XD_RADIUS_GATEWAY_BACKUP_IS_EXECUTING pid=$($proc.ProcessId)"
+              }
+            }
+            $archive=Join-Path $root "gateway.previous.before-ellipse-radius-$env:GITHUB_RUN_ID"
+            if(Test-Path -LiteralPath $archive){throw 'XD_RADIUS_GATEWAY_ARCHIVE_COLLISION'}
+            Move-Item -LiteralPath $backup -Destination $archive
+            if(-not (Test-Path -LiteralPath (Join-Path $archive 'install-metadata.json'))){
+              throw 'XD_RADIUS_GATEWAY_PREVIOUS_BACKUP_NOT_PRESERVED'
+            }
+            Write-Host "XD_RADIUS_GATEWAY_BACKUP_PRESERVED=$archive"
+          }
+          $installed=Join-Path $root 'gateway'
+          foreach($port in @(8787,8765)){
+            foreach($listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)){
+              $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
+              $cmd=[string]$owner.CommandLine
+              if($cmd.IndexOf((Join-Path $installed 'venv\Scripts\mcp-adobe.exe'),[StringComparison]::OrdinalIgnoreCase) -lt 0){
+                throw "XD_RADIUS_GATEWAY_UNOWNED_PORT=$port"
+              }
+              Write-Host "XD_RADIUS_GATEWAY_PREWRITE_LISTENER port=$port pid=$($listener.OwningProcess)"
+            }
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_local_host.ps1 -SkipStartupRegistration
+          if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_GATEWAY_UPGRADE_FAILED_NO_BLIND_RETRY'}
+          Write-Host 'XD_RADIUS_GATEWAY_VERSIONED_UPGRADE=PASS'
       - name: Preserve previous live bridge and update only this XD plugin
         shell: powershell
         run: |
