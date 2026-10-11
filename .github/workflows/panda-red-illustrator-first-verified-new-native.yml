@@ -25,10 +25,39 @@ jobs:
           if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){
             throw 'PAN_AI_NEW_VECTOR_WRONG_DESKTOP'
           }
-          $ai=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
-          if($ai.Count -ne 1 -or -not $ai[0].Responding){
-            throw 'PAN_AI_NEW_VECTOR_REAL_HOST_NOT_UNIQUE'
+          $all=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          if($all.Count -gt 1){throw 'PAN_AI_NEW_VECTOR_MULTIPLE_PROCESS_UNSAFE'}
+          if($all.Count -eq 1 -and ($all[0].SessionId -ne 1 -or $all[0].MainWindowHandle -eq 0)){
+            throw 'PAN_AI_NEW_VECTOR_HEADLESS_EXISTING_PROCESS_NO_DUPLICATE'
           }
+          if($all.Count -eq 0){
+            $inventory=@(& "$PWD/scripts/adobe_inventory.ps1")
+            $entry=@($inventory|Where-Object {$_.PSObject.Properties.Name -contains 'Illustrator'}|Select-Object -Last 1)
+            if($entry.Count -ne 1){throw 'PAN_AI_NEW_VECTOR_ADOBE_INVENTORY_MISSING'}
+            $exe=[string]$entry[0].Illustrator
+            if(-not(Test-Path -LiteralPath $exe -PathType Leaf) -or (Split-Path -Leaf $exe) -ine 'Illustrator.exe'){
+              throw 'PAN_AI_NEW_VECTOR_EXE_NOT_VERIFIED'
+            }
+            $originalTracker=$env:RUNNER_TRACKING_ID
+            $cold=[System.Diagnostics.Stopwatch]::StartNew()
+            try{
+              $env:RUNNER_TRACKING_ID=''
+              $started=Start-Process -FilePath $exe -PassThru -ErrorAction Stop
+            }finally{$env:RUNNER_TRACKING_ID=$originalTracker}
+            Write-Host "PAN_AI_NEW_VECTOR_START_REQUESTED_ONCE=PASS pid=$($started.Id)"
+          }else{$cold=$null;Write-Host 'PAN_AI_NEW_VECTOR_ALREADY_OPEN=PASS'}
+          $deadline=(Get-Date).AddSeconds(150);$ai=@()
+          do{
+            $ai=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+            if($ai.Count -eq 1 -and $ai[0].Responding){break}
+            if($ai.Count -gt 1){throw 'PAN_AI_NEW_VECTOR_MULTIPLE_GUI_OWNERS'}
+            Start-Sleep -Seconds 2
+          }until((Get-Date)-ge $deadline)
+          if($ai.Count -ne 1 -or -not $ai[0].Responding){
+            throw 'PAN_AI_NEW_VECTOR_GUI_TIMEOUT_NO_RELAUNCH'
+          }
+          if($cold){$cold.Stop();Write-Host "PAN_AI_NEW_VECTOR_COLD_LAUNCH_MS=$($cold.ElapsedMilliseconds)"}
+          Write-Host "PAN_AI_NEW_VECTOR_REAL_GUI=PASS pid=$($ai[0].Id) title=$($ai[0].MainWindowTitle)"
           $original=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_KFP4_Red_AI_38146162392.ai'
           if(-not(Test-Path -LiteralPath $original -PathType Leaf) -or
              (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash -ne 'A44991466F8E3E17EBC92A03BD168B917EFACA04001655CB8932091ACE085091'){
