@@ -49,7 +49,7 @@ $saveCandidates=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendan
 $save=$null
 foreach($item in $saveCandidates){
   $label=[string]$item.Current.Name
-  if($label -match 'Save|保存'){
+  if($label -match 'Save|Save'){
     $save=$item
     break
   }
