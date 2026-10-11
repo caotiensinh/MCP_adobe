@@ -1,0 +1,152 @@
+name: Panda Illustrator C014 exact read only job fence recovery after GUI relaunch
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-ai-exact-460-fence-recovery.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  recover:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 9
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+      RED_AI_RUN: '38146162392'
+      RED_AI_JOB: 'job_46074332a33c'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prove exact unknown read job, idle CEP, no other active queue, and live XD idle
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'RED_AI_RECOVERY_WRONG_MACHINE'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RED_AI_RECOVERY_WRONG_DESKTOP'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json,os
+          from mcp import Client
+          from pathlib import Path
+          ID=os.environ["RED_AI_JOB"]
+          async def rd(c,app,cap,args):
+            r=await c.call_tool("creative_read",{"application":app,"capability":cap,"arguments":args})
+            p=r.structured_content or {}
+            if r.is_error or p.get("ok") is not True:
+              raise RuntimeError("RED_AI_RECOVERY_READ_FAILED "+app+":"+cap+" "+str(r.content)[:170])
+            return p.get("result") or {}
+          async def main():
+            async with Client("http://127.0.0.1:8787/mcp") as c:
+              h=await rd(c,"illustrator","creative.health",{"probe":False,"timeout":5})
+              data=(h.get("connection") or {}).get("data") or {}
+              exe=data.get("execution") or {}
+              panel=(data.get("layers") or {}).get("panel") or {}
+              jobstatus=await rd(c,"illustrator","creative.job.status",{"jobId":ID,"detail":"full"})
+              job=((jobstatus.get("data") or {}).get("job") or {})
+              print("RED_AI_RECOVERY_PREFLIGHT="+json.dumps({"unresolved":exe.get("unresolvedJobs"),
+                "panel":panel,"active":exe.get("activeJob"),"waiting":exe.get("waiting"),
+                "blocking":data.get("blocking"),"job":{k:job.get(k) for k in
+                  ("jobId","status","awaitingHost","label","error","outcomeSource","effects")},
+                },default=str)[:9000],flush=True)
+              if exe.get("unresolvedJobs")!=[ID] or exe.get("activeJob") is not None or exe.get("waiting")!=0:
+                raise RuntimeError("RED_AI_RECOVERY_FOREIGN_OR_ACTIVE_JOB_NO_RESTART")
+              if panel.get("status")!="ok" or panel.get("busy") is not False or panel.get("activeRequestId") is not None or panel.get("heartbeatStale") is True:
+                raise RuntimeError("RED_AI_RECOVERY_PANEL_NOT_IDLE_NO_RESTART")
+              if job.get("jobId")!=ID or job.get("status")!="unknown" or job.get("awaitingHost") is not True or job.get("label")!="illustrator_execute_script" or job.get("outcomeSource")!="python_timeout":
+                raise RuntimeError("RED_AI_RECOVERY_JOB_IDENTITY_MISMATCH")
+              if "missing_descriptor" not in str(job.get("error","")):
+                raise RuntimeError("RED_AI_RECOVERY_NOT_EXPECTED_C014_FAILURE")
+              # The XD runtime shares the gateway, do not disrupt pending GUI mutations.
+              xd=await rd(c,"xd","creative.health",{})
+              if xd.get("pending_count")!=0:
+                raise RuntimeError("RED_AI_RECOVERY_XD_MUTATION_PENDING_NO_RESTART")
+              print("RED_AI_RECOVERY_PREFLIGHT=PASS exact-unknown-read-job idle-CEP idle-XD",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath pre_recover.py -Encoding UTF8
+          uv run --python 3.12 python .\pre_recover.py
+          if($LASTEXITCODE -ne 0){throw 'RED_AI_RECOVERY_PREFLIGHT_BLOCKED'}
+      - name: Preserve AI native checkpoint and restart ONLY owned gateway under proven live supervisor
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $original=Join-Path $env:USERPROFILE "Documents\MCPAdobe\MCP_KFP4_Red_AI_$env:RED_AI_RUN.ai"
+          $expected='A44991466F8E3E17EBC92A03BD168B917EFACA04001655CB8932091ACE085091'
+          if(-not(Test-Path -LiteralPath $original -PathType Leaf)){throw 'RED_AI_RECOVERY_NATIVE_MISSING'}
+          $origHash=(Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
+          if($origHash -ne $expected){throw 'RED_AI_RECOVERY_NATIVE_SHA_CHANGED'}
+          $backup=Join-Path $env:USERPROFILE "Documents\MCPAdobe\MCP_KFP4_Red_AI_$env:RED_AI_RUN.pre_gateway_recovery_$env:GITHUB_RUN_ID.ai"
+          if(Test-Path -LiteralPath $backup){throw 'RED_AI_RECOVERY_BACKUP_ALREADY_EXISTS'}
+          Copy-Item -LiteralPath $original -Destination $backup -ErrorAction Stop
+          if((Get-FileHash -LiteralPath $backup -Algorithm SHA256).Hash -ne $expected){throw 'RED_AI_RECOVERY_BACKUP_BAD_SHA'}
+          Write-Host "RED_AI_RECOVERY_NATIVE_BACKUP=PASS bytes=$((Get-Item $backup).Length) sha256=$expected"
+          $ai=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" | Where-Object {$_.SessionId -eq 1})
+          if($ai.Count -ne 1){throw 'RED_AI_RECOVERY_ILLUSTRATOR_OWNER_NOT_UNIQUE'}
+          $aiPid=$ai[0].ProcessId
+          $ps=@(Get-CimInstance Win32_Process -Filter "Name='Photoshop.exe'" | Where-Object {$_.SessionId -eq 1})
+          $xd=@(Get-CimInstance Win32_Process -Filter "Name='XD.exe'" | Where-Object {$_.SessionId -eq 1})
+          $l=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+          if($l.Count -ne 1){throw 'RED_AI_RECOVERY_GATEWAY_LISTENER_AMBIGUOUS'}
+          $oldPid=$l[0].OwningProcess
+          $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$oldPid"
+          if($owner.Name -notmatch '^(python|mcp-adobe)(w?\.exe)?$' -or
+             $owner.CommandLine -notmatch 'mcp-adobe.exe.*--transport streamable-http.*--host 127.0.0.1.*--port 8787'){
+            throw 'RED_AI_RECOVERY_GATEWAY_OWNER_NOT_TRUSTED'
+          }
+          $pidfile=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\host-wrapper.pid'
+          if(-not(Test-Path -LiteralPath $pidfile)){throw 'RED_AI_RECOVERY_SUPERVISOR_MISSING'}
+          $wrapperPid=0
+          if(-not [int]::TryParse((Get-Content -LiteralPath $pidfile -Raw).Trim(),[ref]$wrapperPid)){throw 'RED_AI_RECOVERY_SUPERVISOR_PID_INVALID'}
+          $wrapper=Get-CimInstance Win32_Process -Filter "ProcessId=$wrapperPid" -ErrorAction SilentlyContinue
+          if(-not $wrapper -or $wrapper.CommandLine -notmatch 'run-host.ps1'){throw 'RED_AI_RECOVERY_SUPERVISOR_OWNER_MISMATCH'}
+          $sockets=@(Get-NetTCPConnection -LocalPort 8787 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "RED_AI_RECOVERY_GATEWAY_OWNER=PASS oldPid=$oldPid wrapper=$wrapperPid established=$($sockets.Count) illustratorPid=$aiPid"
+          # Gracefully stop only the owned gateway to retire the orphaned read-only coordinator fence.
+          # The persistent supervisor starts a new one; never terminate Adobe or force-kill the host.
+          Stop-Process -Id $oldPid -ErrorAction Stop
+          $deadline=(Get-Date).AddSeconds(70)
+          $newPid=0
+          do{
+            Start-Sleep -Seconds 2
+            $now=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+            if($now.Count -eq 1 -and $now[0].OwningProcess -ne $oldPid){$newPid=$now[0].OwningProcess;break}
+          }until((Get-Date)-ge $deadline)
+          if($newPid -eq 0){throw 'RED_AI_RECOVERY_GATEWAY_RESTART_UNCONFIRMED_NO_RETRY'}
+          if(-not(Get-Process -Id $aiPid -ErrorAction SilentlyContinue)){throw 'RED_AI_RECOVERY_ILLUSTRATOR_PROCESS_LOST'}
+          foreach($proc in @($ps+$xd)){
+            if(-not(Get-Process -Id $proc.ProcessId -ErrorAction SilentlyContinue)){throw 'RED_AI_RECOVERY_OTHER_ADOBE_PROCESS_LOST'}
+          }
+          if((Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash -ne $expected){throw 'RED_AI_RECOVERY_NATIVE_MODIFIED_UNEXPECTEDLY'}
+          Write-Host "RED_AI_RECOVERY_SCOPED_GATEWAY=PASS oldPid=$oldPid newPid=$newPid illustratorPid=$aiPid unchangedNativeSha=$expected"
+      - name: Verify retired fence using health only; never dispatch Illustrator host job
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+            async with Client("http://127.0.0.1:8787/mcp") as c:
+              async def read(cap,args):
+                r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"illustrator","capability":cap,"arguments":args}),timeout=20)
+                print("RED_AI_RECOVERY_READ="+json.dumps({"cap":cap,"is_error":r.is_error,
+                  "payload":str(r.structured_content)[:6000],"errors":[str(x)[:280] for x in r.content] if r.is_error else []}),flush=True)
+                if r.is_error or (r.structured_content or {}).get("ok") is not True:
+                  raise RuntimeError("RED_AI_RECOVERY_CAPABILITY_BLOCKED "+cap)
+                return (r.structured_content or {}).get("result") or {}
+              h=await read("creative.health",{"probe":False,"timeout":5})
+              d=(h.get("connection") or {}).get("data") or {}
+              exe=d.get("execution") or {}
+              p=(d.get("layers") or {}).get("panel") or {}
+              if exe.get("unresolvedJobs") or exe.get("activeJob") is not None or exe.get("waiting")!=0 or p.get("status")!="ok" or p.get("busy") is not False:
+                raise RuntimeError("RED_AI_RECOVERY_STILL_NOT_IDLE_REFUSE_ANY_WRITE")
+              # Never enqueue a host call inside a coordinator-fence reset.
+              # A separate explicitly authorized test may verify the new host.
+              print("RED_AI_RECOVERY_READONLY_COMPLETE=PASS fence_cleared_without_host_dispatch",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath post_recover.py -Encoding UTF8
+          uv run --python 3.12 python .\post_recover.py
+          if($LASTEXITCODE -ne 0){throw 'RED_AI_RECOVERY_READBACK_NEEDS_DIAGNOSIS_NO_RETRY'}
