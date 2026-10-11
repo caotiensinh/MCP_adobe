@@ -55,6 +55,8 @@ def install_trace(bridge_class: type) -> None:
                     if (isinstance(fence, dict)
                             and fence.get("requestId") == request_id
                             and fence.get("requestToken") == envelope.get("requestToken")
+                            and isinstance(fence.get("connectionGeneration"), int)
+                            and fence.get("connectionGeneration") == coordinator.connection_generation
                             and isinstance(envelope.get("requestToken"), str)
                             and envelope.get("requestToken")):
                         fence["priorCompletionObserved"] = True
