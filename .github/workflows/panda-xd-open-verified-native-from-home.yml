@@ -32,18 +32,18 @@ jobs:
             return $root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
           }
           $top=Get-Tops
-          $home=@();$document=@();$other=@()
+          $xdHomeWindows=@();$document=@();$other=@()
           foreach($w in $top){
             $title=[string]$w.Current.Name
-            if($title -eq 'Adobe XD'){$home+=,$w}
+            if($title -eq 'Adobe XD'){$xdHomeWindows+=,$w}
             elseif($title -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'){$document+=,$w}
             elseif($title -match 'Adobe XD$'){$other+=,$w}
           }
-          Write-Host "PANDA_XD_OPEN_PREFLIGHT home=$($home.Count) requestedDoc=$($document.Count) otherDocs=$($other.Count)"
+          Write-Host "PANDA_XD_OPEN_PREFLIGHT home=$($xdHomeWindows.Count) requestedDoc=$($document.Count) otherDocs=$($other.Count)"
           if($other.Count -gt 0 -or $document.Count -gt 1){throw 'PANDA_XD_OPEN_OTHER_DOCUMENT_UNSAFE'}
           $socket=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
           if($document.Count -eq 0){
-            if($home.Count -ne 1 -or $socket.Count -ne 0){
+            if($xdHomeWindows.Count -ne 1 -or $socket.Count -ne 0){
               throw 'PANDA_XD_OPEN_NO_UNIQUE_IDLE_HOME'
             }
             $tracking=$env:RUNNER_TRACKING_ID
