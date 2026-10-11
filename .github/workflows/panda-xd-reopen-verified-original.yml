@@ -1,0 +1,93 @@
+name: XD recover saved source via safe file association
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-reopen-verified-original.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  reopen:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate source file, desktop and launch exactly once
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_REOPEN_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_REOPEN_WRONG_SESSION'}
+          $original=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          if(-not (Test-Path -LiteralPath $original -PathType Leaf)){throw 'XD_REOPEN_NO_NATIVE_FILE'}
+          $expected='598F79071CF7DBFC426F9FEF50144CF94225D2E7BB384C89E2E4FE1D67FDAD29'
+          $sha=(Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
+          if($sha -ne $expected){throw "XD_REOPEN_FILE_SHA_CHANGED=$sha"}
+          $receipt=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.json'
+          $data=Get-Content -LiteralPath $receipt -Raw | ConvertFrom-Json
+          if(@($data.proven).Count -ne 32 -or $null -ne $data.pending){throw 'XD_REOPEN_SOURCE_CHECKPOINT_UNKNOWN'}
+          $repair=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800_ellipse_repair.json'
+          if(Test-Path -LiteralPath $repair){
+            $progress=Get-Content -LiteralPath $repair -Raw | ConvertFrom-Json
+            if(@($progress.repaired).Count -ne 0 -or $null -ne $progress.pending){
+              throw 'XD_REOPEN_REPAIR_PROGRESS_NOT_EMPTY'
+            }
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $windows=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          foreach($window in $windows){
+            $name=[string]$window.Current.Name
+            if($name -match 'Adobe XD|Save As|Untitled'){
+              Write-Host "XD_REOPEN_EXISTING_GUI name=$name"
+              throw 'XD_REOPEN_UNSAVED_OR_ALREADY_OPEN_GUI'
+            }
+          }
+          foreach($process in @(Get-Process -Name XD,PickerHost -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})){
+            Write-Host "XD_REOPEN_RUNNING_PROCESS name=$($process.ProcessName) pid=$($process.Id)"
+            throw 'XD_REOPEN_PROCESS_ALREADY_RUNNING'
+          }
+          if(@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue).Count -gt 0){
+            throw 'XD_REOPEN_BRIDGE_CONNECTED'
+          }
+          Write-Host "XD_REOPEN_SAFE_TO_START=PASS sha256=$sha"
+          Start-Process -FilePath explorer.exe -ArgumentList @($original)
+          Write-Host 'XD_REOPEN_EXISTING_NATIVE_FILE_REQUESTED_ONCE=PASS'
+          $deadline=(Get-Date).AddSeconds(90)
+          $opened=$false
+          while((Get-Date) -lt $deadline){
+            Start-Sleep -Seconds 3
+            $now=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+            foreach($window in $now){
+              $name=[string]$window.Current.Name
+              if($name -match 'MCP_Mode1_Panda_XD_38136531800' -and $name -match 'Adobe XD'){
+                Write-Host "XD_REOPEN_LIVE_SOURCE=PASS name=$name pid=$($window.Current.ProcessId)"
+                $opened=$true
+                break
+              }
+            }
+            if($opened){break}
+          }
+          if(-not $opened){
+            foreach($process in @(Get-Process -Name XD,ApplicationFrameHost -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})){
+              Write-Host "XD_REOPEN_PENDING_STATE name=$($process.ProcessName) pid=$($process.Id) title=$($process.MainWindowTitle)"
+            }
+            throw 'XD_REOPEN_SOURCE_WINDOW_NOT_VISIBLE_NO_REPLAY'
+          }
+          if((Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash -ne $expected){
+            throw 'XD_REOPEN_SOURCE_CHANGED_DURING_LAUNCH'
+          }
+          Write-Host 'XD_REOPEN_ORIGINAL_PRESERVED=PASS'
+      - name: Read only WebSocket connectivity after launch
+        shell: powershell
+        run: |
+          foreach($port in @(8787,8765)){
+            $list=@(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
+            $connections=@(Get-NetTCPConnection -State Established -LocalPort $port -ErrorAction SilentlyContinue)
+            Write-Host "XD_REOPEN_PORT port=$port listen=$($list.Count) established=$($connections.Count)"
+          }
