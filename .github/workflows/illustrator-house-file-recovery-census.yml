@@ -12,7 +12,7 @@ concurrency:
 jobs:
   census:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 4
+    timeout-minutes: 6
     steps:
       - name: Inventory Illustrator house and recovery candidates read only
         shell: powershell
