@@ -5,7 +5,7 @@ const { Rectangle, Ellipse, Text, Color } = scenegraph;
 
 const BRIDGE_URL = "ws://127.0.0.1:8765";
 const STATUS_LIMIT = 200;
-const BRIDGE_BUILD = "xd-canvas-readback-v3";
+const BRIDGE_BUILD = "xd-ellipse-radius-geometry-v4";
 
 let panel;
 let socket;
@@ -203,13 +203,81 @@ function applyMutation(item, selection) {
 
   if (item.method === "xd.queue.ellipse_create") {
     const node = new Ellipse();
-    node.width = Math.max(1, safeNumber(params.width, 100));
-    node.height = Math.max(1, safeNumber(params.height, 100));
+    // Adobe XD's Ellipse API exposes radii, not writable width/height.
+    const width = Math.max(1, safeNumber(params.width, 100));
+    const height = Math.max(1, safeNumber(params.height, 100));
+    node.radiusX = width / 2;
+    node.radiusY = height / 2;
     node.fill = new Color(params.fill || "#FFFFFF");
     if (params.name) node.name = String(params.name);
     selection.insertionParent.addChild(node);
-    node.moveInParentCoordinates(safeNumber(params.x, 0), safeNumber(params.y, 0));
+    const initial = node.globalBounds;
+    if (!initial || !(initial.width > 0) || !(initial.height > 0)) {
+      throw new Error("XD Ellipse has zero visible geometry after radius assignment");
+    }
+    node.moveInParentCoordinates(
+      safeNumber(params.x, 0) - initial.x,
+      safeNumber(params.y, 0) - initial.y
+    );
+    const measured = node.globalBounds;
+    if (!measured || Math.abs(measured.width - width) > 1 ||
+        Math.abs(measured.height - height) > 1) {
+      throw new Error("XD Ellipse rendered size differs from requested size");
+    }
     return nodeInfo(node);
+  }
+
+  if (item.method === "xd.queue.ellipse_geometry_repair") {
+    const guid = String(params.guid || "");
+    const name = String(params.name || "");
+    const expectedDocument = String(params.document_id || "");
+    if (!/^[a-f0-9-]{36}$/.test(guid) || !name || !expectedDocument ||
+        !scenegraph.root || scenegraph.root.guid !== expectedDocument) {
+      throw new Error("XD geometry repair requires exact node/document identity");
+    }
+    const matches = [];
+    function visit(parent) {
+      if (!parent) return;
+      if (parent.guid === guid) matches.push(parent);
+      if (parent.children) {
+        for (let i = 0; i < parent.children.length; i += 1) {
+          visit(parent.children.at(i));
+        }
+      }
+    }
+    visit(scenegraph.root);
+    if (matches.length !== 1 || !(matches[0] instanceof Ellipse) ||
+        matches[0].name !== name) {
+      throw new Error("XD repair target is missing, ambiguous or not an Ellipse");
+    }
+    const node = matches[0];
+    if (node.radiusX !== 0 || node.radiusY !== 0) {
+      throw new Error("XD target already has nonzero radii: read state, do not repeat repair");
+    }
+    const width = safeNumber(params.width, NaN);
+    const height = safeNumber(params.height, NaN);
+    const x = safeNumber(params.x, NaN);
+    const y = safeNumber(params.y, NaN);
+    if (![width, height, x, y].every(Number.isFinite) ||
+        !(width > 0) || !(height > 0) || width > 1500 || height > 1500) {
+      throw new Error("XD ellipse geometry repair has invalid bounded dimensions");
+    }
+    node.radiusX = width / 2;
+    node.radiusY = height / 2;
+    const beforeMove = node.globalBounds;
+    if (!beforeMove || beforeMove.width < 1 || beforeMove.height < 1) {
+      throw new Error("XD repair did not produce visible ellipse geometry");
+    }
+    node.moveInParentCoordinates(x - beforeMove.x, y - beforeMove.y);
+    const after = node.globalBounds;
+    if (!after || Math.abs(after.width - width) > 1 ||
+        Math.abs(after.height - height) > 1 ||
+        Math.abs(after.x - x) > 2 || Math.abs(after.y - y) > 2) {
+      throw new Error("XD repaired ellipse bounds differ from intended canvas geometry");
+    }
+    return {guid: node.guid, name: node.name, bounds: {
+      left: after.x, top: after.y, width: after.width, height: after.height
+    }, repaired: true};
   }
 
   if (item.method === "xd.queue.text_create") {
@@ -380,6 +448,7 @@ function dispatch(method, params) {
   if (
     method === "xd.queue.rectangle_create" ||
     method === "xd.queue.ellipse_create" ||
+    method === "xd.queue.ellipse_geometry_repair" ||
     method === "xd.queue.text_create" ||
     method === "xd.queue.selection_resize" ||
     method === "xd.queue.selection_fill"
