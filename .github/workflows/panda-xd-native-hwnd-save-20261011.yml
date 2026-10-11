@@ -1,0 +1,52 @@
+name: PANDA XD finish Save As from measured native handles
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-native-hwnd-save-20261011.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  save:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell and save existing open XD dialog without duplicate writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_NATIVE_SAVE_WRONG_MACHINE'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_NATIVE_SAVE_WRONG_SESSION'}
+          $src=Join-Path $PWD 'scripts/panda_xd_native_hwnd_save_20261011.ps1'
+          $tokens=$null;$parseErrors=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($src,[ref]$tokens,[ref]$parseErrors)
+          if(@($parseErrors).Count -gt 0){
+            foreach($e in $parseErrors){
+              Write-Host "XD_NATIVE_SAVE_PARSE_ERROR line=$($e.Extent.StartLineNumber) col=$($e.Extent.StartColumnNumber) msg=$($e.Message)"
+            }
+            throw 'XD_NATIVE_SAVE_SYNTAX_INVALID_NO_MUTATION'
+          }
+          Write-Host 'XD_NATIVE_SAVE_PARSER=PASS'
+          powershell -NoProfile -ExecutionPolicy Bypass -File $src -RunId 38132321143
+          if($LASTEXITCODE -ne 0){throw 'XD_NATIVE_SAVE_E2E_FAILED_INSPECT_LOG_NO_BLIND_RERUN'}
+      - name: Collect existing genuine Adobe XD native file only
+        if: always()
+        shell: powershell
+        run: |
+          $native=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38132321143.xd'
+          if(Test-Path -LiteralPath $native -PathType Leaf){
+            Copy-Item -LiteralPath $native -Destination (Join-Path $PWD 'panda_blank_original.xd')
+            Write-Host "XD_NATIVE_SAVE_ARTIFACT_BYTES=$((Get-Item -LiteralPath $native).Length)"
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-xd-native-file-save-evidence
+          path: panda_blank_original.xd
+          if-no-files-found: ignore
+          retention-days: 14
