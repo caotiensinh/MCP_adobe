@@ -32,8 +32,8 @@ jobs:
             [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr hwnd,int nIDDlgItem);
             [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd,StringBuilder buffer,int max);
             [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd,StringBuilder buffer,int max);
-            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd,out R hwndRect);
-            [StructLayout(LayoutKind.Sequential)] public struct R {public int L,T,R,B;}
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd,out RectBounds hwndRect);
+            [StructLayout(LayoutKind.Sequential)] public struct RectBounds {public int Left,Top,Right,Bottom;}
             [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
             [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
           }
@@ -44,9 +44,9 @@ jobs:
             $class=New-Object System.Text.StringBuilder 512
             [void][XdWinText]::GetWindowText($handle,$name,512)
             [void][XdWinText]::GetClassName($handle,$class,512)
-            $r=New-Object 'XdWinText+R'
+            $r=New-Object 'XdWinText+RectBounds'
             [void][XdWinText]::GetWindowRect($handle,[ref]$r)
-            Write-Host "XD_HWND_CONTROL tag=$tag hwnd=$handle text=$($name.ToString()) class=$($class.ToString()) rect=$($r.L),$($r.T),$($r.R),$($r.B)"
+            Write-Host "XD_HWND_CONTROL tag=$tag hwnd=$handle text=$($name.ToString()) class=$($class.ToString()) rect=$($r.Left),$($r.Top),$($r.Right),$($r.Bottom)"
           }
           $windows=@(Get-Process -ErrorAction SilentlyContinue | Where-Object {
             $_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -match '^Untitled.*Adobe XD$'
