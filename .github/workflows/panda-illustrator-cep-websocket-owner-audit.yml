@@ -1,0 +1,46 @@
+name: Panda Illustrator CEP websocket true client PID and Adobe host ownership audit
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-illustrator-cep-websocket-owner-audit.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  ownership:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Identify exact TCP client process owning Illustrator CEP established WebSocket; no host calls
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'PANDA_CEP_OWNER_WRONG_HOST'}
+          $server=@(Get-NetTCPConnection -State Listen -LocalPort 8081 -ErrorAction SilentlyContinue)
+          if($server.Count -ne 1){throw 'PANDA_CEP_SERVER_NOT_UNIQUE'}
+          $serverPid=$server[0].OwningProcess
+          $s=Get-CimInstance Win32_Process -Filter "ProcessId=$serverPid" -ErrorAction SilentlyContinue
+          Write-Host "PANDA_CEP_BACKEND_LISTENER=PASS pid=$serverPid name=$($s.Name) session=$($s.SessionId)"
+          $a=@(Get-NetTCPConnection -LocalPort 8081 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "PANDA_CEP_ACCEPTED_CONNECTIONS=$($a.Count)"
+          foreach($conn in $a){
+            $endpoint=Get-NetTCPConnection -LocalPort $conn.RemotePort -RemotePort 8081 -State Established -ErrorAction SilentlyContinue |Select-Object -First 1
+            if($null -eq $endpoint){
+              Write-Host "PANDA_CEP_CLIENT_MISSING port=$($conn.RemotePort)"
+              continue
+            }
+            $client=Get-CimInstance Win32_Process -Filter "ProcessId=$($endpoint.OwningProcess)" -ErrorAction SilentlyContinue
+            $parent=$null
+            if($client -and $client.ParentProcessId -gt 0){
+              $parent=Get-CimInstance Win32_Process -Filter "ProcessId=$($client.ParentProcessId)" -ErrorAction SilentlyContinue
+            }
+            Write-Host "PANDA_CEP_LIVE_CLIENT remoteport=$($conn.RemotePort) pid=$($endpoint.OwningProcess) exe=$($client.Name) session=$($client.SessionId) parentPid=$($client.ParentProcessId) parentExe=$($parent.Name)"
+          }
+          $illustrator=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" -ErrorAction SilentlyContinue)
+          foreach($x in $illustrator){
+            Write-Host "PANDA_CEP_REAL_ILLUSTRATOR pid=$($x.ProcessId) session=$($x.SessionId)"
+          }
+          Write-Host 'PANDA_CEP_SOCKET_OWNER_AUDIT=PASS no mutations no callbacks'
