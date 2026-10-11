@@ -82,6 +82,18 @@ class XdAdapterTests(unittest.TestCase):
         self.assertEqual(text_result["result"]["status"], "queued")
         self.assertTrue(text_result["result"]["approval_required"])
 
+    def test_live_ellipse_is_separate_queued_mutation_not_applied(self) -> None:
+        client = FakeXdClient()
+        registry = CapabilityRegistry()
+        registry.register(XdAdapter(client))
+        response = registry.execute("xd", "creative.shape.ellipse", {
+            "name": "Panda eye", "x": 35, "y": 42, "width": 72, "height": 91, "fill": "#151515"
+        })
+        self.assertEqual([name for name, _ in client.calls], ["xd.health", "xd.queue.ellipse_create"])
+        self.assertEqual(client.calls[1][1]["width"], 72)
+        self.assertEqual(response["result"]["status"], "queued")
+        self.assertEqual(response["outcome"], "pending_user_approval")
+
     def test_queue_clear_maps_to_bridge_without_document_mutation(self) -> None:
         client = FakeXdClient()
         registry = CapabilityRegistry()
