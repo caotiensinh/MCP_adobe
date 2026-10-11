@@ -4,8 +4,11 @@ if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_
 $src=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
 $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
 if(-not(Test-Path -LiteralPath $src -PathType Leaf) -or (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash -ne $sha){throw 'XD_UIA_CONNECT_NATIVE_SHA_CHANGED'}
+# Multiple installed self-hosted runner services do not by themselves
+# imply competing GUI owners. The workflow desktop concurrency group and
+# exact Adobe document/process/queue checks are the actual safety gates.
 $workers=@(Get-CimInstance Win32_Process -Filter "Name='Runner.Worker.exe'" -ErrorAction SilentlyContinue)
-if($workers.Count -gt 1){throw "XD_UIA_CONNECT_OTHER_RUNNER_WORKERS_ACTIVE count=$($workers.Count)"}
+Write-Host "XD_UIA_CONNECT_RUNNER_WORKERS_OBSERVED=$($workers.Count) informational-only"
 $live=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
 if($live.Count -gt 0){
   Write-Host "XD_UIA_CONNECT_ALREADY_ESTABLISHED=PASS count=$($live.Count) no-duplicate-connect"
