@@ -1,0 +1,57 @@
+name: PANDA XD read-only checkpoint reconciliation
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-readonly-reconcile.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  state:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read actual XD state without modifying GUI or queue
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'WRONG_HOST'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'UV_SYNC_ERROR'}
+          @'
+          import asyncio,json,os,hashlib
+          from pathlib import Path
+          from mcp import Client
+          root=Path(os.environ['USERPROFILE'])/'Documents'/'MCPAdobe'
+          checkpoint=root/'MCP_Mode1_Panda_XD_38114632173.json'
+          op='xd-1791696933689-5'
+          async def main():
+              local=None
+              if checkpoint.exists():
+                  contents=checkpoint.read_bytes()
+                  local=json.loads(contents)
+                  print('XD_SAVED_CHECKPOINT='+json.dumps({'path':str(checkpoint),'count':len(local.get('proven',[])),'sha256':hashlib.sha256(contents).hexdigest(),'proven':local.get('proven',[])},default=str),flush=True)
+              else: print('XD_SAVED_CHECKPOINT=MISSING',flush=True)
+              procs=__import__('subprocess').run(['powershell','-NoProfile','-Command',"Get-Process -ErrorAction SilentlyContinue | Where-Object {$_.ProcessName -match '^(XD|AdobeXD)$'} | Select-Object Id,SessionId,MainWindowTitle | ConvertTo-Json -Compress"],capture_output=True,text=True,timeout=12)
+              print('XD_WINDOWS='+json.dumps({'stdout':procs.stdout[-3000:],'stderr':procs.stderr[-700:]},default=str),flush=True)
+              async with Client('http://127.0.0.1:8787/mcp') as c:
+                  for cap,args in [('creative.health',{}),('creative.scenegraph.list',{}),('xd.queue.status',{'operation_id':op})]:
+                      try:
+                          r=await c.call_tool('creative_read',{'application':'xd','capability':cap,'arguments':args})
+                          print('XD_ACTUAL_READ='+json.dumps({'capability':cap,'is_error':r.is_error,'payload':r.structured_content,'errors':[str(z)[:500] for z in r.content] if r.is_error else []},default=str,ensure_ascii=False),flush=True)
+                      except Exception as e:
+                          print('XD_ACTUAL_READ_EXCEPTION='+json.dumps({'capability':cap,'type':type(e).__name__,'message':str(e)[:700]}),flush=True)
+              print('XD_DIAG_READ_ONLY=COMPLETE',flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath xd_reconcile_readonly.py -Encoding UTF8
+          uv run python xd_reconcile_readonly.py
+          if($LASTEXITCODE -ne 0){throw 'XD_READ_ONLY_DIAGNOSTIC_FAILED'}
