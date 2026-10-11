@@ -17,6 +17,7 @@ jobs:
     env:
       PYTHONUTF8: "1"
       UV_LINK_MODE: copy
+      PANDA_XD_RESUME_RUN_ID: '38114632173'
     steps:
       - uses: actions/checkout@v4
       - name: Verify MRCAO session and install XD plugin without killing apps
@@ -78,6 +79,9 @@ jobs:
               }
             }catch{Write-Host "XD_HOME_CONTROLS_UNAVAILABLE=$($_.Exception.Message)"}
           }
+          $checkpoint=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38114632173.json'
+          $resume=Test-Path -LiteralPath $checkpoint
+          Write-Host "XD_RESUME_GUARD present=$resume path=$checkpoint"
           $xd=Find-Xd
           if(-not $xd){
             $start=Get-StartApps -ErrorAction SilentlyContinue |
@@ -93,6 +97,9 @@ jobs:
           if(-not [XdPandaNative]::SetForegroundWindow($xd.MainWindowHandle)){throw 'XD_PANDA_WINDOW_FOREGROUND_FAILED'}
           $title=[string]$xd.MainWindowTitle
           Write-Host "XD_PANDA_WINDOW=PASS pid=$($xd.Id) title=$title"
+          if($resume -and $title -eq 'Adobe XD'){
+            throw 'XD_RESUME_EXACT_DOCUMENT_WINDOW_NOT_VISIBLE_NO_NEW_DOCUMENT'
+          }
           if($title -eq 'Adobe XD'){
             $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
             $cond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'sidebar-work--create')
@@ -146,7 +153,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
-          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/panda_xd_save_native.ps1 -RunId "${{ github.run_id }}"
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/panda_xd_save_native.ps1 -RunId "$env:PANDA_XD_RESUME_RUN_ID"
           if($LASTEXITCODE -ne 0){throw 'XD_NATIVE_SAVE_LOCAL_NOT_VERIFIED'}
       - name: Collect genuine XD plugin rendition and receipts
         if: always()
@@ -154,16 +161,16 @@ jobs:
         run: |
           $ErrorActionPreference='Stop'
           $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
-          $native=Join-Path $root "MCP_Mode1_Panda_XD_${{ github.run_id }}.xd"
+          $native=Join-Path $root "MCP_Mode1_Panda_XD_$env:PANDA_XD_RESUME_RUN_ID.xd"
           if(Test-Path -LiteralPath $native){
             Copy-Item -LiteralPath $native -Destination (Join-Path $PWD 'panda_mode1_xd.xd')
             Write-Host "XD_NATIVE_ARTIFACT_BYTES=$((Get-Item -LiteralPath $native).Length)"
           }
-          $evidence=Join-Path $root "MCP_Mode1_Panda_XD_${{ github.run_id }}.json"
+          $evidence=Join-Path $root "MCP_Mode1_Panda_XD_$env:PANDA_XD_RESUME_RUN_ID.json"
           if(Test-Path -LiteralPath $evidence){
             Copy-Item -LiteralPath $evidence -Destination (Join-Path $PWD 'panda_mode1_xd_receipts.json')
           }
-          $filename="MCP_Mode1_Panda_XD_${{ github.run_id }}.png"
+          $filename="MCP_Mode1_Panda_XD_$env:PANDA_XD_RESUME_RUN_ID.png"
           $dataRoot=Join-Path $env:LOCALAPPDATA 'Packages'
           if(Test-Path $dataRoot){
             $found=@(Get-ChildItem -LiteralPath $dataRoot -Filter $filename -File -Recurse -ErrorAction SilentlyContinue)
