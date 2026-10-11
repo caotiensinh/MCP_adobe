@@ -27,7 +27,8 @@ jobs:
 
           BASE=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"
           AI=BASE/"Two_Story_Red_Tile_House.ai"
-          PNG=BASE/"Two_Story_Red_Tile_House_preview.png"
+          EXISTING=BASE/"Two_Story_Red_Tile_House_preview.png"
+          PNG=BASE/"Two_Story_Red_Tile_House_4strokes_verification_20261011.png"
           NAMES={"01 House Main Structure","02 First-Floor Base","03 Floor Division","04 Red Tile Sloped Roof"}
 
           async def call(c,tool,cap,args):
@@ -45,7 +46,9 @@ jobs:
 
           async def main():
               if not AI.is_file() or AI.stat().st_size < 1024: raise RuntimeError("HOUSE_AI_CHECKPOINT_MISSING")
-              if PNG.exists(): raise RuntimeError("HOUSE_PNG_ALREADY_EXISTS_DO_NOT_OVERWRITE")
+              if EXISTING.exists():
+                  print("HOUSE_EXISTING_PREVIEW_PRESERVED="+json.dumps({"bytes":EXISTING.stat().st_size,"modified":EXISTING.stat().st_mtime}),flush=True)
+              if PNG.exists(): raise RuntimeError("HOUSE_VERSIONED_PNG_ALREADY_EXISTS_DO_NOT_OVERWRITE")
               async with Client("http://127.0.0.1:8787/mcp") as c:
                   h=await call(c,"creative_read","creative.health",{"probe":False,"timeout":5})
                   d=h["result"]["connection"]["data"]
