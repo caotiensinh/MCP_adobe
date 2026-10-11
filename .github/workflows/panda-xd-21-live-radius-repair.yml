@@ -1,0 +1,102 @@
+name: XD Panda repair 21 ellipse radii LIVE one by one
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - '.github/workflows/panda-xd-21-live-radius-repair.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  repair:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 40
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+      PANDA_XD_SOURCE_RUN_ID: '38136531800'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect source, checkpoint and v4 runtime before any repair
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_RADIUS_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_RADIUS_WRONG_DESKTOP'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_ENV_NOT_READY'}
+          uv run python -m py_compile scripts/panda_xd_mode1_e2e.py scripts/panda_xd_repair_ellipse_mode1.py scripts/panda_xd_audit_native_geometry.py
+          if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_PYTHON_SYNTAX_FAIL'}
+          uv run python scripts/panda_xd_wait_v4_runtime.py
+          if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_BRIDGE_V4_UNAVAILABLE_NO_WRITE'}
+          $src=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          $backup=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800_before_ellipse_repair.xd'
+          if(Test-Path -LiteralPath $backup){
+            $a=(Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+            $b=(Get-FileHash -LiteralPath $backup -Algorithm SHA256).Hash
+            if($a -ne $b){throw 'XD_RADIUS_BACKUP_EXISTS_BUT_DIFFERS_FROM_SOURCE'}
+            Write-Host 'XD_RADIUS_BACKUP=ALREADY_VERIFIED'
+          }else{
+            Copy-Item -LiteralPath $src -Destination $backup -ErrorAction Stop
+            if((Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $backup -Algorithm SHA256).Hash){
+              throw 'XD_RADIUS_BACKUP_HASH_DIFFERENT'
+            }
+            Write-Host "XD_RADIUS_BACKUP=PASS path=$backup"
+          }
+      - name: Repair each zero ellipse via real XD MCP write, apply, GUID and bounds readback
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run python scripts/panda_xd_repair_ellipse_mode1.py
+          if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_LIVE_REPAIR_FAILED_DO_NOT_BLIND_REPLAY'}
+      - name: Persist live repaired XD into native file via File Save once
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $src=Join-Path $PWD 'scripts/panda_xd_save_ellipse_repaired_native.ps1'
+          $tokens=$null;$parseErrors=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($src,[ref]$tokens,[ref]$parseErrors)
+          if(@($parseErrors).Count -ne 0){
+            foreach($e in $parseErrors){Write-Host "XD_RADIUS_SAVE_PARSE_ERROR=$($e.Message) line=$($e.Extent.StartLineNumber)"}
+            throw 'XD_RADIUS_SAVE_SCRIPT_INVALID'
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File $src -SourceRunId 38136531800
+          if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_NATIVE_SAVE_FAILED_NO_REPEAT'}
+      - name: Reject any remaining zero-radius ellipse inside native XD file
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run python scripts/panda_xd_audit_native_geometry.py
+          if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_NATIVE_GEOMETRY_STILL_INVALID'}
+      - name: Collect native Adobe XD, corrected PNG, all repair receipts and original backup
+        if: always()
+        shell: powershell
+        run: |
+          $dir=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          New-Item -ItemType Directory -Path (Join-Path $PWD 'xd_radius_evidence') -Force | Out-Null
+          foreach($name in @(
+            'MCP_Mode1_Panda_XD_38136531800.xd',
+            'MCP_Mode1_Panda_XD_38136531800_repaired.png',
+            'MCP_Mode1_Panda_XD_38136531800_ellipse_repair.json',
+            'MCP_Mode1_Panda_XD_38136531800.json',
+            'MCP_Mode1_Panda_XD_38136531800_before_ellipse_repair.xd'
+          )){
+            $p=Join-Path $dir $name
+            if(Test-Path -LiteralPath $p -PathType Leaf){
+              Copy-Item -LiteralPath $p -Destination (Join-Path $PWD "xd_radius_evidence\$name")
+              Write-Host "XD_RADIUS_EVIDENCE=$name bytes=$((Get-Item -LiteralPath $p).Length)"
+            }
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xd-panda-visible-21-ellipse-repair-proof
+          path: xd_radius_evidence/*
+          if-no-files-found: ignore
+          retention-days: 14
