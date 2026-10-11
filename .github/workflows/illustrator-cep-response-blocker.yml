@@ -51,3 +51,30 @@ jobs:
             Write-Output "TRACE_LAST_WRITE=$((Get-Item $trace).LastWriteTime.ToString('o'))"
             Get-Content $trace -Tail 16|ForEach-Object {Write-Output "TRACE_LINE $_"}
           }
+
+      - name: Capture current real Illustrator desktop without modifying it
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName System.Drawing
+          Add-Type -AssemblyName System.Windows.Forms
+          $ai=@(Get-Process Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowHandle -ne 0})
+          if($ai.Count -eq 0){throw 'No real Illustrator window found'}
+          $r=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $b=New-Object System.Drawing.Bitmap($r.Width,$r.Height)
+          try {
+            $g=[System.Drawing.Graphics]::FromImage($b)
+            try {
+              $g.CopyFromScreen($r.Location,[System.Drawing.Point]::Empty,$r.Size)
+              $b.Save((Join-Path (Get-Location) 'illustrator-blocker-current-screen.png'),[System.Drawing.Imaging.ImageFormat]::Png)
+            } finally {$g.Dispose()}
+          } finally {$b.Dispose()}
+          Write-Output "REAL_ILLUSTRATOR_SCREEN_CAPTURE=PASS pid=$($ai[0].Id)"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: illustrator-blocker-real-screen
+          path: illustrator-blocker-current-screen.png
+          if-no-files-found: warn
+          retention-days: 7
