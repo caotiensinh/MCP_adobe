@@ -17,6 +17,7 @@ jobs:
     env:
       PYTHONUTF8: "1"
       UV_LINK_MODE: copy
+      PANDA_PS_RESUME_RUN_ID: "38113688652"
     steps:
       - uses: actions/checkout@v4
       - name: Verify MRCAO interactive desktop, launch Photoshop only if absent
@@ -112,7 +113,7 @@ jobs:
         run: |
           $p=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
           foreach($ext in @('psd','png')){
-            $source=Join-Path $p "MCP_Mode1_Panda_PS_${{ github.run_id }}.$ext"
+            $source=Join-Path $p "MCP_Mode1_Panda_PS_$env:PANDA_PS_RESUME_RUN_ID.$ext"
             if(Test-Path -LiteralPath $source){
               Copy-Item -LiteralPath $source -Destination (Join-Path $PWD "panda_mode1_photoshop.$ext")
               Write-Host "PS_ARTIFACT_FILE=$source bytes=$((Get-Item -LiteralPath $source).Length)"
