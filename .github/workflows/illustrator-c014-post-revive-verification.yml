@@ -1,0 +1,61 @@
+name: Illustrator C014 post-revive verification
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/illustrator-c014-post-revive-verification.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify coordinator unlocked and real document readback
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'C014_UV_FAIL'}
+          @'
+          import asyncio, json
+          from mcp import Client
+
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":False,"timeout":5}})
+                  if r.is_error or not isinstance(r.structured_content,dict):
+                      raise RuntimeError("C014_HEALTH_READ_FAIL")
+                  d=r.structured_content.get("result",{}).get("connection",{}).get("data",{})
+                  b=d.get("blocking")
+                  q=(d.get("execution") or {}).get("unresolvedJobs")
+                  panel=(d.get("layers") or {}).get("panel") or {}
+                  print("C014_POST_REVIVE_STATE="+json.dumps({"blockedAt":d.get("blockedAt"),"unresolved":q,"blocking":b,"panelBusy":panel.get("busy"),"activeRequestId":panel.get("activeRequestId")},default=str)[:2800],flush=True)
+                  if d.get("blockedAt")=="unresolved_job" or q:
+                      raise RuntimeError("C014_STILL_BLOCKED_UNRESOLVED_JOB")
+                  if panel.get("busy") is not False or panel.get("activeRequestId") is not None:
+                      raise RuntimeError("C014_PANEL_NOT_IDLE")
+                  print("C014_UNRESOLVED_JOB_CLEARED=PASS",flush=True)
+                  # The one trusted host probe is allowed only if coordinator is unblocked and panel idle.
+                  p=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":True,"timeout":30}})
+                  if p.is_error or not isinstance(p.structured_content,dict):
+                      raise RuntimeError("C014_TRUSTED_PROBE_FAILED")
+                  pd=p.structured_content.get("result",{}).get("connection",{}).get("data",{})
+                  print("C014_TRUSTED_PROBE_STATE="+json.dumps({"ready":pd.get("ready"),"probed":pd.get("probed"),"blockedAt":pd.get("blockedAt")}),flush=True)
+                  if pd.get("ready") is not True or pd.get("probed") is not True:
+                      raise RuntimeError("C014_TRUSTED_PROBE_NOT_VERIFIED")
+                  x=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.document.info","arguments":{}})
+                  print("C014_DOCUMENT_READBACK="+json.dumps({"is_error":x.is_error,"structured":x.structured_content},default=str)[:6000],flush=True)
+                  if x.is_error or not isinstance(x.structured_content,dict) or not x.structured_content.get("ok"):
+                      raise RuntimeError("C014_DOCUMENT_READBACK_FAILED")
+                  print("C014_ITEM03_HOST_AND_DOCUMENT=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath verify_c014.py -Encoding UTF8
+          uv run python verify_c014.py
+          if($LASTEXITCODE -ne 0){throw 'C014_VERIFY_FAILED'}
