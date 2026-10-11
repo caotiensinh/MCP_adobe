@@ -1,0 +1,31 @@
+name: XD read only audit shifted rectangles after visible ellipse repair
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-xd-shifted-rectangle-audit.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify MRCAO live document SHA and 11 original rectangle positions without GUI writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_RECT_AUDIT_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_RECT_AUDIT_NOT_SESSION_1'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'XD_RECT_AUDIT_UV_FAILED'}
+          uv run python scripts/panda_xd_shifted_rectangles_preflight.py
+          if($LASTEXITCODE -ne 0){throw 'XD_RECT_AUDIT_TARGET_NOT_VERIFIED_NO_WRITE'}
