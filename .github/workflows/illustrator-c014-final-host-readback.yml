@@ -1,9 +1,5 @@
 name: Illustrator C014 final host readback
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/illustrator-c014-final-host-readback.yml"
   workflow_dispatch:
 permissions:
   contents: read
