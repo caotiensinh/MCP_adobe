@@ -64,64 +64,71 @@ def node_map(x):
             if guid: result[a["name"]]=str(guid)
     return result
 def apply_one():
-    # Only issue one UXP Apply command when the target document actually owns
-    # Windows foreground. Foreground retries do not edit the XD scenegraph.
+    """Invoke the actual Adobe XD UXP Apply menu item once.
+
+    Unlike SendKeys, UI Automation targets an exact enabled menu entry in the
+    verified saved document, even when Chrome owns Windows foreground.
+    The caller must verify one owned queued operation before invoking this.
+    On ambiguous UI result we stop; we do not resend.
+    """
     cmd=r"""
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type @'
-using System;
-using System.Runtime.InteropServices;
-public static class XdMode1Native {
- [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd,int nCmdShow);
- [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
- [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
- [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd,out uint pid);
-}
-'@
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
 $sourceRun=[string]$env:PANDA_XD_SOURCE_RUN_ID
-if($sourceRun -notmatch '^[0-9]{8,20}$'){throw 'XD_APPLY_SOURCE_ID_MISSING'}
-$windows=@(Get-Process -ErrorAction SilentlyContinue | Where-Object {
- ($_.ProcessName -match '^(XD|AdobeXD)$' -or $_.MainWindowTitle -match 'Adobe XD') -and
- $_.MainWindowHandle -ne 0 -and $_.SessionId -eq 1 -and
- $_.MainWindowTitle -match "^MCP_Mode1_Panda_XD_$($sourceRun).*Adobe XD$"
-})
-if($windows.Count -ne 1){throw "XD_APPLY_SOURCE_DOCUMENT_WINDOW_AMBIGUOUS count=$($windows.Count)"}
-$xd=$windows[0]
-if(-not $xd){throw 'XD_TEST_DOCUMENT_WINDOW_ABSENT'}
-function Get-ForegroundProcessId {
-    $window=[XdMode1Native]::GetForegroundWindow()
-    $owner=[uint32]0
-    if($window -ne [IntPtr]::Zero){
-        [void][XdMode1Native]::GetWindowThreadProcessId($window,[ref]$owner)
-    }
-    return [int]$owner
+if($sourceRun -notmatch '^[0-9]{8,20}$'){throw 'XD_APPLY_SOURCE_RUN_NOT_SPECIFIED'}
+$root=[System.Windows.Automation.AutomationElement]::RootElement
+$windows=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+$documents=@()
+foreach($w in $windows){
+  if([string]$w.Current.Name -match "^MCP_Mode1_Panda_XD_$($sourceRun).*Adobe XD$" -and
+     [string]$w.Current.ClassName -eq 'ApplicationFrameWindow'){$documents+=,$w}
 }
-$before=Get-ForegroundProcessId
-if($before -ne $xd.Id){
-    [void][XdMode1Native]::ShowWindow($xd.MainWindowHandle,9)
-    [void][XdMode1Native]::SetForegroundWindow($xd.MainWindowHandle)
-    Start-Sleep -Milliseconds 280
+if($documents.Count -ne 1){throw "XD_APPLY_DOCUMENT_NOT_UNIQUE count=$($documents.Count)"}
+$document=$documents[0]
+$condition=New-Object System.Windows.Automation.PropertyCondition(
+  [System.Windows.Automation.AutomationElement]::AutomationIdProperty,'AppMenuBar_Plugins')
+$menu=$document.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
+if(-not $menu -or -not $menu.Current.IsEnabled){throw 'XD_APPLY_PLUGINS_MENU_NOT_ENABLED'}
+$exp=$menu.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+if($exp.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$exp.Expand()}
+Start-Sleep -Milliseconds 180
+$items=$document.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+$parents=@()
+foreach($n in $items){
+  if([string]$n.Current.Name -ne 'MCP Adobe Bridge' -or
+     [string]$n.Current.ControlType.ProgrammaticName -ne 'ControlType.MenuItem'){continue}
+  try {
+    $pattern=$n.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+    $parents+=,$n
+  }catch{}
 }
-$after=Get-ForegroundProcessId
-if($after -ne $xd.Id){
-    $shell=New-Object -ComObject WScript.Shell
-    $activated=$shell.AppActivate([int]$xd.Id)
-    Start-Sleep -Milliseconds 380
-    $after=Get-ForegroundProcessId
-    Write-Output "XD_FOCUS_FALLBACK_REQUESTED=$activated actual=$after"
+if($parents.Count -ne 1){throw "XD_APPLY_PARENT_MENU_AMBIGUOUS count=$($parents.Count)"}
+$submenu=$parents[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+if($submenu.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$submenu.Expand()}
+Start-Sleep -Milliseconds 180
+$all=$document.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+$matches=@()
+foreach($n in $all){
+  if([string]$n.Current.Name -eq 'MCP Adobe Apply' -and
+     [string]$n.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and
+     $n.Current.IsEnabled){$matches+=,$n}
 }
-if($after -ne $xd.Id){
-    throw "XD_FOREGROUND_NOT_OWNED_NO_COMMAND before=$before actual=$after expected=$($xd.Id)"
+if($matches.Count -ne 1){throw "XD_APPLY_MENU_ACTION_AMBIGUOUS count=$($matches.Count)"}
+$action=$matches[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+try{
+  $action.Invoke()
+  Write-Output "XD_APPLY_REAL_PLUGIN_MENU_INVOKED=ONCE document=$($document.Current.Name)"
+}catch{
+  throw "XD_APPLY_MENU_INVOKE_UNCERTAIN_NO_REPEAT $($_.Exception.Message)"
 }
-[System.Windows.Forms.SendKeys]::SendWait('^%+8')
-Write-Output "XD_SINGLE_APPLY_REQUESTED PID=$($xd.Id) foreground=$after"
 """
     p=subprocess.run(["powershell","-NoProfile","-NonInteractive","-Command",cmd],
                      capture_output=True,text=True,timeout=22)
     print("XD_APPLY_UI="+json.dumps({"rc":p.returncode,"stdout":p.stdout[-1200:],
           "stderr":p.stderr[-1200:]}),flush=True)
-    if p.returncode:
-        raise RuntimeError("XD_APPLY_COMMAND_NOT_SENT_AND_QUEUED_RECEIPT_PRESERVED")
+    if p.returncode or "XD_APPLY_REAL_PLUGIN_MENU_INVOKED=ONCE" not in p.stdout:
+        raise RuntimeError("XD_APPLY_MENU_NOT_VERIFIED_STOP_NO_REPLAY")
+
 async def call(c,tool,cap,args=None):
     r=await c.call_tool(tool,{"application":"xd","capability":cap,"arguments":args or {}})
     p=r.structured_content
