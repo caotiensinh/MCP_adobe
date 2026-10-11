@@ -1,5 +1,9 @@
 name: Mode1 PANDA Illustrator direct-stroke E2E
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/mode1-panda-illustrator-live-e2e.yml"
   workflow_dispatch:
 permissions:
   contents: read
@@ -9,7 +13,7 @@ concurrency:
 jobs:
   panda-ai:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 18
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Draw panda wearing Vietnamese conical hat holding bamboo, one Adobe MCP operation at a time
