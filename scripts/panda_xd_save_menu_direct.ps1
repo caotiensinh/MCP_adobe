@@ -73,14 +73,21 @@ try{
 $rootElement=[System.Windows.Automation.AutomationElement]::RootElement
 $menuItem=$null
 $deadline=(Get-Date).AddSeconds(12)
-do{
+while(-not $menuItem -and (Get-Date) -lt $deadline){
   Start-Sleep -Milliseconds 550
   $children=Controls $app
   $fromRoot=Controls $rootElement
   $matching=@(NamedMatches $children 'Save As Local Document|Save.*Local Document|ローカルドキュメントとして保存')
   if($matching.Count -eq 0){$matching=@(NamedMatches $fromRoot 'Save As Local Document|Save.*Local Document|ローカルドキュメントとして保存')}
   if($matching.Count -gt 0){$menuItem=$matching[0]}
-}until($menuItem -or (Get-Date) -ge $deadline)
+}
+if(-not $menuItem){
+  Write-Host 'XD_MENU_SAVE_LOCAL_ENTRY_ABSENT_USE_EXACT_SAVE_AS'
+  $matching=@(NamedMatches $children '^Save As\.\.\.$|^AppMenu_SaveAs$')
+  if($matching.Count -eq 0){$matching=@(NamedMatches $fromRoot '^Save As\.\.\.$|^AppMenu_SaveAs$')}
+  $matching=@($matching | Where-Object {$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'})
+  if($matching.Count -eq 1){$menuItem=$matching[0]}
+}
 if(-not $menuItem){
   TraceRelevant $children 'XD_MENU_SAVE_APP_CONTROL'
   TraceRelevant $fromRoot 'XD_MENU_SAVE_ROOT_CONTROL'
@@ -102,7 +109,7 @@ Write-Host 'XD_MENU_SAVE_LOCAL_CLICKED=PASS_NO_REPLAY'
 
 $dialog=$null
 $deadline=(Get-Date).AddSeconds(30)
-do{
+while(-not $dialog -and (Get-Date) -lt $deadline){
   Start-Sleep -Milliseconds 700
   $top=@($rootElement.FindAll([System.Windows.Automation.TreeScope]::Children,
                              [System.Windows.Automation.Condition]::TrueCondition))
@@ -113,7 +120,7 @@ do{
       $dialog=$candidate;break
     }
   }
-}until($dialog -or (Get-Date) -ge $deadline)
+}
 if(-not $dialog){
   $controls=Controls $app
   TraceRelevant $controls 'XD_MENU_SAVE_AFTER_COMMAND'
@@ -142,7 +149,9 @@ if(-not $saveButton){throw 'XD_MENU_SAVE_BUTTON_MISSING'}
 $saveButton.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
 Write-Host 'XD_MENU_SAVE_NATIVE_SAVE_CLICKED=PASS'
 $deadline=(Get-Date).AddSeconds(30)
-do{Start-Sleep -Milliseconds 600}until((Test-Path -LiteralPath $target) -or (Get-Date) -ge $deadline)
+while(-not (Test-Path -LiteralPath $target) -and (Get-Date) -lt $deadline){
+  Start-Sleep -Milliseconds 600
+}
 if(-not (Test-Path -LiteralPath $target)){throw 'XD_MENU_SAVE_NATIVE_FILE_NOT_CREATED'}
 $f=Get-Item -LiteralPath $target
 if($f.Length -lt 1000){throw 'XD_MENU_SAVE_NATIVE_FILE_INVALID'}
