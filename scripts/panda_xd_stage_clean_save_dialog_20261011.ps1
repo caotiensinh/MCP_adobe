@@ -66,8 +66,29 @@ Focus-Xd $xd
 $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
 $cond=New-Object System.Windows.Automation.PropertyCondition(
   [System.Windows.Automation.AutomationElement]::AutomationIdProperty,'sidebar-work--create')
-$button=$root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$cond)
-if(-not $button){throw 'XD_BOOTSTRAP_HOME_CREATE_CONTROL_MISSING'}
+$button=$null
+$deadline=(Get-Date).AddSeconds(55)
+while((Get-Date) -lt $deadline){
+  $xd=Find-XdWindow
+  if(-not $xd -or $xd.MainWindowTitle -ne 'Adobe XD'){
+    throw 'XD_BOOTSTRAP_HOME_WINDOW_CHANGED_BEFORE_CREATE'
+  }
+  $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
+  $button=$root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$cond)
+  if($button){break}
+  Start-Sleep -Milliseconds 1200
+}
+if(-not $button){
+  $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                     [System.Windows.Automation.Condition]::TrueCondition)
+  for($i=0;$i -lt [Math]::Min(100,$all.Count);$i++){
+    $e=$all.Item($i)
+    $name=[string]$e.Current.Name;$id=[string]$e.Current.AutomationId
+    if($name -or $id){Write-Host "XD_BOOTSTRAP_HOME_UI name=$name id=$id"}
+  }
+  throw 'XD_BOOTSTRAP_HOME_CREATE_CONTROL_MISSING_AFTER_55S'
+}
+Write-Host 'XD_BOOTSTRAP_HOME_CREATE_CONTROL_READBACK=PASS'
 try{
   $invoke=$button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
   $invoke.Invoke()
