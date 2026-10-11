@@ -1,0 +1,48 @@
+name: PANDA XD native pointer Save of existing staged document
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-save-verified-pointer.yml"
+      - "scripts/panda_xd_save_with_verified_pointer.ps1"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  save:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate script and save the existing XD document with one verified pointer click
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $src=Join-Path $PWD 'scripts/panda_xd_save_with_verified_pointer.ps1'
+          $tokens=$null;$parseErrors=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($src,[ref]$tokens,[ref]$parseErrors)
+          if(@($parseErrors).Count -gt 0){
+            foreach($e in $parseErrors){Write-Host "XD_POINTER_SAVE_PARSE_ERROR line=$($e.Extent.StartLineNumber) message=$($e.Message)"}
+            throw 'XD_POINTER_SAVE_SCRIPT_INVALID_NO_GUI_WRITE'
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File $src -SourceRunId 38136531800
+          if($LASTEXITCODE -ne 0){throw 'XD_POINTER_SAVE_NOT_VERIFIED_NO_REPLAY'}
+      - name: Collect only real Adobe native XD file
+        if: always()
+        shell: powershell
+        run: |
+          $path=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          if(Test-Path -LiteralPath $path -PathType Leaf){
+            Copy-Item -LiteralPath $path -Destination (Join-Path $PWD 'xd_saved_source.xd')
+            Write-Host "XD_POINTER_SAVE_ARTIFACT_BYTES=$((Get-Item -LiteralPath $path).Length)"
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-xd-native-source-after-pointer-save
+          path: xd_saved_source.xd
+          if-no-files-found: ignore
+          retention-days: 14
