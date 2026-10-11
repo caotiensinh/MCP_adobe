@@ -1,10 +1,5 @@
 name: Illustrator house complete garden trees and front facade
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/illustrator-house-finish-landscape-live.yml"
-      - "scripts/illustrator_house_finish_garden.py"
   workflow_dispatch:
 permissions:
   contents: read
