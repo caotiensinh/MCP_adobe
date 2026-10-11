@@ -58,7 +58,15 @@ jobs:
           $submenus=@()
           foreach($node in $nodes){
             if([string]$node.Current.Name -eq 'MCP Adobe Bridge' -and
-               [string]$node.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'){$submenus+=,$node}
+               [string]$node.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'){
+              try{
+                $expandable=$node.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+                $submenus+=,$node
+                Write-Host "XD_APPLY_ONE_EXPANDABLE_BRIDGE_ITEM id=$($node.Current.AutomationId) state=$($expandable.Current.ExpandCollapseState)"
+              }catch{
+                Write-Host 'XD_APPLY_ONE_IGNORED_NONEXPANDABLE_BRIDGE_LEAF'
+              }
+            }
           }
           if($submenus.Count -ne 1){throw "XD_APPLY_ONE_BRIDGE_MENU_NOT_UNIQUE count=$($submenus.Count)"}
           $submenu=$submenus[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
