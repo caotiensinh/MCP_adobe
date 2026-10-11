@@ -50,9 +50,37 @@ if($allEdits.Count -eq 0){
 }
 $edit=$null
 if($allEdits.Count -eq 1){$edit=$allEdits.Item(0)}
-if(-not $edit){throw 'XD_PICKER_FILENAME_EDIT_NOT_UNIQUE_REFUSE_TYPING'}
-$value=$edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
-$value.SetValue($target)
+if(-not $edit){
+  $desc=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+               [System.Windows.Automation.Condition]::TrueCondition)
+  $pick=@()
+  foreach($candidate in $desc){
+    if(([string]$candidate.Current.AutomationId) -eq '1001' -and
+       ([string]$candidate.Current.Name) -match '\.xd$'){
+      $pick+=,$candidate
+    }
+  }
+  if($pick.Count -eq 1){$edit=$pick[0]}
+}
+if(-not $edit){throw 'XD_PICKER_FILENAME_INPUT_AMBIGUOUS'}
+Write-Host "XD_PICKER_FILENAME_INPUT_FOUND name=$($edit.Current.Name) id=$($edit.Current.AutomationId) type=$($edit.Current.ControlType.ProgrammaticName)"
+$pathSet=$false
+try{
+  $value=$edit.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+  $value.SetValue($target)
+  $pathSet=$true
+  Write-Host 'XD_PICKER_PATH_SET_METHOD=VALUE'
+}catch{
+  try{
+    $legacy=$edit.GetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern)
+    $legacy.SetValue($target)
+    $pathSet=$true
+    Write-Host 'XD_PICKER_PATH_SET_METHOD=LEGACY'
+  }catch{
+    Write-Host "XD_PICKER_VALUE_PATTERN_UNAVAILABLE=$($_.Exception.Message)"
+  }
+}
+if(-not $pathSet){throw 'XD_PICKER_FILENAME_NO_SAFE_SETTER_DO_NOT_TYPE'}
 Write-Host "XD_PICKER_PATH_SET=PASS target=$target"
 $saveCandidates=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,
      (New-Object System.Windows.Automation.PropertyCondition(
