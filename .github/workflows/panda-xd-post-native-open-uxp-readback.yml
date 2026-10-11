@@ -1,0 +1,62 @@
+name: Panda XD establish UXP after native document reopen and verify saved scenegraph
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-xd-post-native-open-uxp-readback.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  reconnect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Invoke exact XD Connect once; worker count is advisory, document ownership mandatory
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $script=Join-Path $PWD 'scripts/panda_xd_reconnect_saved_gui_uia.ps1'
+          $tokens=$null;$errors=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($script,[ref]$tokens,[ref]$errors)
+          if(@($errors).Count){throw 'XD_UIA_CONNECT_PARSE_FAILED'}
+          powershell -NoProfile -ExecutionPolicy Bypass -File $script
+          if($LASTEXITCODE -ne 0){throw 'XD_UIA_CONNECT_REAL_HOST_NOT_READY'}
+      - name: Verify real Adobe XD MCP host and 32 valid saved shapes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json,hashlib,os
+          from pathlib import Path
+          from mcp import Client
+          native=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"/"MCP_Mode1_Panda_XD_38136531800.xd"
+          sha="3a10e1510abc41eccd4485d6f852ea6ced7acc2cf50109e7c1bd123353589ed1"
+          async def main():
+              if hashlib.sha256(native.read_bytes()).hexdigest()!=sha:raise RuntimeError("XD_NATIVE_SHA_CHANGED_ABORT")
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  async def read(cap):
+                      r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=9)
+                      if r.is_error or not isinstance(r.structured_content,dict) or r.structured_content.get("ok") is not True:
+                          raise RuntimeError("XD_READ_UNAVAILABLE "+cap+" "+str(r.content)[:250])
+                      return r.structured_content["result"]
+                  h=await read("creative.health")
+                  s=await read("creative.scenegraph.list")
+                  if h.get("bridge")!="connected" or h.get("pending_count")!=0:raise RuntimeError("XD_BRIDGE_NOT_IDLE")
+                  if s.get("document_id")!="98d6635b-3767-4254-b200-ec8442b69ad2":raise RuntimeError("XD_WRONG_LIVE_DOC")
+                  boards=s.get("nodes") or []
+                  if len(boards)!=1 or len(boards[0].get("children") or [])!=32:raise RuntimeError("XD_LIVE_32_OBJECT_COUNT_WRONG")
+                  invalid=[x.get("name") for x in boards[0]["children"] if
+                    not x.get("bounds") or x["bounds"]["right"]<=x["bounds"]["left"] or
+                    x["bounds"]["bottom"]<=x["bounds"]["top"]]
+                  if invalid:raise RuntimeError("XD_LIVE_DEGENERATE_GEOMETRY "+str(invalid))
+                  print("XD_UXP_LIVE_RECONNECT_VALIDATED=PASS "+json.dumps({"objects":32,"invalid":0,
+                    "document_id":s["document_id"],"build":h.get("bridge_build"),"native_sha256":sha}),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\xd_connected_readback.py -Encoding UTF8
+          uv run --python 3.12 python .\xd_connected_readback.py
+          if($LASTEXITCODE -ne 0){throw 'XD_LIVE_READBACK_NOT_VERIFIED'}
