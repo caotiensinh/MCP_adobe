@@ -115,13 +115,19 @@ jobs:
           $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
           uv run python scripts/panda_xd_mode1_e2e.py
           if($LASTEXITCODE -ne 0){throw 'XD_PANDA_LIVE_E2E_FAILED_NO_BLIND_RERUN'}
+      - name: Save original Adobe XD file via official Save As Local Document UI
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/panda_xd_save_native.ps1 -RunId "${{ github.run_id }}"
+          if($LASTEXITCODE -ne 0){throw 'XD_NATIVE_SAVE_LOCAL_NOT_VERIFIED'}
       - name: Collect genuine XD plugin rendition and receipts
         if: always()
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
-          $evidence=Join-Path $root "MCP_Mode1_Panda_XD_${{ github.run_id }}.json"
+          $native=Join-Path $root "MCP_Mode1_Panda_XD_${{ github.run_id }}.xd"\n          if(Test-Path -LiteralPath $native){\n            Copy-Item -LiteralPath $native -Destination (Join-Path $PWD 'panda_mode1_xd.xd')\n            Write-Host "XD_NATIVE_ARTIFACT_BYTES=$((Get-Item -LiteralPath $native).Length)"\n          }\n          $evidence=Join-Path $root "MCP_Mode1_Panda_XD_${{ github.run_id }}.json"
           if(Test-Path -LiteralPath $evidence){
             Copy-Item -LiteralPath $evidence -Destination (Join-Path $PWD 'panda_mode1_xd_receipts.json')
           }
@@ -139,6 +145,7 @@ jobs:
         with:
           name: mode1-panda-xd-native-evidence
           path: |
+            panda_mode1_xd.xd
             panda_mode1_xd.png
             panda_mode1_xd_receipts.json
           if-no-files-found: ignore
