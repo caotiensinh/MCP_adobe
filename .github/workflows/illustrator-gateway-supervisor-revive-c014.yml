@@ -13,7 +13,7 @@ concurrency:
 jobs:
   revive:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 5
+    timeout-minutes: 6
     steps:
       - name: Inspect gateway supervisor and revive only absent owned listener
         shell: powershell
