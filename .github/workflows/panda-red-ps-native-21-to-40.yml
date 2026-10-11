@@ -16,7 +16,7 @@ jobs:
     env:
       PYTHONUTF8: '1'
       UV_LINK_MODE: copy
-      RED_PS_SOURCE_NAME: MCP_KFP4_Red_PS_38148749609_40shapes.psd
+      RED_PS_SOURCE_NAME: MCP_KFP4_Red_PS_38148749609_20shapes.psd
       RED_PS_SOURCE_SHA: 0a8a05a5d529eede762ee94f1a4509b82e27e99a998a6bea93e6deb6c95207d5
       RED_PS_START: '21'
       RED_PS_END: '40'
