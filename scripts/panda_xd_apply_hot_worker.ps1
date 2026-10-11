@@ -13,6 +13,11 @@ Write-Output 'XD_HOT_READY'
 while($true){
     $line=[Console]::ReadLine()
     if($null -eq $line -or $line -eq 'STOP'){break}
+    if($line -eq 'PING'){
+        Write-Output 'XD_HOT_PONG'
+        [Console]::Out.Flush()
+        continue
+    }
     if($line -ne 'APPLY'){
         Write-Output 'XD_HOT_ERROR:UNSUPPORTED_COMMAND'
         [Console]::Out.Flush()
