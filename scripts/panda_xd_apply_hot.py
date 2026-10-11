@@ -48,7 +48,12 @@ class HotApplyWorker:
             self._unsafe = True
             raise HotApplyFailure("XD_APPLY_WORKER_MISSING_PIPES")
         threading.Thread(target=self._read_output, name="xd-apply-read", daemon=True).start()
-        self._expect(READY, min(timeout_seconds, 12.0))
+        try:
+            self._expect(READY, min(timeout_seconds, 12.0))
+        except Exception:
+            # Failed initialization must not strand a worker on MRCAO.
+            self.close()
+            raise
 
     def _read_output(self) -> None:
         try:
@@ -78,6 +83,22 @@ class HotApplyWorker:
                 raise HotApplyFailure("XD_APPLY_WORKER_UNKNOWN_NO_REPLAY " + line[:350])
             # PowerShell may emit an informational startup banner; no command
             # is sent in response to any unknown worker output.
+
+    def ping_once(self) -> float:
+        """Measure the existing helper's read-only warm IPC RTT; never touches XD."""
+        if self._closed or self._unsafe or self._process.poll() is not None:
+            raise HotApplyFailure("XD_APPLY_WORKER_NOT_SAFE_NO_REPLAY")
+        assert self._process.stdin is not None
+        start = time.perf_counter()
+        self._unsafe = True
+        try:
+            self._process.stdin.write("PING\\n")
+            self._process.stdin.flush()
+            self._expect("XD_HOT_PONG", self.timeout_seconds)
+        except Exception as exc:
+            raise HotApplyFailure("XD_APPLY_WORKER_PING_UNKNOWN: " + str(exc)[:350]) from exc
+        self._unsafe = False
+        return (time.perf_counter() - start) * 1000.0
 
     def apply_once(self) -> None:
         if self._closed or self._unsafe or self._process.poll() is not None:
