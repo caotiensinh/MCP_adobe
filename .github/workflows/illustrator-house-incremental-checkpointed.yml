@@ -1,8 +1,6 @@
 name: Illustrator house incremental checkpointed drawing
 on:
-  push:
-    branches: [feat/canvas-region-targeting]
-    paths: [".github/workflows/illustrator-house-incremental-checkpointed.yml"]
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -96,8 +94,10 @@ jobs:
                   h=checked(await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":True,"timeout":10}}),"health")
                   state=h["result"]["connection"]["data"]
                   print("LIVE_PREFLIGHT="+json.dumps({"ready":state.get("ready"),"unresolved":state["execution"]["unresolvedJobs"],"illustrator":state["layers"]["illustrator"]}),flush=True)
-                  if state["execution"]["unresolvedJobs"] or state["layers"]["illustrator"].get("status")!="ok":
+                  if state["execution"]["unresolvedJobs"] or state.get("blocking") or state["layers"]["illustrator"].get("status")!="ok":
                       raise RuntimeError("Illustrator cannot execute safely")
+                  if state["layers"]["document"].get("status")!="none_open":
+                      raise RuntimeError("Existing or uncertain document: inspect and resume by verified object names; never run full build")
                   print("HOUSE_INCREMENTAL_BEGIN step_count="+str(len(STEPS))+" delay_ms=1300",flush=True)
                   previous=0
                   for idx,step in enumerate(STEPS):
