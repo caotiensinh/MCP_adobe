@@ -1,0 +1,145 @@
+name: Mode1 PANDA XD verified primitive E2E
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/mode1-panda-xd-live-e2e.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  xd-panda:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 40
+    env:
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify MRCAO session and install XD plugin without killing apps
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_PANDA_WRONG_HOST'}
+          $sid=[System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          if($sid -ne 1){throw "XD_PANDA_WRONG_SESSION_$sid"}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'XD_PANDA_UV_SYNC_FAIL'}
+          if(-not @(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)){
+            throw 'XD_PANDA_GATEWAY_NOT_READY'
+          }
+          if(-not @(Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue)){
+            throw 'XD_PANDA_BRIDGE_LISTENER_NOT_READY'
+          }
+          powershell -ExecutionPolicy Bypass -File scripts/install_xd_plugin.ps1 -NoReloadHint
+          if($LASTEXITCODE -ne 0){throw 'XD_PANDA_PLUGIN_INSTALL_FAIL'}
+          Write-Host 'XD_PANDA_MRCAO_SESSION_AND_PLUGIN=PASS'
+      - name: Launch and connect real XD panel in interactive desktop
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class XdPandaNative {
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+          }
+          '@
+          function Find-Xd {
+            Get-Process -ErrorAction SilentlyContinue |
+              Where-Object {($_.ProcessName -match '^(XD|AdobeXD)$' -or $_.MainWindowTitle -match 'Adobe XD') -and $_.MainWindowHandle -ne 0 -and $_.SessionId -eq 1} |
+              Select-Object -First 1
+          }
+          $xd=Find-Xd
+          if(-not $xd){
+            $start=Get-StartApps -ErrorAction SilentlyContinue |
+              Where-Object {$_.Name -match '^Adobe XD$|Adobe.*XD'} |
+              Select-Object -First 1
+            if(-not $start){throw 'XD_PANDA_START_APP_NOT_REGISTERED'}
+            Start-Process explorer.exe ("shell:AppsFolder\"+$start.AppID)
+            $deadline=(Get-Date).AddSeconds(90)
+            do{Start-Sleep -Seconds 2;$xd=Find-Xd}until($xd -or (Get-Date)-gt $deadline)
+          }
+          if(-not $xd){throw 'XD_PANDA_LIVE_WINDOW_NOT_READY'}
+          [void][XdPandaNative]::ShowWindow($xd.MainWindowHandle,9)
+          if(-not [XdPandaNative]::SetForegroundWindow($xd.MainWindowHandle)){throw 'XD_PANDA_WINDOW_FOREGROUND_FAILED'}
+          $title=[string]$xd.MainWindowTitle
+          Write-Host "XD_PANDA_WINDOW=PASS pid=$($xd.Id) title=$title"
+          if($title -eq 'Adobe XD'){
+            $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
+            $cond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'sidebar-work--create')
+            $create=$root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$cond)
+            if($create){
+              try {
+                $pattern=$create.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                $pattern.Invoke()
+              } catch {
+                $legacy=$create.GetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern)
+                $legacy.DoDefaultAction()
+              }
+              Write-Host 'XD_PANDA_CREATE_HOME_CLICK=PASS'
+            }else{
+              [System.Windows.Forms.SendKeys]::SendWait('^n')
+              Write-Host 'XD_PANDA_CREATE_HOME_SHORTCUT_SENT'
+            }
+            Start-Sleep -Seconds 6
+            $xd=Find-Xd
+            if(-not $xd -or $xd.MainWindowTitle -eq 'Adobe XD'){throw 'XD_PANDA_DOCUMENT_NOT_CREATED'}
+          }elseif($title -notmatch '^Untitled(?:-1)? .*Adobe XD$'){
+            throw "XD_PANDA_UNSAFE_EXISTING_DOCUMENT=$title"
+          }
+          Write-Host "XD_PANDA_DOCUMENT_CONTEXT=PASS title=$($xd.MainWindowTitle)"
+          [void][XdPandaNative]::ShowWindow($xd.MainWindowHandle,9)
+          if(-not [XdPandaNative]::SetForegroundWindow($xd.MainWindowHandle)){throw 'XD_PANDA_CONNECT_FOREGROUND_FAIL'}
+          Start-Sleep -Milliseconds 550
+          [System.Windows.Forms.SendKeys]::SendWait('^%+9')
+          $deadline=(Get-Date).AddSeconds(35)
+          do{
+            Start-Sleep -Milliseconds 600
+            $connected=@(Get-NetTCPConnection -State Established -LocalPort 8765 -ErrorAction SilentlyContinue)
+          }until($connected.Count -gt 0 -or (Get-Date)-gt $deadline)
+          if($connected.Count -eq 0){throw 'XD_PANDA_UXP_PANEL_NOT_CONNECTED'}
+          Write-Host 'XD_PANDA_BRIDGE_CONNECTION=PASS'
+      - name: Draw actual XD panda one MCP write one UXP apply one scenegraph receipt each
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run python scripts/panda_xd_mode1_e2e.py
+          if($LASTEXITCODE -ne 0){throw 'XD_PANDA_LIVE_E2E_FAILED_NO_BLIND_RERUN'}
+      - name: Collect genuine XD plugin rendition and receipts
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $evidence=Join-Path $root "MCP_Mode1_Panda_XD_${{ github.run_id }}.json"
+          if(Test-Path -LiteralPath $evidence){
+            Copy-Item -LiteralPath $evidence -Destination (Join-Path $PWD 'panda_mode1_xd_receipts.json')
+          }
+          $filename="MCP_Mode1_Panda_XD_${{ github.run_id }}.png"
+          $dataRoot=Join-Path $env:LOCALAPPDATA 'Packages'
+          if(Test-Path $dataRoot){
+            $found=@(Get-ChildItem -LiteralPath $dataRoot -Filter $filename -File -Recurse -ErrorAction SilentlyContinue)
+            if($found.Count -eq 1){
+              Copy-Item -LiteralPath $found[0].FullName -Destination (Join-Path $PWD 'panda_mode1_xd.png')
+              Write-Host "XD_ACTUAL_EXPORT_COLLECTED=$($found[0].FullName)"
+            }elseif($found.Count -gt 1){throw 'XD_AMBIGUOUS_NATIVE_EXPORT_PATH'}
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mode1-panda-xd-native-evidence
+          path: |
+            panda_mode1_xd.png
+            panda_mode1_xd_receipts.json
+          if-no-files-found: ignore
+          retention-days: 14
