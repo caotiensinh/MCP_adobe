@@ -1,5 +1,9 @@
-name: Illustrator house direct PNG preview from real document
+name: Illustrator house direct PNG preview 8 items
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/illustrator-house-direct-preview-export.yml"
   workflow_dispatch:
 permissions:
   contents: read
@@ -28,8 +32,8 @@ jobs:
           BASE=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"
           AI=BASE/"Two_Story_Red_Tile_House.ai"
           EXISTING=BASE/"Two_Story_Red_Tile_House_preview.png"
-          PNG=BASE/"Two_Story_Red_Tile_House_4strokes_verification_20261011.png"
-          NAMES={"01 House Main Structure","02 First-Floor Base","03 Floor Division","04 Red Tile Sloped Roof"}
+          PNG=BASE/"Two_Story_Red_Tile_House_8strokes_verification_20261011.png"
+          NAMES={"08 Second Floor Right Blue Glass"}
 
           async def call(c,tool,cap,args):
               r=await c.call_tool(tool,{"application":"illustrator","capability":cap,"arguments":args})
@@ -64,8 +68,8 @@ jobs:
                   layers=data.get("layers") or []
                   count=sum(int(l.get("itemCount",0)) for l in layers)
                   names={str(i.get("name")) for l in layers for i in l.get("items") or []}
-                  print("HOUSE_EXPORT_READBACK="+json.dumps({"document":doc.get("name"),"saved":doc.get("saved"),"itemCount":count,"roofFound":"04 Red Tile Sloped Roof" in names,"names":sorted(names),"missingExpectedNames":sorted(NAMES-names)}),flush=True)
-                  if doc.get("name")!="Two_Story_Red_Tile_House.ai" or doc.get("saved") is not True or count!=4 or "04 Red Tile Sloped Roof" not in names:
+                  print("HOUSE_EXPORT_READBACK="+json.dumps({"document":doc.get("name"),"saved":doc.get("saved"),"itemCount":count,"lastStrokeFound":"08 Second Floor Right Blue Glass" in names,"names":sorted(names),"missingExpectedNames":sorted(NAMES-names)}),flush=True)
+                  if doc.get("name")!="Two_Story_Red_Tile_House.ai" or doc.get("saved") is not True or count!=8 or "08 Second Floor Right Blue Glass" not in names:
                       raise RuntimeError("HOUSE_EXPORT_BAD_DOCUMENT_OR_SHAPE_COUNT")
                   output=await call(c,"creative_write","creative.document.export",{"output_path":str(PNG),"format":"png","overwrite":False,"scale":1})
                   print("HOUSE_EXPORT_MCP_EXECUTION="+str(output["result"].get("execution")),flush=True)
@@ -80,7 +84,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: illustrator-house-real-png-preview
+          name: illustrator-house-8-items-real-png
           path: house_actual_preview.png
           if-no-files-found: ignore
           retention-days: 14
