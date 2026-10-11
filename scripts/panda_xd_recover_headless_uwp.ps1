@@ -8,14 +8,14 @@ $root=[System.Windows.Automation.AutomationElement]::RootElement
 function Inspect-Windows {
   $top=$root.FindAll([System.Windows.Automation.TreeScope]::Children,
       [System.Windows.Automation.Condition]::TrueCondition)
-  $document=@();$dialogs=@();$home=@()
+  $document=@();$dialogs=@();$homeWindows=@()
   foreach($w in $top){
     $name=[string]$w.Current.Name
     if($name -match 'Adobe XD|Save As'){
       Write-Host "XD_RECOVERY_WINDOW title=$name pid=$($w.Current.ProcessId)"
     }
     if($name -match '^Untitled.*Adobe XD$' -or $name -match '\.xd.*Adobe XD$'){$document+=,$w}
-    if($name -eq 'Adobe XD'){$home+=,$w}
+    if($name -eq 'Adobe XD'){$homeWindows+=,$w}
     if($name -match 'Save As'){$dialogs+=,$w}
     if($name -match 'Adobe XD'){
       $all=$w.FindAll([System.Windows.Automation.TreeScope]::Descendants,
@@ -28,7 +28,7 @@ function Inspect-Windows {
       }
     }
   }
-  return @{Document=$document.Count;Dialog=$dialogs.Count;Home=$home.Count}
+  return @{Document=$document.Count;Dialog=$dialogs.Count;Home=$homeWindows.Count}
 }
 $state=Inspect-Windows
 $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue)
@@ -78,17 +78,17 @@ if(-not $app -or [string]::IsNullOrWhiteSpace([string]$app.AppID)){
 Write-Host "XD_RECOVERY_START_APP_ONCE appid=$($app.AppID)"
 Start-Process explorer.exe ("shell:AppsFolder\" + $app.AppID)
 $deadline=(Get-Date).AddSeconds(85)
-$homeFound=$false
+$homeWindowsFound=$false
 while((Get-Date) -lt $deadline){
   Start-Sleep -Seconds 2
   $observed=Inspect-Windows
   if($observed.Home -ge 1 -and $observed.Document -eq 0 -and $observed.Dialog -eq 0){
-    $homeFound=$true
+    $homeWindowsFound=$true
     break
   }
   if($observed.Document -gt 0 -or $observed.Dialog -gt 0){
     throw 'XD_RECOVERY_UNEXPECTED_DOCUMENT_OR_DIALOG_DO_NOT_CREATE_NEW'
   }
 }
-if(-not $homeFound){throw 'XD_RECOVERY_HOME_NOT_OBSERVED_AFTER_CLEAN_UWP_ACTIVATION'}
+if(-not $homeWindowsFound){throw 'XD_RECOVERY_HOME_NOT_OBSERVED_AFTER_CLEAN_UWP_ACTIVATION'}
 Write-Host 'XD_RECOVERY_HOME_WINDOW=PASS'
