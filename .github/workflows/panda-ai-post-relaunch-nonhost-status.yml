@@ -1,0 +1,82 @@
+name: Panda Illustrator post relaunch status without host execution
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-ai-post-relaunch-nonhost-status.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm precisely one live Illustrator process in correct desktop without touching documents
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'PAN_AI_NONHOST_WRONG_DESKTOP'}
+          $all=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" -ErrorAction SilentlyContinue)
+          $live=@($all|Where-Object{$_.SessionId -eq 1})
+          Write-Host "PAN_AI_NONHOST_PROCESS count=$($all.Count) interactive=$($live.Count)"
+          if($all.Count -ne 1 -or $live.Count -ne 1){throw 'PAN_AI_NONHOST_PROCESS_NOT_UNIQUE'}
+          $p=Get-Process -Id $live[0].ProcessId -ErrorAction Stop
+          if($p.MainWindowHandle -eq 0){throw 'PAN_AI_NONHOST_NO_MAIN_WINDOW'}
+          Write-Host "PAN_AI_NONHOST_GUI=PASS pid=$($p.Id) title=$($p.MainWindowTitle) responding=$($p.Responding)"
+      - name: Query only upstream connection_status and a preexisting unresolved job identifier
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json,time
+          from pathlib import Path
+          from mcp import Client
+          async def call(c,cap,args):
+            r=await asyncio.wait_for(c.call_tool("creative_read",{
+              "application":"illustrator","capability":cap,"arguments":args}),timeout=18)
+            p=r.structured_content or {}
+            if r.is_error or p.get("ok") is not True:
+              raise RuntimeError("PAN_AI_NONHOST_READ_FAILED:"+cap)
+            return p.get("result") or {}
+          async def main():
+            report={"schema":"panda-illustrator-post-desktop-relaunch-v1",
+              "mutations":0,"host_requests":0}
+            async with Client("http://127.0.0.1:8787/mcp") as c:
+              start=time.perf_counter()
+              h=await call(c,"creative.health",{"probe":False,"timeout":5})
+              d=(h.get("connection") or {}).get("data") or {}
+              p=(d.get("layers") or {}).get("panel") or {}
+              exe=d.get("execution") or {}
+              report["health"]={"duration_ms":round((time.perf_counter()-start)*1000,2),
+                "ready":d.get("ready"),"blockedAt":d.get("blockedAt"),
+                "panel":{k:p.get(k) for k in ("status","busy","activeRequestId","heartbeatStale")},
+                "execution":{k:exe.get(k) for k in ("activeJob","waiting","unresolvedJobs","connectionGeneration")}}
+              unresolved=exe.get("unresolvedJobs") or []
+              if len(unresolved)==1:
+                job=await call(c,"creative.job.status",{"jobId":unresolved[0],"detail":"full"})
+                j=((job.get("data") or {}).get("job") or {})
+                report["job"]={k:j.get(k) for k in ("jobId","status","label","awaitingHost","error","outcomeSource")}
+              print("PAN_AI_NONHOST_REPORT="+json.dumps(report,default=str),flush=True)
+            Path("panda_ai_post_relaunch_nonhost.json").write_text(json.dumps(report,indent=2),encoding="utf8")
+            if (report["health"]["panel"]["status"]!="ok" or report["health"]["panel"]["heartbeatStale"] is True):
+              raise RuntimeError("PAN_AI_NONHOST_PANEL_NOT_ALIVE")
+            print("PAN_AI_NONHOST_STATUS_AUDIT=PASS no host execution",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\panda_ai_nonhost_check.py -Encoding UTF8
+          uv run --python 3.12 python .\panda_ai_nonhost_check.py
+          if($LASTEXITCODE -ne 0){throw 'PAN_AI_NONHOST_STATUS_INVALID'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-ai-post-relaunch-nonhost-health
+          path: panda_ai_post_relaunch_nonhost.json
+          if-no-files-found: warn
+          retention-days: 14
