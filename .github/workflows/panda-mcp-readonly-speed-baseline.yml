@@ -28,7 +28,7 @@ jobs:
             $listeners=@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
             foreach($listener in $listeners){
               $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
-              Write-Host "MCP_BENCH_PORT=$port pid=$($listener.OwningProcess) commandline=$($owner.CommandLine)"
+              Write-Host "MCP_BENCH_PORT=$port pid=$($listener.OwningProcess) image=$($owner.Name)"
             }
             if($listeners.Count -eq 0){Write-Host "MCP_BENCH_PORT_ABSENT=$port"}
           }
