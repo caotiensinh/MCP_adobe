@@ -1,9 +1,5 @@
 name: Illustrator house resume 4 to 8 visible items
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/illustrator-house-resume-four-to-eight-live.yml"
   workflow_dispatch:
 permissions:
   contents: read
