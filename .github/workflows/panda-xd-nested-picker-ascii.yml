@@ -1,0 +1,49 @@
+name: PANDA XD finish nested Save As UIA dialog
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-nested-picker-ascii.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  save:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell script and complete already open Save As dialog once
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $path=Join-Path $PWD 'scripts/panda_xd_nested_picker_ascii.ps1'
+          $parseErrors=$null
+          $tokens=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$parseErrors)
+          if(@($parseErrors).Count -gt 0){
+            foreach($item in $parseErrors){Write-Host "XD_NESTED_PICKER_PS_PARSE_ERROR=$($item.Message)"}
+            throw 'XD_NESTED_PICKER_PS_AST_FAILED_NO_GUI_MUTATION'
+          }
+          Write-Host 'XD_NESTED_PICKER_PS_AST=PASS'
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/panda_xd_nested_picker_ascii.ps1 -RunId 38132321143
+          if($LASTEXITCODE -ne 0){throw 'XD_NESTED_PICKER_NATIVE_SAVE_FAILED_REVIEW_LOG'}
+      - name: Collect Adobe XD native original only when file exists
+        if: always()
+        shell: powershell
+        run: |
+          $file=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38132321143.xd'
+          if(Test-Path -LiteralPath $file){
+            Copy-Item -LiteralPath $file -Destination (Join-Path $PWD 'panda_mode1_xd_initial_original.xd')
+            Write-Host "XD_NESTED_PICKER_ARTIFACT_SIZE=$((Get-Item -LiteralPath $file).Length)"
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-xd-verified-blank-original
+          path: panda_mode1_xd_initial_original.xd
+          if-no-files-found: ignore
+          retention-days: 14
