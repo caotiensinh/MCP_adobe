@@ -1,7 +1,7 @@
 const application = require("application");
 const { entrypoints } = require("uxp");
 const scenegraph = require("scenegraph");
-const { Rectangle, Ellipse, Text, Color } = scenegraph;
+const { Rectangle, Ellipse, Path, Text, Color } = scenegraph;
 
 const BRIDGE_URL = "ws://127.0.0.1:8765";
 const STATUS_LIMIT = 200;
@@ -214,6 +214,41 @@ function applyMutation(item, selection) {
       throw new Error("XD shape global placement verification failed");
     }
     return nodeInfo(node);
+  }
+
+  if (item.method === "xd.queue.path_create") {
+    // A single editable vector component per queued MCP write. Never accept
+    // imported SVG documents or arbitrary script/markup as pathData.
+    const data = params.pathData;
+    const x = Number(params.x);
+    const y = Number(params.y);
+    if (typeof data !== "string" || data.length < 6 || data.length > 8192 ||
+        !/^[Mm][\\s,.+\\-0-9]/.test(data) ||
+        !/^[MmLlHhVvCcSsQqTtAaZz0-9.,+\\-\\sEe]+$/.test(data) ||
+        ![x,y].every(Number.isFinite) ||
+        Math.abs(x) > 100000 || Math.abs(y) > 100000) {
+      throw new Error("XD path requires bounded SVG path commands and finite global position");
+    }
+    const node = new Path();
+    node.pathData = data;
+    node.fill = new Color(params.fill || "#FFFFFF");
+    if (params.name) node.name = String(params.name).slice(0, 160);
+    selection.insertionParent.addChild(node);
+    const initial = node.globalBounds;
+    if (!initial || ![initial.x, initial.y, initial.width, initial.height].every(Number.isFinite) ||
+        !(initial.width > 0) || !(initial.height > 0) ||
+        initial.width > 20000 || initial.height > 20000) {
+      throw new Error("XD vector path has invalid or degenerate bounds");
+    }
+    node.moveInParentCoordinates(x - initial.x, y - initial.y);
+    const actual = node.globalBounds;
+    if (!actual || Math.abs(actual.x - x) > 2 || Math.abs(actual.y - y) > 2) {
+      throw new Error("XD path global bounds could not be verified");
+    }
+    return { ...nodeInfo(node), globalBounds: {
+      left:actual.x, top:actual.y, right:actual.x+actual.width,
+      bottom:actual.y+actual.height
+    } };
   }
 
   if (item.method === "xd.queue.ellipse_create") {
@@ -477,6 +512,7 @@ function dispatch(method, params) {
 
   if (
     method === "xd.queue.rectangle_create" ||
+    method === "xd.queue.path_create" ||
     method === "xd.queue.ellipse_create" ||
     method === "xd.queue.ellipse_geometry_repair" ||
     method === "xd.queue.text_create" ||
