@@ -100,3 +100,65 @@ def test_late_completion_from_stale_generation_never_marks_current_fence(monkeyp
     })))
     assert fence["priorCompletionObserved"] is False
     assert coordinator.probe_fence is fence
+
+def test_disconnected_cep_invalidates_host_payload_epoch(monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "illustrator_mcp", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "illustrator_mcp.execution",
+                        SimpleNamespace(get_coordinator=lambda: SimpleNamespace(
+                            probe_fence=None, connection_generation=1)))
+
+    class Bridge:
+        def __init__(self):
+            self._host_payload_session = "old-jsx-epoch"
+            self.disconnect_count = 0
+
+        async def execute_script_async(self):
+            return {}
+
+        async def _handle_disconnect(self):
+            self.disconnect_count += 1
+
+    install_trace(Bridge)
+    install_trace(Bridge)
+    bridge = Bridge()
+    asyncio.run(bridge._handle_disconnect())
+    assert bridge.disconnect_count == 1
+    assert bridge._host_payload_session is None
+
+
+def test_c013_invalidates_epoch_cache_without_replaying_request(monkeypatch):
+    import sys, json
+    monkeypatch.setitem(sys.modules, "illustrator_mcp", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "illustrator_mcp.execution",
+                        SimpleNamespace(get_coordinator=lambda: SimpleNamespace(
+                            probe_fence=None, connection_generation=1)))
+
+    class Registry:
+        def get_pending(self, request_id):
+            return None
+
+    class Bridge:
+        def __init__(self):
+            self.registry = Registry()
+            self._panel_busy = False
+            self._panel_active_request = None
+            self._host_payload_session = "stale-jsx-epoch"
+            self.handled = 0
+
+        async def execute_script_async(self):
+            return {}
+
+        async def _handle_message(self, message):
+            self.handled += 1
+            return {"execution": "unknown", "error": "C013"}
+
+    install_trace(Bridge)
+    bridge = Bridge()
+    result = asyncio.run(bridge._handle_message(json.dumps({
+        "type": "complete", "id": 8, "requestToken": "old-token",
+        "payloadError": "stale_host_session"
+    })))
+    assert bridge.handled == 1
+    assert result == {"execution": "unknown", "error": "C013"}
+    assert bridge._host_payload_session is None
