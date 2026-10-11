@@ -4,6 +4,7 @@ on:
     branches: [feat/canvas-region-targeting]
     paths:
       - ".github/workflows/panda-xd-guarded-uwp-recovery.yml"
+      - "scripts/panda_xd_recover_headless_uwp.ps1"
   workflow_dispatch:
 permissions:
   contents: read
