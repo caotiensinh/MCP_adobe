@@ -107,7 +107,7 @@ async def main():
         print("RED_PS_FIRST_LAYER_PERSISTED="+json.dumps({"layer":step["name"],"bounds":bounds,
             "bytes":TARGET.stat().st_size,"sha256":after}),flush=True)
         await call(c,"creative_write","creative.document.export",{"path":str(PNG),"format":"PNG"})
-        if not PNG.is_file() or PNG.stat().st_size<2000 or PNG.read_bytes()[:8]!=b"\\x89PNG\\r\\n\\x1a\\n":
+        if not PNG.is_file() or PNG.stat().st_size<2000 or PNG.read_bytes()[:8]!=bytes((137,80,78,71,13,10,26,10)):
             raise RuntimeError("RED_PS_NATIVE_PNG_NOT_VERIFIED")
         print("RED_PS_FIRST_STROKE_NATIVE_ARTIFACTS=PASS "+json.dumps({
             "psd":str(TARGET),"psd_sha256":after,
