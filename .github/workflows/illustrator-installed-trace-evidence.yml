@@ -41,3 +41,22 @@ jobs:
               Write-Output "PORT_OWNERSHIP port=$port pid=$($l.OwningProcess)"
             }
           }
+
+          # Inspect the dedicated upstream callback file; gateway local-host.log alone
+          # cannot prove whether the CEP completion arrived at the upstream child.
+          $callback=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\callback_trace.log'
+          Write-Output "CALLBACK_TRACE_EXISTS=$(Test-Path -LiteralPath $callback)"
+          if(Test-Path -LiteralPath $callback){
+            $f=Get-Item -LiteralPath $callback
+            Write-Output "CALLBACK_TRACE_META time=$($f.LastWriteTime.ToString('o')) bytes=$($f.Length)"
+            $events=@(Get-Content -LiteralPath $callback -Tail 250 -ErrorAction Stop |
+              Where-Object {$_ -match 'CEP_CALLBACK|CEP_LATE_FENCE|HOST_TRACE|missing_descriptor|C014'})
+            Write-Output "CALLBACK_TRACE_MATCHED=$($events.Count)"
+            foreach($line in ($events | Select-Object -Last 60)){
+              $safe=([string]$line) -replace '(?i)(Bearer\s+)\S+','$1[REDACTED]'
+              $safe=$safe -replace '(?i)(token|password|secret|authorization|api[_-]?key)\s*[:=]\s*[^\s,}]+','$1=[REDACTED]'
+              if($safe.Length -gt 450){$safe=$safe.Substring(0,450)}
+              Write-Output "CALLBACK_TRACE $safe"
+            }
+          }
+          Write-Output "DIAGNOSTIC_READ_ONLY=PASS"
