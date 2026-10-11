@@ -1,0 +1,26 @@
+name: Red Panda Photoshop native editable Type layer regression
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-red-photoshop-type-regression.yml"
+      - "tests/test_panda_red_ps_range_text.py"
+      - "scripts/panda_red_photoshop_resume_range.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.17"
+      - name: Install declared gateway dependencies
+        run: uv sync --python 3.12
+      - name: Execute actual Type layer adapter mock positive negative and boundary
+        run: |
+          uv run python -m py_compile scripts/panda_red_photoshop_resume_range.py
+          uv run python -m unittest tests.test_panda_red_ps_range_text -v
