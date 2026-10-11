@@ -1,0 +1,46 @@
+name: PANDA XD investigate PickerHost Save crash evidence
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-pickerhost-postsave-events.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  logs:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read Windows crash event logs for XD, PickerHost and ApplicationFrameHost
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_EVENT_NOT_MRCAO'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_EVENT_NO_INTERACTIVE_DESKTOP'}
+          $start=(Get-Date).AddHours(-2)
+          $events=@(Get-WinEvent -FilterHashtable @{LogName='Application';StartTime=$start} -MaxEvents 1200 -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.ProviderName -match 'Application Error|Windows Error Reporting|Application Hang' -and
+                $_.Message -match 'XD\.exe|PickerHost|Adobe\.XD|ApplicationFrameHost'
+              })
+          Write-Host "XD_EVENT_RELEVANT_COUNT=$($events.Count)"
+          foreach($event in @($events | Select-Object -First 20)){
+            $msg=([string]$event.Message) -replace "[\r\n]+"," "
+            Write-Host "XD_EVENT entry=$($event.Id) time=$($event.TimeCreated.ToString('o')) provider=$($event.ProviderName) message=$($msg.Substring(0,[Math]::Min($msg.Length,1600)))"
+          }
+          $names=@('XD','PickerHost','ApplicationFrameHost')
+          foreach($name in $names){
+            $procs=@(Get-Process -Name $name -ErrorAction SilentlyContinue)
+            Write-Host "XD_EVENT_PROCESS name=$name count=$($procs.Count)"
+            foreach($proc in $procs){
+              Write-Host "XD_EVENT_PID name=$name pid=$($proc.Id) session=$($proc.SessionId) title=$($proc.MainWindowTitle)"
+            }
+          }
+          $app=Get-AppxPackage -Name Adobe.XD -ErrorAction SilentlyContinue | Select-Object -First 1
+          if($app){Write-Host "XD_EVENT_APPX name=$($app.Name) version=$($app.Version) status=$($app.Status)"}
+          Write-Host 'XD_EVENT_AUDIT_READ_ONLY=PASS'
