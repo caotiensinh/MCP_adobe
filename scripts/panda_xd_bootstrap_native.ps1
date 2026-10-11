@@ -43,7 +43,21 @@ function Focus-Xd($xd){
   if((Foreground-Pid) -ne $xd.Id){throw 'XD_BOOTSTRAP_FOREGROUND_PID_NOT_VERIFIED'}
 }
 $xd=Find-XdWindow
-if(-not $xd){throw 'XD_BOOTSTRAP_REAL_APP_NOT_OPEN'}
+if(-not $xd){
+  $xdProcesses=@(Get-Process -Name XD -ErrorAction SilentlyContinue)
+  if($xdProcesses.Count -gt 0){throw 'XD_BOOTSTRAP_EXISTING_XD_PROCESS_WITHOUT_DOCUMENT_REFUSE_RELAUNCH'}
+  $app=Get-StartApps -ErrorAction SilentlyContinue | Where-Object {$_.Name -eq 'Adobe XD'} | Select-Object -First 1
+  if(-not $app){throw 'XD_BOOTSTRAP_ADOBE_XD_NOT_REGISTERED'}
+  Write-Host "XD_BOOTSTRAP_START_REAL_ADOBE_XD_ONCE appid=$($app.AppID)"
+  Start-Process explorer.exe ("shell:AppsFolder\"+$app.AppID)
+  $deadline=(Get-Date).AddSeconds(80)
+  while((Get-Date) -lt $deadline){
+    Start-Sleep -Seconds 2
+    $xd=Find-XdWindow
+    if($xd){break}
+  }
+  if(-not $xd){throw 'XD_BOOTSTRAP_APP_FAILED_TO_OPEN'}
+}
 Write-Host "XD_BOOTSTRAP_INITIAL_WINDOW=$($xd.MainWindowTitle) pid=$($xd.Id)"
 if($xd.MainWindowTitle -ne 'Adobe XD'){
   throw 'XD_BOOTSTRAP_UNEXPECTED_EXISTING_DOCUMENT_REFUSE_NEW'
