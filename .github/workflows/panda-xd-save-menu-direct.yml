@@ -1,0 +1,48 @@
+name: PANDA XD Save Local by direct File menu UIA
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-save-menu-direct.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  save-original:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify PowerShell parser and invoke XD File menu Save As Local once
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $path=Join-Path $PWD 'scripts/panda_xd_save_menu_direct.ps1'
+          $tokens=$null;$errors=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$errors)
+          if(@($errors).Count -gt 0){
+            foreach($e in $errors){Write-Host "XD_MENU_SAVE_PARSER_ERROR=$($e.Message)"}
+            throw 'XD_MENU_SAVE_SOURCE_SYNTAX_INVALID'
+          }
+          Write-Host 'XD_MENU_SAVE_PARSER=PASS'
+          powershell -NoProfile -ExecutionPolicy Bypass -File $path -RunId 38132321143
+          if($LASTEXITCODE -ne 0){throw 'XD_MENU_SAVE_NATIVE_FILE_NOT_VERIFIED'}
+      - name: Collect only Adobe-produced native XD file
+        if: always()
+        shell: powershell
+        run: |
+          $source=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38132321143.xd'
+          if(Test-Path -LiteralPath $source){
+            Copy-Item -LiteralPath $source -Destination (Join-Path $PWD 'panda_xd_native_bootstrap.xd')
+            Write-Host "XD_NATIVE_ARTIFACT_SOURCE=$source bytes=$((Get-Item $source).Length)"
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-xd-native-document-file-menu
+          path: panda_xd_native_bootstrap.xd
+          if-no-files-found: ignore
+          retention-days: 14
