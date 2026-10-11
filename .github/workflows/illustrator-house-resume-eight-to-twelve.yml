@@ -1,0 +1,98 @@
+name: Illustrator house resume 8 to 12 real objects
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/illustrator-house-resume-eight-to-twelve.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  draw:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Draw four downstairs window and door components, read back and save individually
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'HOUSE_NOT_MRCAO'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'HOUSE_DEPENDENCIES_FAIL'}
+          @'
+          import asyncio,json,hashlib,os
+          from pathlib import Path
+          from mcp import Client
+          TARGET=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"/"Two_Story_Red_Tile_House.ai"
+          def rect(name,x,y,w,h,rgb):
+              return (name,{"name":name,"x":x,"y":y,"width":w,"height":h,
+                             "fill":{"r":rgb[0],"g":rgb[1],"b":rgb[2]}})
+          STEPS=[
+              rect("09 Floor 1 Left Window Frame",232,478,124,98,(80,57,49)),
+              rect("10 Floor 1 Left Blue Glass",240,486,108,82,(128,204,227)),
+              rect("11 Front Door Frame",416,468,93,152,(85,61,48)),
+              rect("12 Brown Front Door",424,477,77,143,(140,91,59)),
+          ]
+          async def request(c,tool,cap,args):
+              r=await c.call_tool(tool,{"application":"illustrator","capability":cap,"arguments":args})
+              p=r.structured_content
+              if r.is_error or not isinstance(p,dict) or not p.get("ok"):
+                  raise RuntimeError("HOUSE_RESPONSE_UNKNOWN_"+cap+"_DO_NOT_REPLAY")
+              if (p.get("result") or {}).get("execution") in ("unknown","failed"):
+                  raise RuntimeError("HOUSE_EXECUTION_UNKNOWN_"+cap+"_DO_NOT_REPLAY")
+              return p
+          async def check_idle(c):
+              p=await request(c,"creative_read","creative.health",{"probe":False,"timeout":5})
+              d=p["result"]["connection"]["data"]
+              e=d.get("execution") or {}
+              panel=(d.get("layers") or {}).get("panel") or {}
+              if (e.get("unresolvedJobs") or e.get("activeJob") is not None or e.get("waiting")!=0
+                      or d.get("blocking") or panel.get("status")!="ok" or panel.get("busy") is not False
+                      or panel.get("activeRequestId") is not None or panel.get("heartbeatStale") is True):
+                  raise RuntimeError("HOUSE_COORDINATOR_NOT_IDLE_NO_REPLAY")
+          async def readback(c):
+              p=await request(c,"creative_read","creative.document.info",{})
+              if p["result"].get("execution")!="succeeded":raise RuntimeError("HOUSE_READBACK_UNVERIFIED")
+              d=p["result"]["data"]
+              count=sum(int(x.get("itemCount",0)) for x in (d.get("layers") or []))
+              names=[i.get("name") for l in (d.get("layers") or []) for i in (l.get("items") or [])]
+              return d.get("document") or {},count,names
+
+          async def main():
+              if not TARGET.is_file() or TARGET.stat().st_size<1024:
+                  raise RuntimeError("HOUSE_SAVED_AI_MISSING")
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  await check_idle(c)
+                  doc,count,names=await readback(c)
+                  print("HOUSE_8_TO_12_PREFLIGHT="+json.dumps({"document":doc.get("name"),"width":doc.get("width"),"height":doc.get("height"),"saved":doc.get("saved"),"itemCount":count,"visibleNames":names},default=str)[:2400],flush=True)
+                  if doc.get("name")!="Two_Story_Red_Tile_House.ai" or doc.get("width")!=900 or doc.get("height")!=650 or doc.get("saved") is not True or count!=8:
+                      raise RuntimeError("HOUSE_EXPECTED_EXACTLY_8_ITEMS_NO_MUTATION")
+                  if "08 Second Floor Right Blue Glass" not in names:
+                      raise RuntimeError("HOUSE_LAST_CHECKPOINT_NOT_IDENTIFIED")
+                  for offset,(name,args) in enumerate(STEPS,1):
+                      await check_idle(c)
+                      expected=8+offset
+                      print("HOUSE_8_TO_12_START="+str(expected)+" "+name,flush=True)
+                      p=await request(c,"creative_write","creative.shape.rectangle",args)
+                      if p["result"].get("execution")!="succeeded":
+                          raise RuntimeError("HOUSE_STROKE_NOT_SUCCEEDED_NO_REPLAY")
+                      doc,actual,names=await readback(c)
+                      print("HOUSE_8_TO_12_READBACK="+json.dumps({"expectedCount":expected,"actualCount":actual,"name":name,"named":name in names},default=str),flush=True)
+                      if actual!=expected or name not in names:
+                          raise RuntimeError("HOUSE_STROKE_NOT_CONFIRMED_NO_REPLAY")
+                      await check_idle(c)
+                      save=await request(c,"creative_write","creative.document.save",{})
+                      if save["result"].get("execution")!="succeeded":raise RuntimeError("HOUSE_SAVE_UNVERIFIED_NO_RETRY")
+                      if TARGET.stat().st_size<1024:raise RuntimeError("HOUSE_AI_FILE_TOO_SMALL")
+                      print("HOUSE_8_TO_12_SAVED="+json.dumps({"itemCount":actual,"bytes":TARGET.stat().st_size,"sha256":hashlib.sha256(TARGET.read_bytes()).hexdigest()}),flush=True)
+                      await asyncio.sleep(0.6)
+                  print("HOUSE_12_OBJECTS=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath house_8_to_12.py -Encoding UTF8
+          uv run python house_8_to_12.py
+          if($LASTEXITCODE -ne 0){throw 'HOUSE_8_TO_12_FAILED'}
