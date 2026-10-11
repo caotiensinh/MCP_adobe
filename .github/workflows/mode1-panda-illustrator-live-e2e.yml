@@ -1,9 +1,5 @@
 name: Mode1 PANDA Illustrator direct-stroke E2E
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/mode1-panda-illustrator-live-e2e.yml"
   workflow_dispatch:
 permissions:
   contents: read
