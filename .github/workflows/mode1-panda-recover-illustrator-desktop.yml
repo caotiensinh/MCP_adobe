@@ -1,9 +1,5 @@
 name: Mode1 PANDA restore real Illustrator host
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/mode1-panda-recover-illustrator-desktop.yml"
   workflow_dispatch:
 permissions:
   contents: read
