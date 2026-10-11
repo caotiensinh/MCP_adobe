@@ -34,6 +34,8 @@ class FakeInput:
         if text == "APPLY\n":
             if self.proc.ack is not None:
                 self.proc.events.put(self.proc.ack)
+        elif text == "PING\n":
+            self.proc.events.put("XD_HOT_PONG")
         elif text == "STOP\n":
             self.proc.events.put(None)
         return len(text)
@@ -87,6 +89,20 @@ class HotXdApplyTests(unittest.TestCase):
                 self.assertEqual(spawn.call_args.args[0][0], "powershell")
                 hot.shutdown()
                 self.assertEqual(fake.commands[-1], "STOP\n")
+
+    def test_reused_process_read_only_ping_without_any_apply(self):
+        fake = FakeProcess()
+        with patch.dict(os.environ, {"PANDA_XD_SOURCE_RUN_ID": "38136531800"}):
+            with patch.object(subprocess, "Popen", return_value=fake) as spawn:
+                worker = hot.HotApplyWorker(timeout_seconds=0.5)
+                try:
+                    samples = [worker.ping_once() for _ in range(12)]
+                    self.assertTrue(all(value >= 0 for value in samples))
+                    self.assertEqual(spawn.call_count, 1)
+                    self.assertEqual(fake.commands, ["PING\n"] * 12)
+                    self.assertFalse(any("APPLY" in cmd for cmd in fake.commands))
+                finally:
+                    worker.close()
 
     def test_ambiguous_invocation_is_not_replayed(self):
         fake = FakeProcess(ack="XD_HOT_UNKNOWN:APPLY_MENU_AMBIGUOUS")
