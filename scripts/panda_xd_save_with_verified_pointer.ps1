@@ -158,7 +158,9 @@ if(Test-Path -LiteralPath $target){throw 'XD_SAVE_CLICK_TARGET_APPEARED_BEFORE_C
 if(-not [XdNativeRealMouse]::SetCursorPos($cx,$cy)){throw 'XD_SAVE_CLICK_POINTER_MOVE_FAILED'}
 $point=New-Object 'XdNativeRealMouse+PointStruct'
 [void][XdNativeRealMouse]::GetCursorPos([ref]$point)
-if([Math]::Abs($point.X-$cx)>2 -or [Math]::Abs($point.Y-$cy)>2){
+$offsetX=[Math]::Abs($point.X-$cx)
+$offsetY=[Math]::Abs($point.Y-$cy)
+if($offsetX -gt 2 -or $offsetY -gt 2){
   throw 'XD_SAVE_CLICK_POINTER_LOCATION_MISMATCH'
 }
 [XdNativeRealMouse]::mouse_event([uint32]2,[uint32]0,[uint32]0,[uint32]0,[UIntPtr]::Zero)
