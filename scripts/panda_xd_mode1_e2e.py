@@ -78,11 +78,15 @@ public static class XdMode1Native {
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd,out uint pid);
 }
 '@
-$xd=Get-Process -ErrorAction SilentlyContinue | Where-Object {
+$sourceRun=[string]$env:PANDA_XD_SOURCE_RUN_ID
+if($sourceRun -notmatch '^[0-9]{8,20}$'){throw 'XD_APPLY_SOURCE_ID_MISSING'}
+$windows=@(Get-Process -ErrorAction SilentlyContinue | Where-Object {
  ($_.ProcessName -match '^(XD|AdobeXD)$' -or $_.MainWindowTitle -match 'Adobe XD') -and
  $_.MainWindowHandle -ne 0 -and $_.SessionId -eq 1 -and
- $_.MainWindowTitle -match '^Untitled.*Adobe XD$'
-} | Select-Object -First 1
+ $_.MainWindowTitle -match "^MCP_Mode1_Panda_XD_$($sourceRun).*Adobe XD$"
+})
+if($windows.Count -ne 1){throw "XD_APPLY_SOURCE_DOCUMENT_WINDOW_AMBIGUOUS count=$($windows.Count)"}
+$xd=$windows[0]
 if(-not $xd){throw 'XD_TEST_DOCUMENT_WINDOW_ABSENT'}
 function Get-ForegroundProcessId {
     $window=[XdMode1Native]::GetForegroundWindow()
