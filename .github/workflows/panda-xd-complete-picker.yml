@@ -1,0 +1,50 @@
+name: PANDA XD complete already open nested Save As dialog
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-complete-picker.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  native-save:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate PowerShell AST then complete existing XD Save As native picker
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $script=Join-Path $PWD 'scripts/panda_xd_complete_open_save_dialog.ps1'
+          $tokens=$null;$parseErrors=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($script,[ref]$tokens,[ref]$parseErrors)
+          if(@($parseErrors).Count -gt 0){
+            foreach($e in $parseErrors){
+              Write-Host "XD_PICKER_PARSE_ERROR line=$($e.Extent.StartLineNumber) col=$($e.Extent.StartColumnNumber) message=$($e.Message)"
+            }
+            throw 'XD_PICKER_PARSE_FAILURE_NO_GUI_WRITE'
+          }
+          Write-Host 'XD_PICKER_SYNTAX_VALID=PASS'
+          powershell -NoProfile -ExecutionPolicy Bypass -File $script -RunId 38132321143
+          if($LASTEXITCODE -ne 0){throw 'XD_PICKER_SAVE_NOT_VERIFIED'}
+      - name: Collect only genuine native XD file
+        if: always()
+        shell: powershell
+        run: |
+          $original=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38132321143.xd'
+          if(Test-Path -LiteralPath $original){
+            Copy-Item -LiteralPath $original -Destination (Join-Path $PWD 'panda_blank_original.xd')
+            Write-Host "XD_PICKER_ORIGINAL_ARTIFACT_BYTES=$((Get-Item $original).Length)"
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-xd-verified-native-blank-document
+          path: panda_blank_original.xd
+          if-no-files-found: ignore
+          retention-days: 14
