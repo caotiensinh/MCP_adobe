@@ -1,0 +1,73 @@
+name: Illustrator C013 live host probe
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/illustrator-c013-live-host-probe.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  host-probe:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: One bounded trusted read-only probe after C013 recovery
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'C013_HOST_MISMATCH'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'C013_DEPENDENCIES_FAIL'}
+          @'
+          import asyncio,json
+          from mcp import Client
+
+          async def call(c,cap,args):
+              r=await c.call_tool("creative_read",{"application":"illustrator","capability":cap,"arguments":args})
+              if r.is_error or not isinstance(r.structured_content,dict):
+                  raise RuntimeError("C013_MCP_READ_FAIL_"+cap)
+              return r.structured_content
+
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  h=await call(c,"creative.health",{"probe":False,"timeout":5})
+                  d=h.get("result",{}).get("connection",{}).get("data",{})
+                  p=(d.get("layers") or {}).get("panel") or {}
+                  e=d.get("execution") or {}
+                  print("C013_PASSIVE_PREFLIGHT="+json.dumps({"blockedAt":d.get("blockedAt"),"unresolved":e.get("unresolvedJobs"),"panelStatus":p.get("status"),"busy":p.get("busy"),"activeRequestId":p.get("activeRequestId")},default=str),flush=True)
+                  if e.get("unresolvedJobs") or e.get("activeJob") is not None or e.get("waiting")!=0:
+                      raise RuntimeError("C013_COORDINATOR_NOT_IDLE")
+                  if p.get("status")!="ok" or p.get("busy") is not False or p.get("activeRequestId") is not None or p.get("heartbeatStale") is True:
+                      raise RuntimeError("C013_PANEL_NOT_READY")
+                  result=await call(c,"creative.health",{"probe":True,"timeout":12})
+                  d=result.get("result",{}).get("connection",{}).get("data",{})
+                  layers=d.get("layers") or {}
+                  doc=layers.get("document") or {}
+                  illustrator=layers.get("illustrator") or {}
+                  state={"probed":d.get("probed"),"ready":d.get("ready"),"blockedAt":d.get("blockedAt"),"illustrator":illustrator,"document":doc,"unresolved":(d.get("execution") or {}).get("unresolvedJobs")}
+                  print("C013_LIVE_TRUSTED_PROBE="+json.dumps(state,default=str)[:4200],flush=True)
+                  if d.get("probed") is not True or illustrator.get("status")!="ok":
+                      raise RuntimeError("C013_HOST_CALLBACK_NOT_VERIFIED")
+                  if (d.get("execution") or {}).get("unresolvedJobs"):
+                      raise RuntimeError("C013_NEW_UNRESOLVED_JOB")
+                  print("C013_REAL_ILLUSTRATOR_CALLBACK=PASS",flush=True)
+                  if doc.get("status")=="none_open":
+                      print("C013_DOCUMENT_STATUS=NONE_OPEN",flush=True)
+                  elif doc.get("status")=="ok":
+                      info=await call(c,"creative.document.info",{})
+                      print("C013_DOCUMENT_INFO="+json.dumps(info.get("result"),default=str)[:5500],flush=True)
+                      if info.get("result",{}).get("execution")!="succeeded":
+                          raise RuntimeError("C013_DOCUMENT_READBACK_NOT_SUCCEEDED")
+                      print("C013_DOCUMENT_READBACK=PASS",flush=True)
+                  else:
+                      raise RuntimeError("C013_DOCUMENT_STATUS_UNEXPECTED")
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath c013_host_probe.py -Encoding UTF8
+          uv run python c013_host_probe.py
+          if($LASTEXITCODE -ne 0){throw 'C013_LIVE_PROBE_FAILED'}
