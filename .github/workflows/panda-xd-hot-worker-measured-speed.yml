@@ -1,0 +1,41 @@
+name: XD persistent Apply host measured IPC warm speed no GUI writes
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-xd-hot-worker-measured-speed.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+      PANDA_XD_SOURCE_RUN_ID: '38136531800'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Measure real persisted hot UIA worker transport without any Adobe Apply
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_HOT_SPEED_WRONG_RUNNER'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_HOT_SPEED_WRONG_SESSION'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $sw=[System.Diagnostics.Stopwatch]::StartNew()
+          uv run --python 3.12 python scripts/panda_xd_hot_worker_benchmark.py
+          $rc=$LASTEXITCODE
+          $sw.Stop()
+          Write-Host "XD_HOT_UV_BOOTSTRAP_AND_BENCH_TOTAL_MS=$($sw.ElapsedMilliseconds) rc=$rc"
+          if($rc -ne 0){throw 'XD_HOT_READONLY_BENCH_FAILED'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xd-apply-hot-real-readonly-benchmark
+          path: xd_apply_hot_benchmark.json
+          if-no-files-found: warn
+          retention-days: 14
