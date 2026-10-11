@@ -15,6 +15,7 @@ SUPPORTED_LEGACY_TOOLS = frozenset(
     {
         "list_fonts",
         "get_document_info",
+        "fast_document_snapshot",
         "get_document_structure",
         "get_selection",
         "get_artboards",
@@ -379,6 +380,30 @@ def call_legacy_tool(raw: RawToolCaller, name: str, arguments: Mapping[str, Any]
             "ready": bool(_find_key(status, "ready")),
             "connection": status,
         }
+
+    if name == "fast_document_snapshot":
+        # The C014 illustrator_get_document path can enqueue a descriptor-unknown
+        # get_document after an execute_script round-trip, indefinitely fencing
+        # future readback. This is ONE explicitly read-only host call, never
+        # nested get_document and never a native-document mutation.
+        script = (
+            "(function(){"
+            "if(app.documents.length===0){return JSON.stringify({hasDocument:false,items:[]});}"
+            "var d=app.activeDocument;var a=[];"
+            "var n=Math.min(d.pageItems.length,500);"
+            "for(var i=0;i<n;i++){var p=d.pageItems[i];"
+            "a.push({name:String(p.name),typename:String(p.typename),"
+            "hidden:!!p.hidden,locked:!!p.locked,"
+            "left:Number(p.left),top:Number(p.top),"
+            "width:Number(p.width),height:Number(p.height)});}"
+            "return JSON.stringify({hasDocument:true,name:String(d.name),"
+            "width:Number(d.width),height:Number(d.height),"
+            "pageItemCount:d.pageItems.length,returnedItemCount:a.length,"
+            "truncated:d.pageItems.length>n,items:a});"
+            "})()"
+        )
+        return _call(raw, "illustrator_execute_script",
+                     {"script": script, "read_only": True})
 
     if name == "get_document_info":
         # Upstream scope="both" composes two nested canonical calls and can
