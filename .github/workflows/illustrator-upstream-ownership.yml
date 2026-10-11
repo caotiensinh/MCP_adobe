@@ -1,10 +1,14 @@
 name: Illustrator gateway upstream ownership
 on:
-  push:
-    branches: [feat/canvas-region-targeting]
+  pull_request:
+    branches: [main]
     paths: [".github/workflows/illustrator-upstream-ownership.yml"]
+  workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
 jobs:
   inspect:
     runs-on: [self-hosted, Windows, X64]
