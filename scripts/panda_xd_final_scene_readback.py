@@ -38,6 +38,31 @@ async def main():
         expected={p["name"]:p["guid"] for p in proven}
         if observed!=expected:
             raise RuntimeError("XD_FINAL_32_LIVE_NODES_MISMATCH")
+    # A GUID with zero-size geometry is not a visible object. The previous
+    # 32/32 E2E passed incorrectly because all 21 Ellipses had null bounds.
+    def visit(x,found):
+        if isinstance(x,dict):
+            if x.get("name") in {p[0] for p in STEPS}:
+                found[x["name"]]=x
+            for value in x.values():visit(value,found)
+        elif isinstance(x,list):
+            for value in x:visit(value,found)
+    actual_nodes={}
+    visit(graph.get("nodes"),actual_nodes)
+    if len(actual_nodes)!=32:
+        raise RuntimeError("XD_FINAL_CANNOT_IDENTIFY_ALL_VISIBLE_SHAPES")
+    for name,cap,args in STEPS:
+        bounds=actual_nodes[name].get("bounds")
+        if not isinstance(bounds,dict):
+            raise RuntimeError("XD_FINAL_ZERO_GEOMETRY_NOT_VISIBLE "+name)
+        for key,expected in (("left",args["x"]),("top",args["y"]),
+                             ("right",args["x"]+args["width"]),
+                             ("bottom",args["y"]+args["height"])):
+            value=bounds.get(key)
+            if not isinstance(value,(int,float)) or abs(value-expected)>2:
+                raise RuntimeError("XD_FINAL_WRONG_VISIBLE_BOUNDS "+name+" "+key)
+    from panda_xd_audit_native_geometry import audit
+    audit(NATIVE,CHECKPOINT)
     raw=PNG.read_bytes()
     if raw[:8]!=b"\x89PNG\r\n\x1a\n" or len(raw)<1000:
         raise RuntimeError("XD_FINAL_PNG_NOT_VALID")
