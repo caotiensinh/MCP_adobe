@@ -7,6 +7,35 @@ $target=Join-Path $env:USERPROFILE "Documents\MCPAdobe\MCP_Mode1_Panda_XD_$RunId
 if(Test-Path -LiteralPath $target){throw 'XD_PICKER_FILE_ALREADY_EXISTS_REFUSE_OVERWRITE'}
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type @'
+using System;
+using System.Runtime.InteropServices;
+public static class XdSavePickerFocus {
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int cmd);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+}
+'@
+function Assert-XdForeground([System.Diagnostics.Process]$TargetProcess){
+  $focusWindow=[XdSavePickerFocus]::GetForegroundWindow()
+  $owner=[uint32]0
+  if($focusWindow -ne [IntPtr]::Zero){[void][XdSavePickerFocus]::GetWindowThreadProcessId($focusWindow,[ref]$owner)}
+  if([int]$owner -ne $TargetProcess.Id){
+    [void][XdSavePickerFocus]::ShowWindow($TargetProcess.MainWindowHandle,9)
+    [void][XdSavePickerFocus]::SetForegroundWindow($TargetProcess.MainWindowHandle)
+    Start-Sleep -Milliseconds 200
+    $shell=New-Object -ComObject WScript.Shell
+    [void]$shell.AppActivate([int]$TargetProcess.Id)
+    Start-Sleep -Milliseconds 350
+    $focusWindow=[XdSavePickerFocus]::GetForegroundWindow()
+    $owner=[uint32]0
+    if($focusWindow -ne [IntPtr]::Zero){[void][XdSavePickerFocus]::GetWindowThreadProcessId($focusWindow,[ref]$owner)}
+  }
+  if([int]$owner -ne $TargetProcess.Id){throw "XD_PICKER_FOREGROUND_NOT_XD_ACTUAL_$owner"}
+  Write-Host "XD_PICKER_FOREGROUND_PID_VERIFIED=PASS pid=$owner"
+}
 $windows=@(Get-Process -ErrorAction SilentlyContinue | Where-Object {
   $_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0 -and
   $_.MainWindowTitle -match '^Untitled.*Adobe XD$'
@@ -80,7 +109,33 @@ try{
     Write-Host "XD_PICKER_VALUE_PATTERN_UNAVAILABLE=$($_.Exception.Message)"
   }
 }
-if(-not $pathSet){throw 'XD_PICKER_FILENAME_NO_SAFE_SETTER_DO_NOT_TYPE'}
+if(-not $pathSet){
+  # Windows common-file-dialog exposes the filename COMBO as Pane id=1001,
+  # not as Edit/Value. Enter only after strict XD process + focus verification.
+  Assert-XdForeground $xd
+  $edit.SetFocus()
+  Start-Sleep -Milliseconds 180
+  $focused=[System.Windows.Automation.AutomationElement]::FocusedElement
+  $focusedId=[string]$focused.Current.AutomationId
+  $focusedName=[string]$focused.Current.Name
+  Write-Host "XD_PICKER_FILENAME_FOCUSED id=$focusedId name=$focusedName"
+  if($focusedId -ne '1001' -and $focusedName -notmatch '^Untitled.*\\.xd$'){
+    throw 'XD_PICKER_FILENAME_FOCUS_NOT_VERIFIED_NO_INPUT'
+  }
+  Assert-XdForeground $xd
+  [System.Windows.Forms.SendKeys]::SendWait('^a')
+  [System.Windows.Forms.SendKeys]::SendWait($target)
+  Start-Sleep -Milliseconds 220
+  $updated=[string]$edit.Current.Name
+  $focused=[System.Windows.Automation.AutomationElement]::FocusedElement
+  $focusName=[string]$focused.Current.Name
+  Write-Host "XD_PICKER_FILENAME_AFTER_INPUT element=$updated focused=$focusName"
+  if($updated -ne $target -and $focusName -ne $target){
+    throw 'XD_PICKER_FILENAME_VALUE_NOT_READBACK_CONFIRMED_NO_SAVE'
+  }
+  $pathSet=$true
+  Write-Host 'XD_PICKER_PATH_SET_METHOD=VERIFIED_UIA_FOCUS_SENDKEYS'
+}
 Write-Host "XD_PICKER_PATH_SET=PASS target=$target"
 $saveCandidates=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,
      (New-Object System.Windows.Automation.PropertyCondition(
@@ -111,7 +166,24 @@ try{
     Write-Host "XD_PICKER_NATIVE_SAVE_PATTERN_NOT_SUPPORTED=$($_.Exception.Message)"
   }
 }
-if(-not $clicked){throw 'XD_PICKER_SAVE_CLICK_NOT_SUPPORTED_STOP_NO_REPLAY'}
+if(-not $clicked){
+  # Save control is id=1 Pane in Win32 common file picker. On this host
+  # InvokePattern can be unavailable; Enter after focus verification is
+  # a single controlled click, not a replay of the Save As command.
+  Assert-XdForeground $xd
+  $save.SetFocus()
+  Start-Sleep -Milliseconds 150
+  $focused=[System.Windows.Automation.AutomationElement]::FocusedElement
+  if(([string]$focused.Current.AutomationId) -ne '1' -or
+     ([string]$focused.Current.Name) -notmatch '^Save$'){
+    throw 'XD_PICKER_SAVE_FOCUS_NOT_VERIFIED_NO_ENTER'
+  }
+  Assert-XdForeground $xd
+  [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+  $clicked=$true
+  Write-Host 'XD_PICKER_SAVE_INVOKED=PASS method=FOCUSED_ENTER_ONCE'
+}
+
 $deadline=(Get-Date).AddSeconds(35)
 while(-not (Test-Path -LiteralPath $target) -and (Get-Date) -lt $deadline){
   Start-Sleep -Milliseconds 650
