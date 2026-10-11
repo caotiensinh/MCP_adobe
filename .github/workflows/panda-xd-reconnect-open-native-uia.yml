@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: Invoke exact XD Connect entry once with UXP UIA, no SendKeys or process restart
+      - name: Invoke exact XD Connect once; worker count is advisory, document ownership mandatory
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
