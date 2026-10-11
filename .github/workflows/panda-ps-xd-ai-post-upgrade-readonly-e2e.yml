@@ -1,0 +1,120 @@
+name: Panda PS XD AI actual post-upgrade native readback gate
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-ps-xd-ai-post-upgrade-readonly-e2e.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  read:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify installed Illustrator fast read capability, Photoshop PSD and XD idle without any Adobe writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){
+            throw 'PANDA_E2E_READER_WRONG_DESKTOP'
+          }
+          $install=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\venv\Lib\site-packages\mcp_adobe'
+          $wanted=@{
+            'illustrator.py'='0298CB04EE1A2928CF38A79E6F4A28492222950259A8B3662ECE82D6453BFE8C'
+            'illustrator_cep.py'='E2AC497A4C2E31F85D2A98A051DCA618584E95292FAC9A006566ADD8D7CD3C82'
+            'xd.py'='F020BAF5FC6DFAB5F2D0690BFAF57E12B3244249058DDE98C0A33E260A06923D'
+          }
+          foreach($name in $wanted.Keys){
+            $actual=(Get-FileHash -LiteralPath (Join-Path $install $name) -Algorithm SHA256).Hash
+            if($actual -ne $wanted[$name]){throw "PANDA_E2E_READER_INSTALLED_MODULE_CHANGED:$name"}
+            Write-Host "PANDA_E2E_MODULE=PASS name=$name sha256=$actual"
+          }
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $ps=Join-Path $root 'MCP_KFP4_Red_PS_38151836136_polished.psd'
+          $ai=Join-Path $root 'MCP_KFP4_Red_AI_38146162392.ai'
+          if((Get-FileHash $ps -Algorithm SHA256).Hash -ne '1FDBFE35A0057A3F5B4F7D11428126439B6245FC758EC5A11163513EAEE13128'){
+            throw 'PANDA_E2E_PS_NATIVE_SHA_CHANGED'
+          }
+          if((Get-FileHash $ai -Algorithm SHA256).Hash -ne '0EAF49CA76244CD9D19502E2EDF4E8D8B341633862CD650934ACB9C7DFF073A3'){
+            throw 'PANDA_E2E_AI_NATIVE_SHA_CHANGED'
+          }
+          Write-Host 'PANDA_E2E_SOURCE_FILES=PASS both_native_unchanged'
+      - name: Read genuine Photoshop, XD and Illustrator in same warm MCP client; one fast Illustrator snapshot only
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json,time
+          from pathlib import Path
+          from mcp import Client
+          async def call(c,app,cap,args=None,timeout=20):
+              t=time.perf_counter()
+              r=await asyncio.wait_for(c.call_tool("creative_read",{
+                  "application":app,"capability":cap,"arguments":args or {}}),timeout=timeout)
+              p=r.structured_content or {}
+              print("PANDA_E2E_READ="+json.dumps({
+                "app":app,"cap":cap,"duration_ms":round((time.perf_counter()-t)*1000,2),
+                "error":r.is_error,"ok":p.get("ok"),"outcome":p.get("outcome"),
+                "result":str(p.get("result"))[:2400],"error_text":[str(x)[:180] for x in r.content] if r.is_error else []
+              },default=str),flush=True)
+              if r.is_error or p.get("ok") is not True:
+                raise RuntimeError("PANDA_E2E_READ_REJECTED_NO_RETRY:"+app+":"+cap)
+              return p.get("result") or {}
+          async def main():
+              out={"schema":"panda-ps-xd-ai-upgraded-read-v1","operation_count":0,
+                "photoshop":{},"xd":{},"illustrator":{}}
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                ps=await call(c,"photoshop","creative.document.info",timeout=18)
+                doc=ps.get("document") or {}
+                out["photoshop"]={"document":doc.get("name"),"layers":ps.get("layerCount"),
+                  "has_document":ps.get("hasDocument")}
+                xd=await call(c,"xd","creative.health",timeout=12)
+                if xd.get("bridge")!="connected" or xd.get("pending_count")!=0:
+                    raise RuntimeError("PANDA_E2E_XD_NOT_IDLE_NO_REPLAY")
+                scene=await call(c,"xd","creative.scenegraph.list",timeout=20)
+                out["xd"]={"bridge":xd.get("bridge"),"scene_keys":list(scene) if isinstance(scene,dict) else [],
+                    "scene_excerpt":str(scene)[:500]}
+                h=await call(c,"illustrator","creative.health",{"probe":False,"timeout":5},timeout=14)
+                data=(h.get("connection") or {}).get("data") or {}
+                ex=data.get("execution") or {}
+                panel=(data.get("layers") or {}).get("panel") or {}
+                if ex.get("unresolvedJobs")!=[] or ex.get("activeJob") is not None or ex.get("waiting")!=0 or panel.get("busy") is not False:
+                    raise RuntimeError("PANDA_E2E_AI_QUEUE_UNSAFE_NO_FAST_SNAPSHOT")
+                # Exactly one read-only host script. An unknown result stops this run,
+                # never queues another Illustrator request or replays the old read.
+                try:
+                    snapshot=await call(c,"illustrator","creative.document.fast_snapshot",{},timeout=33)
+                except Exception as e:
+                    out["illustrator"]={"snapshot_status":"UNKNOWN_STOP_NO_REPLAY","error":str(e)[:300]}
+                    Path("panda_e2e_runtime_read.json").write_text(json.dumps(out,indent=2),encoding="utf8")
+                    raise
+                if snapshot.get("execution")!="succeeded":
+                    raise RuntimeError("PANDA_E2E_AI_SNAPSHOT_NOT_SUCCEEDED_NO_REPLAY")
+                payload=(snapshot.get("data") or {}).get("result")
+                if isinstance(payload,str):
+                    try:payload=json.loads(payload)
+                    except json.JSONDecodeError:pass
+                out["illustrator"]={"snapshot_status":"SUCCEEDED","data":payload,
+                    "fence_before":[]}
+                print("PANDA_E2E_UPGRADED_AI_SNAPSHOT=PASS "+json.dumps(out["illustrator"],default=str)[:3000],flush=True)
+              Path("panda_e2e_runtime_read.json").write_text(json.dumps(out,indent=2,default=str),encoding="utf8")
+              print("PANDA_E2E_NATIVE_READONLY=PASS no writes/replays",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\panda_e2e_postupgrade.py -Encoding UTF8
+          uv run --python 3.12 python .\panda_e2e_postupgrade.py
+          if($LASTEXITCODE -ne 0){throw 'PANDA_E2E_RUNTIME_READ_NOT_VERIFIED_DO_NOT_REPEAT'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-ps-xd-ai-postupgrade-readonly-evidence
+          path: panda_e2e_runtime_read.json
+          if-no-files-found: warn
+          retention-days: 14
