@@ -76,12 +76,24 @@ if($dialogs.Count -ne 1){throw "XD_NATIVE_SAVE_OPEN_DIALOG_COUNT=$($dialogs.Coun
 $dialog=$dialogs[0]
 $children=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,
                            [System.Windows.Automation.Condition]::TrueCondition)
-$fields=@();$buttons=@()
+$hosts=@();$buttons=@()
 foreach($e in $children){
   $id=[string]$e.Current.AutomationId
   $name=[string]$e.Current.Name
-  if($id -eq '1001' -and $name -eq 'Untitled-1.xd'){$fields+=,$e}
+  if($id -eq 'FileNameControlHost'){$hosts+=,$e}
   if($id -eq '1' -and $name -eq 'Save'){$buttons+=,$e}
+}
+if($hosts.Count -ne 1){throw "XD_NATIVE_SAVE_FILENAME_HOST_COUNT=$($hosts.Count)"}
+$fields=@()
+$hostChildren=$hosts[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                                [System.Windows.Automation.Condition]::TrueCondition)
+foreach($e in $hostChildren){
+  $id=[string]$e.Current.AutomationId
+  $h=[IntPtr]$e.Current.NativeWindowHandle
+  if($id -eq '1001' -and $h -ne [IntPtr]::Zero -and (NativeClass $h) -eq 'Edit'){
+    Write-Host "XD_NATIVE_SAVE_FIELD_RECONCILED name=$($e.Current.Name) hwnd=$h"
+    $fields+=,$e
+  }
 }
 if($fields.Count -ne 1 -or $buttons.Count -ne 1){
   throw "XD_NATIVE_SAVE_FIELD_OR_BUTTON_NOT_UNIQUE field=$($fields.Count) button=$($buttons.Count)"
