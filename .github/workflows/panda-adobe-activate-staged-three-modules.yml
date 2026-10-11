@@ -59,6 +59,40 @@ jobs:
           '@ | Set-Content -LiteralPath .\pan_activate_preflight.py -Encoding UTF8
           uv run --python 3.12 python .\pan_activate_preflight.py
           if($LASTEXITCODE -ne 0){throw 'PAN_ACTIVATE_PREFLIGHT_FAILED'}
+      - name: Validate embedded PowerShell parser before any runtime module copies
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $scriptFile=Join-Path $PWD '.github/workflows/panda-adobe-activate-staged-three-modules.yml'
+          $src=@(Get-Content -LiteralPath $scriptFile)
+          $entry=-1
+          for($i=0;$i -lt $src.Count;$i++){
+            if($src[$i] -match '^      - name: Activate ONLY staged 3 Python modules'){$entry=$i;break}
+          }
+          if($entry -lt 0){throw 'PAN_ACTIVATE_STATIC_STEP_MISSING'}
+          $runIndex=-1
+          for($i=$entry+1;$i -lt $src.Count;$i++){
+            if($src[$i] -match '^        run: \|$'){$runIndex=$i;break}
+          }
+          if($runIndex -lt 0){throw 'PAN_ACTIVATE_STATIC_RUN_MISSING'}
+          $finish=$src.Count
+          for($i=$runIndex+1;$i -lt $src.Count;$i++){
+            if($src[$i] -match '^      - name: ' -or $src[$i] -match '^      - uses: '){$finish=$i;break}
+          }
+          $body=@()
+          for($i=$runIndex+1;$i -lt $finish;$i++){
+            if($src[$i] -ne '' -and -not $src[$i].StartsWith('          ')){
+              throw "PAN_ACTIVATE_WRONG_YAML_RUN_INDENT_LINE=$($i+1)"
+            }
+            $body+=if($src[$i] -eq ''){''}else{$src[$i].Substring(10)}
+          }
+          $tokens=$null;$errors=$null
+          [void][System.Management.Automation.Language.Parser]::ParseInput(($body -join [Environment]::NewLine),[ref]$tokens,[ref]$errors)
+          if(@($errors).Count -ne 0){
+            foreach($e in $errors){Write-Host "PAN_ACTIVATE_PARSER_ERROR line=$($e.Extent.StartLineNumber) message=$($e.Message)"}
+            throw 'PAN_ACTIVATE_PS_SYNTAX_FAILED_NO_MUTATION'
+          }
+          Write-Host 'PAN_ACTIVATE_POWERSHELL_PARSER=PASS'
       - name: Activate ONLY staged 3 Python modules, verify live capabilities; rollback on known failure
         shell: powershell
         run: |
@@ -128,14 +162,14 @@ jobs:
             }
             $python=Join-Path $root 'venv\Scripts\python.exe'
             @'
-            import mcp_adobe.illustrator as ai
-            import mcp_adobe.illustrator_cep as cep
-            import mcp_adobe.xd as xd
-            assert "creative.document.fast_snapshot" in ai._BINDINGS
-            assert "fast_document_snapshot" in cep.SUPPORTED_LEGACY_TOOLS
-            assert "xd.queue.path_create" in xd._BINDINGS
-            print("PAN_ACTIVATE_INSTALLED_IMPORT=PASS",flush=True)
-            '@|Set-Content -LiteralPath .\pan_runtime_import.py -Encoding UTF8
+          import mcp_adobe.illustrator as ai
+          import mcp_adobe.illustrator_cep as cep
+          import mcp_adobe.xd as xd
+          assert "creative.document.fast_snapshot" in ai._BINDINGS
+          assert "fast_document_snapshot" in cep.SUPPORTED_LEGACY_TOOLS
+          assert "xd.queue.path_create" in xd._BINDINGS
+          print("PAN_ACTIVATE_INSTALLED_IMPORT=PASS",flush=True)
+          '@ | Set-Content -LiteralPath .\pan_runtime_import.py -Encoding UTF8
             & $python .\pan_runtime_import.py
             if($LASTEXITCODE -ne 0){throw 'PAN_ACTIVATE_UPDATED_INSTALLED_IMPORT_FAILED'}
             Stop-Process -Id $oldPid -ErrorAction Stop
@@ -153,23 +187,23 @@ jobs:
             }
             $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
             @'
-            import asyncio,json
-            from mcp import Client
-            async def main():
-              async with Client("http://127.0.0.1:8787/mcp") as c:
-                response=await asyncio.wait_for(c.call_tool("creative_discover",{}),timeout=15)
-                if response.is_error:raise RuntimeError("PAN_ACTIVATE_DISCOVERY_FAILED")
-                p=response.structured_content or {}
-                apps={x["application"]:x for x in p.get("applications",[])}
-                ai=set(apps["illustrator"].get("common_capabilities") or [])
-                xd=set(apps["xd"].get("native_capabilities") or [])
-                print("PAN_ACTIVATE_LIVE_CAPS="+json.dumps({
-                  "ai_fast_snapshot":"creative.document.fast_snapshot" in ai,
-                  "xd_path_create":"xd.queue.path_create" in xd}),flush=True)
-                if "creative.document.fast_snapshot" not in ai or "xd.queue.path_create" not in xd:
-                  raise RuntimeError("PAN_ACTIVATE_LIVE_MISSING_NEW_CAPABILITIES")
-            asyncio.run(main())
-            '@|Set-Content -LiteralPath .\pan_live_discover.py -Encoding UTF8
+          import asyncio,json
+          from mcp import Client
+          async def main():
+            async with Client("http://127.0.0.1:8787/mcp") as c:
+              response=await asyncio.wait_for(c.call_tool("creative_discover",{}),timeout=15)
+              if response.is_error:raise RuntimeError("PAN_ACTIVATE_DISCOVERY_FAILED")
+              p=response.structured_content or {}
+              apps={x["application"]:x for x in p.get("applications",[])}
+              ai=set(apps["illustrator"].get("common_capabilities") or [])
+              xd=set(apps["xd"].get("native_capabilities") or [])
+              print("PAN_ACTIVATE_LIVE_CAPS="+json.dumps({
+                "ai_fast_snapshot":"creative.document.fast_snapshot" in ai,
+                "xd_path_create":"xd.queue.path_create" in xd}),flush=True)
+              if "creative.document.fast_snapshot" not in ai or "xd.queue.path_create" not in xd:
+                raise RuntimeError("PAN_ACTIVATE_LIVE_MISSING_NEW_CAPABILITIES")
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\pan_live_discover.py -Encoding UTF8
             uv run --python 3.12 python .\pan_live_discover.py
             if($LASTEXITCODE -ne 0){throw 'PAN_ACTIVATE_LIVE_DISCOVER_BAD'}
             $verified=$true
