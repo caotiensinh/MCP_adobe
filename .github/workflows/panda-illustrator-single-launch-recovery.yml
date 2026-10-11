@@ -1,0 +1,111 @@
+name: Panda Illustrator single safe desktop relaunch and read only host evidence
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-illustrator-single-launch-recovery.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  relaunch:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify native Illustrator checkpoint unchanged and launch only when all Illustrator processes are absent
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){
+            throw 'PAN_AI_SAFE_LAUNCH_WRONG_DESKTOP'
+          }
+          $native=Join-Path (Join-Path $env:USERPROFILE 'Documents\MCPAdobe') 'MCP_KFP4_Red_AI_38146162392.ai'
+          if(-not(Test-Path -LiteralPath $native -PathType Leaf)){throw 'PAN_AI_SAFE_LAUNCH_NATIVE_MISSING'}
+          $hash=(Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash
+          if($hash -ne '0EAF49CA76244CD9D19502E2EDF4E8D8B341633862CD650934ACB9C7DFF073A3'){
+            throw 'PAN_AI_SAFE_LAUNCH_NATIVE_CHANGED'
+          }
+          Write-Host "PAN_AI_SAFE_LAUNCH_NATIVE=PASS bytes=$((Get-Item $native).Length) sha256=$hash"
+          $all=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" -ErrorAction SilentlyContinue)
+          Write-Host "PAN_AI_SAFE_LAUNCH_EXISTING_PROCESS_COUNT=$($all.Count)"
+          if($all.Count -gt 0){
+            foreach($p in $all){Write-Host "PAN_AI_SAFE_LAUNCH_EXISTING pid=$($p.ProcessId) session=$($p.SessionId)"}
+            if($all.Count -ne 1 -or $all[0].SessionId -ne 1){
+              throw 'PAN_AI_SAFE_LAUNCH_EXISTING_PROCESS_UNEXPECTED_NO_DUPLICATE'
+            }
+          }else{
+            $inventory=@(& "$PWD/scripts/adobe_inventory.ps1")
+            $item=@($inventory|Where-Object {$_.PSObject.Properties.Name -contains 'Illustrator'}|Select-Object -Last 1)
+            if($item.Count -ne 1){throw 'PAN_AI_SAFE_LAUNCH_INVENTORY_UNAVAILABLE'}
+            $exe=[string]$item[0].Illustrator
+            if(-not $exe -or -not(Test-Path -LiteralPath $exe -PathType Leaf) -or
+               (Split-Path -Leaf $exe) -ine 'Illustrator.exe'){
+              throw 'PAN_AI_SAFE_LAUNCH_EXECUTABLE_NOT_VERIFIED'
+            }
+            $tracker=$env:RUNNER_TRACKING_ID
+            try{
+              $env:RUNNER_TRACKING_ID=''
+              $new=Start-Process -FilePath $exe -PassThru -ErrorAction Stop
+              Write-Host "PAN_AI_SAFE_LAUNCH_REQUESTED_ONCE=PASS pid=$($new.Id)"
+            }finally{$env:RUNNER_TRACKING_ID=$tracker}
+          }
+          $deadline=(Get-Date).AddSeconds(150)
+          $ready=@()
+          do{
+            $ready=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue|Where-Object{
+              $_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+            if($ready.Count -eq 1){break}
+            if($ready.Count -gt 1){throw 'PAN_AI_SAFE_LAUNCH_MULTIPLE_WINDOWS_UNEXPECTED'}
+            Start-Sleep -Seconds 2
+          }until((Get-Date)-ge $deadline)
+          if($ready.Count -ne 1){throw 'PAN_AI_SAFE_LAUNCH_GUI_TIMEOUT_NO_RELAUNCH'}
+          Write-Host "PAN_AI_SAFE_LAUNCH_INTERACTIVE=PASS pid=$($ready[0].Id) responding=$($ready[0].Responding) title=$($ready[0].MainWindowTitle)"
+      - name: Read gateway/CEP and unresolved fencing without enqueueing Illustrator host operation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json,os,time
+          from pathlib import Path
+          from mcp import Client
+          async def main():
+            result={"operation":"read_only_after_desktop_relaunch","host_mutations":0,
+                "origin_run":"38154585247","read_only":True}
+            async with Client("http://127.0.0.1:8787/mcp") as c:
+              t=time.perf_counter()
+              response=await asyncio.wait_for(c.call_tool("creative_read",{
+                "application":"illustrator","capability":"creative.health",
+                "arguments":{"probe":False,"timeout":5}}),timeout=16)
+              payload=response.structured_content or {}
+              data=((payload.get("result") or {}).get("connection") or {}).get("data") or {}
+              panel=(data.get("layers") or {}).get("panel") or {}
+              execution=data.get("execution") or {}
+              result.update({"mcp_ok":not response.is_error and payload.get("ok") is True,
+                "duration_ms":round((time.perf_counter()-t)*1000,2),
+                "panel":{k:panel.get(k) for k in ("status","busy","activeRequestId","heartbeatStale")},
+                "execution":{k:execution.get(k) for k in ("activeJob","waiting","unresolvedJobs")},
+                "blocked_at":data.get("blockedAt"),
+                "ready":data.get("ready")})
+            Path("panda_illustrator_relaunch_readonly.json").write_text(
+              json.dumps(result,indent=2,default=str),encoding="utf-8")
+            print("PAN_AI_SAFE_LAUNCH_POST_HEALTH="+json.dumps(result),flush=True)
+            if not result["mcp_ok"]:raise RuntimeError("PAN_AI_SAFE_LAUNCH_MCP_UNREACHABLE")
+            print("PAN_AI_SAFE_LAUNCH_READONLY_EVIDENCE=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\panda_illustrator_relaunch_readonly.py -Encoding UTF8
+          uv run --python 3.12 python .\panda_illustrator_relaunch_readonly.py
+          if($LASTEXITCODE -ne 0){throw 'PAN_AI_SAFE_LAUNCH_HEALTH_UNVERIFIED_NO_RETRY'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-illustrator-safe-single-launch-recovery
+          path: panda_illustrator_relaunch_readonly.json
+          if-no-files-found: warn
+          retention-days: 14
