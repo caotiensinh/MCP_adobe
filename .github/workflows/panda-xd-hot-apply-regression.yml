@@ -1,0 +1,41 @@
+name: Panda XD persistent Apply unit regression
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-hot-apply-regression.yml"
+      - "scripts/panda_xd_apply_hot_worker.ps1"
+      - "scripts/panda_xd_apply_hot.py"
+      - "scripts/panda_xd_mode1_e2e.py"
+      - "tests/test_panda_xd_hot_apply.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run ambiguity, timeout, multi-write performance contract
+        run: python -m unittest tests.test_panda_xd_hot_apply -v
+      - name: Compile Python driver and drawing integration
+        run: python -m py_compile scripts/panda_xd_apply_hot.py scripts/panda_xd_mode1_e2e.py
+  powershell-syntax:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify PowerShell worker parses without any host invocation
+        shell: powershell
+        run: |
+          $tok=$null;$errs=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path scripts/panda_xd_apply_hot_worker.ps1),[ref]$tok,[ref]$errs)
+          if(@($errs).Count -gt 0){
+            foreach($e in @($errs)){Write-Host "XD_HOT_SYNTAX_ERROR=$($e.Message) at $($e.Extent.StartLineNumber)"}
+            throw 'XD_HOT_POWERSHELL_SYNTAX_FAILED'
+          }
+          Write-Host 'XD_HOT_POWERSHELL_SYNTAX=PASS'
