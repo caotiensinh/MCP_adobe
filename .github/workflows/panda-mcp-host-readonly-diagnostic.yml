@@ -1,0 +1,65 @@
+name: Panda MCP MRCAO host read-only root cause audit
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-mcp-host-readonly-diagnostic.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect active Adobe processes, bridge ports and persisted native XD
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'MCP_HOST_AUDIT_WRONG_HOST'}
+          Write-Host "MCP_HOST_AUDIT_SESSION=$([System.Diagnostics.Process]::GetCurrentProcess().SessionId)"
+          foreach($p in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'Adobe|XD|Photoshop|Illustrator|CEP|UXP'})){
+            Write-Host "MCP_HOST_PROCESS name=$($p.Name) pid=$($p.ProcessId) session=$($p.SessionId)"
+          }
+          foreach($p in @(Get-Process -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowTitle -match 'Adobe|MCP_Mode1_Panda'})){
+            Write-Host "MCP_HOST_WINDOW name=$($p.ProcessName) pid=$($p.Id) title=$($p.MainWindowTitle)"
+          }
+          $src=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          if(Test-Path -LiteralPath $src){
+            Write-Host "MCP_HOST_NATIVE_XD path=$src bytes=$((Get-Item -LiteralPath $src).Length) sha256=$((Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash)"
+          }else{Write-Host 'MCP_HOST_NATIVE_XD_ABSENT'}
+          foreach($port in @(8787,8765,8081)){
+            $c=@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+            Write-Host "MCP_HOST_LISTEN port=$port count=$($c.Count) pids=$(@($c|ForEach-Object{$_.OwningProcess}) -join ',')"
+          }
+      - name: Capture actual MCP read failures without writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json,time
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as client:
+                  for app in ("xd","photoshop","illustrator"):
+                      args={"probe":False,"timeout":5} if app=="illustrator" else {}
+                      t=time.perf_counter()
+                      try:
+                          r=await asyncio.wait_for(client.call_tool("creative_read",{
+                              "application":app,"capability":"creative.health","arguments":args}),timeout=9)
+                          print("MCP_HOST_HEALTH_DIAG="+json.dumps({"app":app,"latency_ms":round((time.perf_counter()-t)*1000,2),
+                              "is_error":r.is_error,"structured_content":str(r.structured_content)[:1200],
+                              "content":[str(x)[:1200] for x in r.content][:2]},ensure_ascii=False),flush=True)
+                      except Exception as e:
+                          print("MCP_HOST_HEALTH_EXCEPTION="+json.dumps({"app":app,
+                              "type":type(e).__name__,"message":str(e)[:800]}),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\mcp_host_diagnostic.py -Encoding UTF8
+          uv run --python 3.12 python .\mcp_host_diagnostic.py
+          if($LASTEXITCODE -ne 0){throw 'MCP_HOST_READONLY_DIAG_FAILED'}
