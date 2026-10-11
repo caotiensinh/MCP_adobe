@@ -37,7 +37,53 @@ jobs:
               }
               if($exe){break}
             }
-            if(-not $exe){throw 'PANDA_PS_EXECUTABLE_NOT_FOUND'}
+            if(-not $exe){
+              $candidates=New-Object System.Collections.Generic.List[string]
+              foreach($key in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\Photoshop.exe','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\Photoshop.exe')){
+                try {
+                  $entry=Get-ItemProperty -Path $key -ErrorAction Stop
+                  $value=$entry.'(default)'
+                  if($value){$candidates.Add([string]$value);Write-Host "PS_REGISTRY_APP_PATH=$value"}
+                }catch{}
+              }
+              try {
+                $shell=New-Object -ComObject WScript.Shell
+                foreach($folder in @((Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'),(Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'))){
+                  if(-not (Test-Path $folder)){continue}
+                  foreach($link in @(Get-ChildItem -LiteralPath $folder -Filter '*.lnk' -Recurse -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'Photoshop'})){
+                    $linkTarget=$shell.CreateShortcut($link.FullName).TargetPath
+                    Write-Host "PS_START_MENU_LINK=$($link.FullName) TARGET=$linkTarget"
+                    if($linkTarget){$candidates.Add([string]$linkTarget)}
+                  }
+                }
+              }catch{Write-Host "PS_SHORTCUT_SCAN_WARNING=$($_.Exception.Message)"}
+              foreach($folder in @(
+                (Join-Path $env:ProgramFiles 'Adobe'),
+                (Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Adobe'),
+                'C:\Adobe','D:\Adobe','D:\Program Files\Adobe',
+                'C:\Program Files\Adobe','C:\Program Files (x86)\Adobe'
+              )){
+                if(-not $folder -or -not (Test-Path $folder)){continue}
+                Write-Host "PS_SCANNING_DIRECTORY=$folder"
+                foreach($file in @(Get-ChildItem -LiteralPath $folder -Filter 'Photoshop.exe' -File -Recurse -ErrorAction SilentlyContinue)){
+                  $candidates.Add($file.FullName)
+                  Write-Host "PS_DISCOVERED_BINARY=$($file.FullName)"
+                }
+              }
+              foreach($pathCandidate in @($candidates | Select-Object -Unique)){
+                if(Test-Path -LiteralPath $pathCandidate -PathType Leaf){$exe=$pathCandidate;break}
+              }
+            }
+            if(-not $exe){
+              foreach($drive in @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)){
+                Write-Host "PS_DRIVE_FOUND=$($drive.Root)"
+              }
+              foreach($p in @(Get-CimInstance Win32_Process -Filter "Name='Photoshop.exe'" -ErrorAction SilentlyContinue)){
+                Write-Host "PS_PROCESS_NO_INTERACTIVE_WINDOW pid=$($p.ProcessId) session=$($p.SessionId) path=$($p.ExecutablePath)"
+              }
+              Write-Host "PS_INSTALLED_APP_HINTS=$(@(Get-StartApps -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'Photoshop'} | ForEach-Object { $_.Name + ' ' + $_.AppID }) -join ';')"
+              throw 'PANDA_PS_EXECUTABLE_NOT_FOUND_AFTER_FULL_TARGETED_DISCOVERY'
+            }
             $p=Start-Process -FilePath $exe -PassThru
             Write-Host "PS_LAUNCH_REQUEST=PASS pid=$($p.Id) exe=$exe"
             $deadline=(Get-Date).AddSeconds(90)
