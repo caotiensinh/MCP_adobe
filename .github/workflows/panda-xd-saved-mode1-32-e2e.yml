@@ -4,6 +4,8 @@ on:
     branches: [feat/canvas-region-targeting]
     paths:
       - ".github/workflows/panda-xd-saved-mode1-32-e2e.yml"
+      - "scripts/panda_xd_mode1_e2e.py"
+      - "scripts/panda_xd_fresh_mode1_e2e.py"
   workflow_dispatch:
 permissions:
   contents: read
