@@ -69,12 +69,12 @@ for($i=0;$i -lt $all.Count;$i++){
   $items+=,$e
  }
 }
-$local=@($items | Where-Object {
- ([string]$_.Current.Name) -match 'Save As Local Document' -or
- ([string]$_.Current.AutomationId) -match 'SaveAsLocal|SaveLocal'
+$saveAs=@($items | Where-Object {
+ ([string]$_.Current.AutomationId) -eq 'AppMenu_SaveAs' -and
+ ([string]$_.Current.Name) -eq 'Save As...'
 })
-if($local.Count -ne 1){throw "XD_MENU_SAVE_LOCAL_ENTRY_NOT_UNIQUE count=$($local.Count) NO_COMMAND_SENT"}
-$entry=$local[0]
+if($saveAs.Count -ne 1){throw "XD_MENU_SAVE_AS_ENTRY_NOT_UNIQUE count=$($saveAs.Count) NO_COMMAND_SENT"}
+$entry=$saveAs[0]
 try{
  $invoke=$entry.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
  $invoke.Invoke()
@@ -83,10 +83,10 @@ try{
   $legacy=$entry.GetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern)
   $legacy.DoDefaultAction()
  }catch{
-  throw "XD_MENU_SAVE_LOCAL_INVOKE_FAILED=$($_.Exception.Message)"
+  throw "XD_MENU_SAVE_AS_INVOKE_FAILED=$($_.Exception.Message)"
  }
 }
-Write-Host 'XD_MENU_SAVE_AS_LOCAL_CLICKED=PASS'
+Write-Host 'XD_MENU_SAVE_AS_ACTUAL_ENTRY_CLICKED=PASS'
 $desktop=[System.Windows.Automation.AutomationElement]::RootElement
 $dialog=$null
 $deadline=(Get-Date).AddSeconds(30)
