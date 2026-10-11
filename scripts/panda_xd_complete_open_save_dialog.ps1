@@ -12,6 +12,10 @@ Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class XdSavePickerFocus {
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint flags,uint dx,uint dy,uint data,UIntPtr extra);
+  [DllImport("user32.dll")] public static extern bool GetCursorPos(out WinPoint point);
+  [StructLayout(LayoutKind.Sequential)] public struct WinPoint { public int X; public int Y; }
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int cmd);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
@@ -113,8 +117,29 @@ if(-not $pathSet){
   # Windows common-file-dialog exposes the filename COMBO as Pane id=1001,
   # not as Edit/Value. Enter only after strict XD process + focus verification.
   Assert-XdForeground $xd
-  $edit.SetFocus()
-  Start-Sleep -Milliseconds 180
+  try {
+    $edit.SetFocus()
+    Write-Host 'XD_PICKER_INPUT_SETFOCUS=PASS'
+  }catch{
+    Write-Host "XD_PICKER_INPUT_SETFOCUS_UNSUPPORTED=$($_.Exception.Message)"
+    $bounds=$edit.Current.BoundingRectangle
+    $dialogBounds=$dialog.Current.BoundingRectangle
+    $px=[int][Math]::Floor($bounds.Left+$bounds.Width/2)
+    $py=[int][Math]::Floor($bounds.Top+$bounds.Height/2)
+    if($bounds.Width -lt 20 -or $bounds.Height -lt 10 -or
+       $px -lt $dialogBounds.Left -or $px -gt $dialogBounds.Right -or
+       $py -lt $dialogBounds.Top -or $py -gt $dialogBounds.Bottom){
+       throw 'XD_PICKER_INPUT_CLICK_OUTSIDE_MEASURED_DIALOG'
+    }
+    Assert-XdForeground $xd
+    if(-not [XdSavePickerFocus]::SetCursorPos($px,$py)){
+      throw 'XD_PICKER_CURSOR_MOVE_FAILED'
+    }
+    [XdSavePickerFocus]::mouse_event([uint32]0x0002,[uint32]0,[uint32]0,[uint32]0,[UIntPtr]::Zero)
+    [XdSavePickerFocus]::mouse_event([uint32]0x0004,[uint32]0,[uint32]0,[uint32]0,[UIntPtr]::Zero)
+    Write-Host "XD_PICKER_INPUT_CLICKED_ONCE=PASS x=$px y=$py"
+  }
+  Start-Sleep -Milliseconds 220
   $focused=[System.Windows.Automation.AutomationElement]::FocusedElement
   $focusedId=[string]$focused.Current.AutomationId
   $focusedName=[string]$focused.Current.Name
@@ -167,23 +192,24 @@ try{
   }
 }
 if(-not $clicked){
-  # Save control is id=1 Pane in Win32 common file picker. On this host
-  # InvokePattern can be unavailable; Enter after focus verification is
-  # a single controlled click, not a replay of the Save As command.
-  Assert-XdForeground $xd
-  $save.SetFocus()
-  Start-Sleep -Milliseconds 150
-  $focused=[System.Windows.Automation.AutomationElement]::FocusedElement
-  if(([string]$focused.Current.AutomationId) -ne '1' -or
-     ([string]$focused.Current.Name) -notmatch '^Save$'){
-    throw 'XD_PICKER_SAVE_FOCUS_NOT_VERIFIED_NO_ENTER'
+  # The Save control is a Win32 Pane, not a UIA Button. Click precisely
+  # inside its measured bounding rectangle and never send a second Enter.
+  $bounds=$save.Current.BoundingRectangle
+  $dialogBounds=$dialog.Current.BoundingRectangle
+  $px=[int][Math]::Floor($bounds.Left+$bounds.Width/2)
+  $py=[int][Math]::Floor($bounds.Top+$bounds.Height/2)
+  if($bounds.Width -lt 12 -or $bounds.Height -lt 10 -or
+     $px -lt $dialogBounds.Left -or $px -gt $dialogBounds.Right -or
+     $py -lt $dialogBounds.Top -or $py -gt $dialogBounds.Bottom){
+    throw 'XD_PICKER_SAVE_CLICK_OUTSIDE_MEASURED_DIALOG'
   }
   Assert-XdForeground $xd
-  [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+  if(-not [XdSavePickerFocus]::SetCursorPos($px,$py)){throw 'XD_PICKER_SAVE_CURSOR_MOVE_FAILED'}
+  [XdSavePickerFocus]::mouse_event([uint32]0x0002,[uint32]0,[uint32]0,[uint32]0,[UIntPtr]::Zero)
+  [XdSavePickerFocus]::mouse_event([uint32]0x0004,[uint32]0,[uint32]0,[uint32]0,[UIntPtr]::Zero)
   $clicked=$true
-  Write-Host 'XD_PICKER_SAVE_INVOKED=PASS method=FOCUSED_ENTER_ONCE'
+  Write-Host "XD_PICKER_SAVE_UIA_BOUNDING_BOX_CLICKED_ONCE=PASS x=$px y=$py"
 }
-
 $deadline=(Get-Date).AddSeconds(35)
 while(-not (Test-Path -LiteralPath $target) -and (Get-Date) -lt $deadline){
   Start-Sleep -Milliseconds 650
