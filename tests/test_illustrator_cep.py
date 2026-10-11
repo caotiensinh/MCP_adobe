@@ -129,6 +129,34 @@ class IllustratorCepCompatibilityTests(unittest.TestCase):
             ],
         )
 
+    def test_fast_snapshot_avoids_c014_get_document_descriptor_fence(self) -> None:
+        raw = RawCaller({
+            "illustrator_execute_script": {
+                "schemaVersion": "1.1",
+                "execution": "succeeded",
+                "data": {"result": '{"hasDocument":true,"name":"Red Poster"}'},
+                "ok": True,
+            }
+        })
+        response = call_legacy_tool(raw, "fast_document_snapshot", {})
+        self.assertEqual(len(raw.calls), 1)
+        tool, payload = raw.calls[0]
+        self.assertEqual(tool, "illustrator_execute_script")
+        params = payload["params"]
+        self.assertIs(params["read_only"], True)
+        self.assertIn("pageItemCount", params["script"])
+        self.assertIn("activeDocument", params["script"])
+        self.assertNotIn("illustrator_get_document", params["script"])
+        self.assertNotIn("createRectangle", params["script"])
+        self.assertEqual(response["execution"], "succeeded")
+
+    def test_fast_snapshot_is_discoverable_as_read_capability(self) -> None:
+        self.assertIn("fast_document_snapshot", SUPPORTED_LEGACY_TOOLS)
+        adapter = IllustratorAdapter(FilteredClient())
+        info = adapter.info()
+        self.assertIn("creative.document.fast_snapshot", info.common_capabilities)
+        self.assertEqual(info.risk_for("creative.document.fast_snapshot").value, "read")
+
     def test_document_info_uses_single_document_scope_round_trip(self) -> None:
         raw = RawCaller(
             {
