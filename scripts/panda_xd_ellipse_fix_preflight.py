@@ -6,7 +6,7 @@ from panda_xd_mode1_e2e import STEPS,node_map
 ROOT=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"
 PATH=ROOT/"MCP_Mode1_Panda_XD_38136531800.xd"
 RECEIPTS=ROOT/"MCP_Mode1_Panda_XD_38136531800.json"
-ORIGINAL_SHA="598f79071cf7dbfc426f9feef50144cf94225d2e7bb384c89e2e4fe1d67fdad29"
+ORIGINAL_SHA="598f79071cf7dbfc426f9fef50144cf94225d2e7bb384c89e2e4fe1d67fdad29"
 DOC="98d6635b-3767-4254-b200-ec8442b69ad2"
 async def main():
     if not PATH.is_file() or hashlib.sha256(PATH.read_bytes()).hexdigest()!=ORIGINAL_SHA:
