@@ -8,12 +8,12 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: illustrator-desktop-exclusive
+  group: panda-triapp-diagnostics-read-only
   cancel-in-progress: false
 jobs:
   diagnose:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 5
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
       - name: Read-only Adobe PS AI XD process, port and coordinator statuses
