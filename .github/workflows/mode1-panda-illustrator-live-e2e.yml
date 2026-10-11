@@ -1,0 +1,179 @@
+name: Mode1 PANDA Illustrator direct-stroke E2E
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/mode1-panda-illustrator-live-e2e.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  panda-ai:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@v4
+      - name: Draw panda wearing Vietnamese conical hat holding bamboo, one Adobe MCP operation at a time
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'PANDA_WRONG_HOST'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'PANDA_UV_FAILED'}
+          @'
+          """Panda mode1 E2E: each part is a distinct creative_write call to running Illustrator.
+          Every call is followed by live Illustrator document readback and a disk checkpoint.
+          No JSX bundle, pasted SVG, import, image generation, or script execution in Illustrator.
+          """
+          import asyncio,hashlib,json,os,shutil,time
+          from pathlib import Path
+          from mcp import Client
+
+          ROOT=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"
+          NAME="MCP_Mode1_Panda_NonLa_Bamboo.ai"
+          TARGET=ROOT/NAME
+          URL="http://127.0.0.1:8787/mcp"
+          def ellipse(n,x,y,w,h,c):
+              return (n,"creative.shape.ellipse",{"name":n,"x":x,"y":y,"width":w,"height":h,"fill":{"r":c[0],"g":c[1],"b":c[2]}})
+          def rectangle(n,x,y,w,h,c):
+              return (n,"creative.shape.rectangle",{"name":n,"x":x,"y":y,"width":w,"height":h,"fill":{"r":c[0],"g":c[1],"b":c[2]}})
+          def polygon(n,pts,c):
+              return (n,"creative.path.create",{"name":n,"points":pts,"closed":True,"fill":{"r":c[0],"g":c[1],"b":c[2]}})
+          SKY=(242,249,248); GRASS=(164,205,147); BLACK=(39,45,49)
+          WHITE=(247,246,235); BAMBOO=(74,153,65); HAT=(220,173,108)
+          STEPS=[
+            rectangle("01 Soft Garden Background",0,0,880,640,SKY),
+            rectangle("02 Bamboo Meadow",0,568,880,72,GRASS),
+            rectangle("03 Bamboo Stalk",590,242,18,302,BAMBOO),
+            rectangle("04 Bamboo Joint One",584,302,31,8,(51,113,54)),
+            rectangle("05 Bamboo Joint Two",584,390,31,8,(51,113,54)),
+            polygon("06 Bamboo Upper Leaf",[[603,302],[664,261],[630,318]],(63,145,79)),
+            polygon("07 Bamboo Middle Leaf",[[594,386],[545,335],[557,393]],(80,162,76)),
+            ellipse("08 Panda Left Foot",285,500,120,71,BLACK),
+            ellipse("09 Panda Right Foot",480,500,120,71,BLACK),
+            ellipse("10 Panda Left Ear",297,166,100,114,BLACK),
+            ellipse("11 Panda Right Ear",484,166,100,114,BLACK),
+            ellipse("12 Panda Black Body",303,331,275,233,BLACK),
+            ellipse("13 Panda Cream Tummy",353,359,185,187,WHITE),
+            ellipse("14 Panda Left Arm",258,349,95,154,BLACK),
+            ellipse("15 Panda Right Arm",538,341,97,152,BLACK),
+            ellipse("16 Panda White Head",320,189,240,218,WHITE),
+            ellipse("17 Panda Left Eye Patch",353,250,77,95,BLACK),
+            ellipse("18 Panda Right Eye Patch",453,250,77,95,BLACK),
+            ellipse("19 Panda Left Eye Sparkle",389,280,22,27,WHITE),
+            ellipse("20 Panda Right Eye Sparkle",480,280,22,27,WHITE),
+            ellipse("21 Panda Black Nose",423,337,35,24,BLACK),
+            polygon("22 Panda Smile",[[441,360],[417,376],[440,372],[463,376]],(118,91,89)),
+            ellipse("23 Panda Paw Holding Bamboo",563,408,67,66,BLACK),
+            ellipse("24 Non La Wide Brim",293,182,297,34,(175,120,69)),
+            polygon("25 Vietnamese Non La Cone",[[319,181],[442,72],[562,181]],HAT),
+            polygon("26 Non La Center Highlight",[[434,83],[445,88],[467,178],[447,178]],(243,205,150)),
+            polygon("27 Non La Chin Strap",[[368,192],[376,199],[387,351],[383,351]],(157,96,51)),
+            ellipse("28 Meadow Flower One",214,590,20,20,(241,150,174)),
+            ellipse("29 Meadow Flower Two",689,585,20,20,(248,208,92)),
+          ]
+          async def invoke(c,tool,cap,args):
+              r=await c.call_tool(tool,{"application":"illustrator","capability":cap,"arguments":args})
+              p=r.structured_content
+              if r.is_error or not isinstance(p,dict) or p.get("ok") is not True or (p.get("result") or {}).get("execution") in ("unknown","failed"):
+                  raise RuntimeError("PANDA_UNKNOWN_OR_FAILED_"+cap+"_NO_REPLAY")
+              return p
+          async def health(c):
+              p=await invoke(c,"creative_read","creative.health",{"probe":False,"timeout":5})
+              s=p["result"]["connection"]["data"]
+              e=s.get("execution") or {}
+              panel=(s.get("layers") or {}).get("panel") or {}
+              if (e.get("unresolvedJobs") or e.get("activeJob") is not None or e.get("waiting")!=0
+                or s.get("blocking") or panel.get("status")!="ok" or panel.get("busy") is not False
+                or panel.get("activeRequestId") is not None or panel.get("heartbeatStale") is True):
+                  raise RuntimeError("PANDA_HOST_NOT_IDLE_NO_WRITE")
+              return s
+          async def document(c):
+              p=await invoke(c,"creative_read","creative.document.info",{})
+              if (p.get("result") or {}).get("execution")!="succeeded":
+                  raise RuntimeError("PANDA_READBACK_UNVERIFIED")
+              d=p["result"]["data"]
+              doc=d.get("document") or {}
+              layers=d.get("layers") or []
+              count=sum(int(l.get("itemCount",0)) for l in layers)
+              visible=[v.get("name") for l in layers for v in l.get("items") or []]
+              return doc,count,visible
+          async def checkpoint(c,i):
+              p=await invoke(c,"creative_write","creative.document.save",{})
+              if (p.get("result") or {}).get("execution")!="succeeded" or not TARGET.is_file():
+                  raise RuntimeError("PANDA_SAVE_UNVERIFIED_STOP")
+              print("PANDA_MODE1_CHECKPOINT="+json.dumps({"stroke":i,"bytes":TARGET.stat().st_size,
+                "sha256":hashlib.sha256(TARGET.read_bytes()).hexdigest()}),flush=True)
+          async def main():
+              ROOT.mkdir(parents=True,exist_ok=True)
+              async with Client(URL) as c:
+                  await health(c)
+                  active=(await invoke(c,"creative_read","creative.health",{"probe":True,"timeout":15}))["result"]["connection"]["data"]
+                  if active.get("probed") is not True or (active.get("layers") or {}).get("illustrator",{}).get("status")!="ok":
+                      raise RuntimeError("PANDA_TRUSTED_HOST_NOT_PROVEN")
+                  # A different open document is allowed; do not modify/close it.
+                  current=await document(c) if (active.get("layers") or {}).get("document",{}).get("status")=="ok" else None
+                  print("PANDA_INITIAL_DOCUMENT="+json.dumps(current[0] if current else None,default=str),flush=True)
+                  if current and current[0].get("name")==NAME and TARGET.is_file():
+                      doc,count,names=current
+                      if count>len(STEPS): raise RuntimeError("PANDA_TOO_MANY_ITEMS")
+                      if count>0 and STEPS[count-1][0] not in names:
+                          raise RuntimeError("PANDA_RESUME_LAST_SHAPE_NOT_FOUND")
+                      print("PANDA_RESUME="+str(count),flush=True)
+                  else:
+                      if TARGET.exists():raise RuntimeError("PANDA_TARGET_EXISTS_NOT_ACTIVE_NO_OVERWRITE")
+                      await health(c)
+                      created=await invoke(c,"creative_write","creative.document.create",{
+                          "name":"MCP_Mode1_Panda_NonLa_Bamboo","width":880,"height":640,"color_mode":"RGB"})
+                      if (created.get("result") or {}).get("execution")!="succeeded":
+                          raise RuntimeError("PANDA_CREATE_UNKNOWN_NO_RETRY")
+                      doc,count,names=await document(c)
+                      print("PANDA_CREATE_READBACK="+json.dumps({"document":doc,"count":count},default=str),flush=True)
+                      if count!=0 or doc.get("width")!=880 or doc.get("height")!=640:
+                          raise RuntimeError("PANDA_CREATE_READBACK_FAIL")
+                      saved=await invoke(c,"creative_write","creative.document.save",{"file_path":str(TARGET)})
+                      if (saved.get("result") or {}).get("execution")!="succeeded" or not TARGET.is_file():
+                          raise RuntimeError("PANDA_INITIAL_SAVE_NOT_VERIFIED")
+                      doc,count,names=await document(c)
+                      print("PANDA_CANVAS_CREATED=PASS",flush=True)
+                  for i in range(count,len(STEPS)):
+                      name,cap,args=STEPS[i]
+                      await health(c)
+                      print("PANDA_MODE1_STROKE_START="+json.dumps({"ordinal":i+1,"part":name,"capability":cap}),flush=True)
+                      p=await invoke(c,"creative_write",cap,args)
+                      if (p.get("result") or {}).get("execution")!="succeeded":
+                          raise RuntimeError("PANDA_STROKE_UNVERIFIED_NO_REPLAY")
+                      doc,new_count,names=await document(c)
+                      print("PANDA_MODE1_STROKE_READBACK="+json.dumps({"ordinal":i+1,"part":name,
+                        "count":new_count,"nameFound":name in names}),flush=True)
+                      if new_count!=i+1 or name not in names:raise RuntimeError("PANDA_STROKE_NOT_CONFIRMED_NO_REPLAY")
+                      await health(c)
+                      await checkpoint(c,i+1)
+                      await asyncio.sleep(0.75)
+                  print("PANDA_AI_MODE1_29_STROKES=PASS",flush=True)
+                  await health(c)
+                  png=ROOT/("MCP_Mode1_Panda_NonLa_Bamboo_"+time.strftime("%Y%m%d_%H%M%S")+".png")
+                  p=await invoke(c,"creative_write","creative.document.export",{
+                      "output_path":str(png),"format":"png","scale":1,"overwrite":False})
+                  if (p.get("result") or {}).get("execution")!="succeeded" or not png.is_file() or png.stat().st_size<1000:
+                      raise RuntimeError("PANDA_AI_EXPORT_UNVERIFIED")
+                  shutil.copy2(png,Path.cwd()/"panda_mode1_illustrator.png")
+                  shutil.copy2(TARGET,Path.cwd()/"panda_mode1_illustrator.ai")
+                  print("PANDA_AI_REAL_ARTBOARD=PASS bytes="+str(png.stat().st_size),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath panda_ai_mode1.py -Encoding UTF8
+          uv run python panda_ai_mode1.py
+          if($LASTEXITCODE -ne 0){throw 'PANDA_ILLUSTRATOR_E2E_FAILED'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mode1-panda-illustrator-actual-files
+          path: |
+            panda_mode1_illustrator.ai
+            panda_mode1_illustrator.png
+          if-no-files-found: ignore
+          retention-days: 14
