@@ -1,0 +1,88 @@
+name: PANDA XD live document and Save dialog reconciliation
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-live-save-reconcile.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read-only verify MRCAO XD windows, Save As control and existing native files
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_RECON_WRONG_HOST'}
+          $session=[System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          if($session -ne 1){throw "XD_RECON_WRONG_SESSION=$session"}
+          Write-Host "XD_RECON_SESSION=PASS session=$session"
+          $docDir=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          foreach($name in @('MCP_Mode1_Panda_XD_38132321143.xd','Untitled-1.xd','MCP_Mode1_Panda_XD_38114632173.xd')){
+            foreach($dir in @($docDir,(Join-Path $env:USERPROFILE 'Documents'))){
+              $path=Join-Path $dir $name
+              if(Test-Path -LiteralPath $path -PathType Leaf){
+                $file=Get-Item -LiteralPath $path
+                $sha=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+                Write-Host "XD_RECON_NATIVE_FILE=FOUND path=$path bytes=$($file.Length) sha256=$sha"
+              }else{Write-Host "XD_RECON_NATIVE_FILE=ABSENT path=$path"}
+            }
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $ps=@(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.SessionId -eq 1 -and ($_.ProcessName -match 'ApplicationFrameHost|^(XD|AdobeXD)$' -or
+             $_.MainWindowTitle -match 'Adobe XD|Save As|Untitled')
+          })
+          Write-Host "XD_RECON_PROCESSES=$($ps.Count)"
+          foreach($p in $ps){
+            Write-Host "XD_RECON_PROCESS name=$($p.ProcessName) id=$($p.Id) title=$($p.MainWindowTitle) hwnd=$($p.MainWindowHandle)"
+          }
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$root.FindAll([System.Windows.Automation.TreeScope]::Children,
+                             [System.Windows.Automation.Condition]::TrueCondition)
+          $docCount=0;$pickerCount=0
+          foreach($el in $top){
+            $title=[string]$el.Current.Name
+            $cls=[string]$el.Current.ClassName
+            if($title -notmatch 'Adobe XD|Save As|Untitled' -and $cls -ne 'ApplicationFrameWindow'){continue}
+            $pidValue=[int]$el.Current.ProcessId
+            Write-Host "XD_RECON_TOP_WINDOW name=$title class=$cls pid=$pidValue hwnd=$($el.Current.NativeWindowHandle)"
+            if($title -notmatch 'Adobe XD'){continue}
+            $docCount++
+            $all=$el.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                              [System.Windows.Automation.Condition]::TrueCondition)
+            foreach($item in $all){
+              $name=[string]$item.Current.Name
+              $id=[string]$item.Current.AutomationId
+              $type=[string]$item.Current.ControlType.ProgrammaticName
+              if($name -eq 'Save As' -and $type -eq 'ControlType.Window'){
+                $pickerCount++
+                Write-Host "XD_RECON_PICKER=FOUND name=$name hwnd=$($item.Current.NativeWindowHandle)"
+                $inside=$item.FindAll([System.Windows.Automation.TreeScope]::Descendants,
+                                      [System.Windows.Automation.Condition]::TrueCondition)
+                foreach($sub in $inside){
+                  $sid=[string]$sub.Current.AutomationId
+                  $sname=[string]$sub.Current.Name
+                  if($sid -eq 'FileNameControlHost' -or $sid -eq '1' -or
+                     ($sid -eq '1001' -and $sname -match '\.xd$')){
+                    $b=$sub.Current.BoundingRectangle
+                    Write-Host "XD_RECON_PICKER_CONTROL id=$sid name=$sname type=$($sub.Current.ControlType.ProgrammaticName) bounds=$($b.Left),$($b.Top),$($b.Width),$($b.Height) hwnd=$($sub.Current.NativeWindowHandle)"
+                  }
+                }
+              }
+            }
+          }
+          Write-Host "XD_RECON_SUMMARY docWindows=$docCount pickerWindows=$pickerCount"
+          foreach($port in @(8787,8765)){
+            $tcp=@(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
+            foreach($listener in $tcp){Write-Host "XD_RECON_PORT port=$port pid=$($listener.OwningProcess)"}
+          }
+          Write-Host 'XD_RECON_READ_ONLY_COMPLETE=PASS'
