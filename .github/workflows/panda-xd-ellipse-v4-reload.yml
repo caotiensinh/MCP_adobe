@@ -98,6 +98,18 @@ jobs:
           $after=(Get-FileHash -LiteralPath (Join-Path $backup 'main.js') -Algorithm SHA256).Hash
           if($before -ne $after){throw 'XD_RADIUS_BRIDGE_BACKUP_SHA_FAILED'}
           Write-Host "XD_RADIUS_PREVIOUS_PLUGIN_BACKUP=PASS path=$backup sha256=$after"
+          # Preserve stale External UXP plugin copies before installer removes
+          # only those exact duplicate bridge IDs (prevent destructive loss).
+          $externalRoot=Join-Path $env:APPDATA 'Adobe\\UXP\\Plugins\\External'
+          foreach($staleId in @('MCPADB01','com.mcpadobe.xd.bridge')){
+            $candidate=Join-Path $externalRoot $staleId
+            if(Test-Path -LiteralPath $candidate){
+              $archived=Join-Path $env:USERPROFILE "Documents\\MCPAdobe\\xd_external_prior_$staleId-$env:GITHUB_RUN_ID"
+              if(Test-Path -LiteralPath $archived){throw 'XD_RADIUS_EXTERNAL_ARCHIVE_COLLISION'}
+              Copy-Item -LiteralPath $candidate -Destination $archived -Recurse -ErrorAction Stop
+              Write-Host "XD_RADIUS_EXTERNAL_DUPLICATE_BACKUP=PASS path=$archived"
+            }
+          }
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_xd_plugin.ps1 -DevelopFolder (Split-Path -Parent $dirs[0]) -NoReloadHint
           if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_PLUGIN_INSTALL_FAILED'}
           $deployed=(Get-FileHash -LiteralPath (Join-Path $dirs[0] 'main.js') -Algorithm SHA256).Hash
