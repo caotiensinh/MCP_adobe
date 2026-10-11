@@ -45,7 +45,12 @@ function Focus-Xd($xd){
 $xd=Find-XdWindow
 if(-not $xd){
   $xdProcesses=@(Get-Process -Name XD -ErrorAction SilentlyContinue)
-  if($xdProcesses.Count -gt 0){throw 'XD_BOOTSTRAP_EXISTING_XD_PROCESS_WITHOUT_DOCUMENT_REFUSE_RELAUNCH'}
+  if($xdProcesses.Count -gt 0){
+    foreach($proc in $xdProcesses){
+      Write-Host "XD_BOOTSTRAP_HEADLESS_EXISTING_PROCESS pid=$($proc.Id) session=$($proc.SessionId) title=$($proc.MainWindowTitle)"
+    }
+    Write-Host 'XD_BOOTSTRAP_UWP_ACTIVATION_ONLY_NO_PROCESS_KILL_NO_NEW_DOCUMENT'
+  }
   $app=Get-StartApps -ErrorAction SilentlyContinue | Where-Object {$_.Name -eq 'Adobe XD'} | Select-Object -First 1
   if(-not $app){throw 'XD_BOOTSTRAP_ADOBE_XD_NOT_REGISTERED'}
   Write-Host "XD_BOOTSTRAP_START_REAL_ADOBE_XD_ONCE appid=$($app.AppID)"
