@@ -1,9 +1,5 @@
 name: Illustrator C013 stage tested tracer
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/illustrator-c013-stage-tested-tracer.yml"
   workflow_dispatch:
 permissions:
   contents: read
