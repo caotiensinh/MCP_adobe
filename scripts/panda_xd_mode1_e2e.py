@@ -131,50 +131,162 @@ async def snapshot(c):
     if data.get("complete") is not True and find(p,"complete") is not True:
         raise RuntimeError("XD_SCENEGRAPH_INCOMPLETE")
     return node_map(data)
+
+# State verified in GitHub run 38114632173 and read-only run 38131002152.
+PREVIOUS_DOCUMENT_ID="892cdc9e-115d-4ec9-aa93-a0b75e9c1de0"
+PREVIOUS_PENDING_OPERATION="xd-1791696933689-5"
+PREVIOUS_RESUME_RUN_ID="38114632173"
+
+def save_checkpoint(data):
+    payload=json.dumps(data,indent=2,ensure_ascii=False)
+    tmp=CHECKPOINT.with_suffix(".json.tmp")
+    tmp.write_text(payload,encoding="utf-8")
+    os.replace(tmp,CHECKPOINT)
+    digest=hashlib.sha256(CHECKPOINT.read_bytes()).hexdigest()
+    print("XD_CHECKPOINT_PERSISTED="+json.dumps({
+        "count":len(data.get("proven",[])),
+        "pending":data.get("pending"),
+        "sha256":digest
+    }),flush=True)
+    return digest
+
+async def read_receipt(c,op):
+    payload=await call(c,"creative_read","xd.queue.status",{"operation_id":op})
+    result=payload.get("result")
+    if not isinstance(result,Mapping):raise RuntimeError("XD_RECEIPT_RESULT_NOT_MAPPING")
+    return result
+
+async def live_snapshot(c):
+    result=await call(c,"creative_read","creative.scenegraph.list")
+    snap=result.get("result")
+    if not isinstance(snap,Mapping) or snap.get("complete") is not True:
+        raise RuntimeError("XD_LIVE_SCENEGRAPH_NOT_COMPLETE")
+    return snap,node_map(snap)
+
+async def health_pending(c):
+    health=await call(c,"creative_read","creative.health")
+    info=health.get("result") or {}
+    if info.get("bridge")!="connected":
+        raise RuntimeError("XD_PLUGIN_NOT_CONNECTED_NO_WRITE")
+    count=info.get("pending_count")
+    if not isinstance(count,int) or count<0:
+        raise RuntimeError("XD_PLUGIN_PENDING_COUNT_UNKNOWN_NO_WRITE")
+    return count
+
+def assert_existing_exactly(checkpoint,live,doc_id):
+    saved=checkpoint.get("proven",[])
+    if not isinstance(saved,list):raise RuntimeError("XD_CHECKPOINT_PROVEN_NOT_LIST")
+    if len(saved)>len(STEPS):raise RuntimeError("XD_CHECKPOINT_TOO_MANY")
+    if doc_id!=PREVIOUS_DOCUMENT_ID:
+        raise RuntimeError("XD_ACTIVE_DOCUMENT_CHANGED_NO_WRITE "+str(doc_id))
+    expected={}
+    for idx,item in enumerate(saved,1):
+        if item.get("ordinal")!=idx or item.get("name")!=STEPS[idx-1][0] or item.get("status")!="applied":
+            raise RuntimeError("XD_CHECKPOINT_INVALID_ORDER_OR_RECEIPT")
+        guid=item.get("guid")
+        if not isinstance(guid,str) or not guid:
+            raise RuntimeError("XD_CHECKPOINT_GUID_MISSING")
+        expected[item["name"]]=guid
+    if live!=expected:
+        raise RuntimeError("XD_SCENEGRAPH_CHANGED_STOP_NO_REPLAY "+
+                           json.dumps({"expected":expected,"observed":live}))
+    print("XD_RECONCILED_EXACT_LIVE_STATE=PASS "+json.dumps({
+        "document_id":doc_id,"applied":len(saved),"guids":expected
+    }),flush=True)
+
 async def main():
     ROOT.mkdir(parents=True,exist_ok=True)
-    if CHECKPOINT.exists():raise RuntimeError("XD_SAME_RUN_CHECKPOINT_EXISTS_RECONCILE_BEFORE_RETRY")
+    if not CHECKPOINT.exists():
+        raise RuntimeError("XD_RESUME_CHECKPOINT_MISSING_NO_NEW_DOCUMENT")
+    checkpoint=json.loads(CHECKPOINT.read_text(encoding="utf-8"))
+    if checkpoint.get("run")!=RUN or RUN!=PREVIOUS_RESUME_RUN_ID:
+        raise RuntimeError("XD_RESUME_TARGET_IS_NOT_PROVEN_RUN")
     async with Client(URL) as c:
-        health=await call(c,"creative_read","creative.health")
-        if find(health,"bridge")!="connected" or find(health,"pending_count")!=0:
-            raise RuntimeError("XD_BRIDGE_NOT_IDLE_NO_WRITE")
-        initial=await snapshot(c)
-        if initial:raise RuntimeError("XD_PRIOR_PANDA_NODES_PRESENT_REFUSE_DUPLICATE")
-        proven=[]
-        for i,(name,cap,args) in enumerate(STEPS,1):
-            before=await snapshot(c)
-            if len(before)!=i-1:raise RuntimeError("XD_PRE_STROKE_COUNT_MISMATCH")
-            print("XD_MODE1_STROKE_START="+json.dumps({"ordinal":i,"name":name,"cap":cap}),flush=True)
-            p=await call(c,"creative_write",cap,args)
-            result=p.get("result") or {}
-            op=result.get("operation_id")
-            if result.get("status")!="queued" or not op or result.get("pending_count")!=1:
-                raise RuntimeError("XD_NOT_QUEUED_AS_EXACTLY_ONE_OP_NO_REPLAY")
-            apply_one()
-            receipt=None
-            for attempt in range(16):
-                receipt=await call(c,"creative_read","xd.queue.status",{"operation_id":op})
-                state=find(receipt,"status")
-                if state in ("applied","failed","rejected"):break
-                await asyncio.sleep(0.35)
-            if state!="applied":raise RuntimeError("XD_QUEUE_NOT_APPLIED_NO_REPLAY "+str(state))
-            after=await snapshot(c)
-            health=await call(c,"creative_read","creative.health")
-            if name not in after or len(after)!=i or find(health,"pending_count")!=0:
-                raise RuntimeError("XD_SCENEGRAPH_POST_WRITE_NOT_PROVEN_NO_REPLAY")
-            rec={"ordinal":i,"name":name,"guid":after[name],"operation_id":op,"status":"applied"}
-            proven.append(rec)
-            CHECKPOINT.write_text(json.dumps({"status":"XD_SCENEGRAPH_CHECKPOINT_NOT_NATIVE_XD_FILE","run":RUN,
-              "proven":proven},indent=2),encoding="utf-8")
-            digest=hashlib.sha256(CHECKPOINT.read_bytes()).hexdigest()
-            print("XD_MODE1_STROKE_READBACK="+json.dumps({"ordinal":i,"nodeCount":len(after),"nameFound":True,
-                "guid":after[name],"receipt":"applied","checkpointSHA256":digest}),flush=True)
+        pending=await health_pending(c)
+        snap,found=await live_snapshot(c)
+        doc_id=snap.get("document_id")
+        assert_existing_exactly(checkpoint,found,doc_id)
+        start=len(checkpoint["proven"])+1
+        if start<5: raise RuntimeError("XD_REPLAY_GUARD_CHECKPOINT_BEFORE_FOUR")
+        for i in range(start,len(STEPS)+1):
+            name,cap,args=STEPS[i-1]
+            snap,found=await live_snapshot(c)
+            assert_existing_exactly(checkpoint,found,snap.get("document_id"))
+            pending=await health_pending(c)
+            saved_pending=checkpoint.get("pending")
+            if saved_pending is not None:
+                if saved_pending.get("ordinal")!=i or saved_pending.get("name")!=name:
+                    raise RuntimeError("XD_PENDING_CHECKPOINT_MISMATCH")
+                op=saved_pending.get("operation_id")
+                if not isinstance(op,str) or not op:
+                    raise RuntimeError("XD_PENDING_CHECKPOINT_ID_MISSING")
+            elif i==5 and len(checkpoint["proven"])==4:
+                # Previous run stopped before SendKeys because the foreground
+                # request failed. Operation 5 remains queued, as proven by
+                # read-only run 38131002152. Do not queue it a second time.
+                op=PREVIOUS_PENDING_OPERATION
+                saved_pending={"ordinal":i,"name":name,"operation_id":op}
+                checkpoint["pending"]=saved_pending
+                save_checkpoint(checkpoint)
+            else:
+                if pending!=0:
+                    raise RuntimeError("XD_FOREIGN_QUEUE_NOT_IDLE_NO_NEW_WRITE")
+                print("XD_MODE1_STROKE_START="+json.dumps({"ordinal":i,"name":name,"cap":cap}),flush=True)
+                response=await call(c,"creative_write",cap,args)
+                result=response.get("result") or {}
+                op=result.get("operation_id")
+                if result.get("status")!="queued" or not isinstance(op,str) or result.get("pending_count")!=1:
+                    raise RuntimeError("XD_CREATE_RECEIPT_NOT_EXACT_QUEUED_STOP")
+                checkpoint["pending"]={"ordinal":i,"name":name,"operation_id":op}
+                save_checkpoint(checkpoint)
+
+            receipt=await read_receipt(c,op)
+            status=receipt.get("status")
+            print("XD_PENDING_OPERATION_RECONCILED="+json.dumps({
+                "ordinal":i,"operation_id":op,"status":status,"pending_count":pending
+            }),flush=True)
+            if status=="queued":
+                if await health_pending(c)!=1:
+                    raise RuntimeError("XD_QUEUED_RECEIPT_BUT_QUEUE_COUNT_NOT_ONE")
+                # One UXP application command, only after the Windows XD PID
+                # is verified as true foreground. Not an MCP drawing replay.
+                apply_one()
+                for attempt in range(24):
+                    receipt=await read_receipt(c,op)
+                    status=receipt.get("status")
+                    if status in ("applied","failed","rejected"):break
+                    await asyncio.sleep(0.3)
+            if status!="applied":
+                raise RuntimeError("XD_MUTATION_NOT_APPLIED_NO_REPLAY "+str(status))
+            snap,after=await live_snapshot(c)
+            if snap.get("document_id")!=PREVIOUS_DOCUMENT_ID:
+                raise RuntimeError("XD_ACTIVE_DOCUMENT_SWITCHED_AFTER_APPLY")
+            if len(after)!=i or name not in after or await health_pending(c)!=0:
+                raise RuntimeError("XD_LIVE_SCENEGRAPH_NOT_MATCHING_APPLIED_OP")
+            guid=after[name]
+            applied_guid=(receipt.get("result") or {}).get("guid")
+            if applied_guid and applied_guid!=guid:
+                raise RuntimeError("XD_RECEIPT_GUID_NOT_LIVE_GUID")
+            for old in checkpoint["proven"]:
+                if after.get(old["name"])!=old["guid"]:
+                    raise RuntimeError("XD_PRIOR_VERIFIED_OBJECT_CHANGED")
+            rec={"ordinal":i,"name":name,"guid":guid,"operation_id":op,"status":"applied"}
+            checkpoint["proven"].append(rec)
+            checkpoint["pending"]=None
+            digest=save_checkpoint(checkpoint)
+            print("XD_MODE1_STROKE_READBACK="+json.dumps({
+                "ordinal":i,"name":name,"nodeCount":len(after),
+                "guid":guid,"receipt":"applied","checkpointSHA256":digest
+            }),flush=True)
+            await asyncio.sleep(0.25)
         print("XD_MODE1_SCENEGRAPH_32_STROKES=PASS",flush=True)
-        exported=await call(c,"creative_write","xd.export.png",{"filename":f"MCP_Mode1_Panda_XD_{RUN}.png"})
+        exported=await call(c,"creative_write","xd.export.png",
+                            {"filename":f"MCP_Mode1_Panda_XD_{RUN}.png"})
         native=find(exported,"nativePath")
         if not isinstance(native,str) or not Path(native).is_file() or Path(native).stat().st_size<1000:
             raise RuntimeError("XD_NATIVE_PNG_EXPORT_NOT_VERIFIED")
-        print("XD_NATIVE_PNG_EXPORT=PASS "+json.dumps({"nativePath":native,
-            "bytes":Path(native).stat().st_size}),flush=True)
-        print("XD_NATIVE_DOCUMENT_SAVE=UNVERIFIED_REQUIRES_GUI_SAVE_AS",flush=True)
+        print("XD_NATIVE_PNG_EXPORT=PASS "+json.dumps({
+            "nativePath":native,"bytes":Path(native).stat().st_size
+        }),flush=True)
+
 asyncio.run(main())
