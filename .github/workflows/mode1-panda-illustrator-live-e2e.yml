@@ -90,6 +90,7 @@ jobs:
               if (e.get("unresolvedJobs") or e.get("activeJob") is not None or e.get("waiting")!=0
                 or s.get("blocking") or panel.get("status")!="ok" or panel.get("busy") is not False
                 or panel.get("activeRequestId") is not None or panel.get("heartbeatStale") is True):
+                  print("PANDA_IDLE_REJECTION="+json.dumps({"blockedAt":s.get("blockedAt"),"blocking":s.get("blocking"),"execution":e,"panel":panel},default=str),flush=True)
                   raise RuntimeError("PANDA_HOST_NOT_IDLE_NO_WRITE")
               return s
           async def document(c):
