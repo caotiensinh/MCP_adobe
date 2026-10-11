@@ -1,0 +1,102 @@
+name: Panda Illustrator first post C014 recovery one real safe host snapshot
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-illustrator-first-post-recovery-host-snapshot.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  safe-read:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Illustrator GUI and immutable AI document before one read-only host call
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'PAN_AI_SNAPSHOT_WRONG_DESKTOP'}
+          $ai=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+          if($ai.Count -ne 1 -or -not $ai[0].Responding){throw 'PAN_AI_SNAPSHOT_NOT_EXACT_RESPONSIVE_GUI'}
+          $native=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_KFP4_Red_AI_38146162392.ai'
+          if(-not(Test-Path -LiteralPath $native -PathType Leaf) -or
+             (Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash -ne 'A44991466F8E3E17EBC92A03BD168B917EFACA04001655CB8932091ACE085091'){
+            throw 'PAN_AI_SNAPSHOT_UNEXPECTED_FILE_CHANGE_NO_HOST_CALL'
+          }
+          Write-Host "PAN_AI_SNAPSHOT_PREFLIGHT=PASS pid=$($ai[0].Id) native_sha256=A44991466F8E3E17EBC92A03BD168B917EFACA04001655CB8932091ACE085091"
+      - name: Check queue barrier and execute exactly one real Illustrator read-only JSX snapshot
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json,time
+          from pathlib import Path
+          from mcp import Client
+          OUT=Path("panda_illustrator_first_safe_snapshot.json")
+          async def main():
+            report={"schema":"panda-ai-one-read-v1","method":"creative.document.fast_snapshot",
+              "host_calls_planned":1,"writes":0,"retries":0,"status":"STARTED"}
+            try:
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                h=await asyncio.wait_for(c.call_tool("creative_read",{
+                  "application":"illustrator","capability":"creative.health",
+                  "arguments":{"probe":False,"timeout":5}}),timeout=18)
+                p=h.structured_content or {}
+                d=((p.get("result") or {}).get("connection") or {}).get("data") or {}
+                ex=d.get("execution") or {}
+                panel=(d.get("layers") or {}).get("panel") or {}
+                report["preflight"]={"unresolvedJobs":ex.get("unresolvedJobs"),
+                  "activeJob":ex.get("activeJob"),"waiting":ex.get("waiting"),
+                  "panelBusy":panel.get("busy"),"panelStatus":panel.get("status"),
+                  "panelHeartbeatStale":panel.get("heartbeatStale")}
+                if (h.is_error or p.get("ok") is not True or ex.get("unresolvedJobs")!=[] or
+                    ex.get("activeJob") is not None or ex.get("waiting")!=0 or
+                    panel.get("status")!="ok" or panel.get("busy") is not False or
+                    panel.get("heartbeatStale") is True):
+                  report["status"]="BLOCKED_PRECHECK_NO_HOST_CALL"
+                  raise RuntimeError("PAN_AI_FIRST_SNAPSHOT_NOT_IDLE_NO_HOST_CALL")
+                started=time.perf_counter()
+                report["host_calls_actual"]=1
+                try:
+                  r=await asyncio.wait_for(c.call_tool("creative_read",{
+                    "application":"illustrator","capability":"creative.document.fast_snapshot",
+                    "arguments":{}}),timeout=33)
+                  payload=r.structured_content or {}
+                  result=payload.get("result") or {}
+                  report["latency_ms"]=round((time.perf_counter()-started)*1000,3)
+                  report["result_excerpt"]=str(result)[:3500]
+                  report["outcome"]=payload.get("outcome")
+                  report["is_error"]=r.is_error
+                  if r.is_error or payload.get("ok") is not True or result.get("execution")!="succeeded":
+                    report["status"]="UNKNOWN_NO_REPLAY"
+                    raise RuntimeError("PAN_AI_FIRST_SNAPSHOT_HOST_NOT_VERIFIED")
+                  report["status"]="HOST_SUCCEEDED"
+                  print("PAN_AI_FIRST_REAL_SNAPSHOT=PASS "+json.dumps({
+                    "latency_ms":report["latency_ms"],"result":result},default=str)[:4500],flush=True)
+                except Exception:
+                  if report["status"]=="STARTED":report["status"]="UNKNOWN_NO_REPLAY"
+                  raise
+            finally:
+              OUT.write_text(json.dumps(report,indent=2,default=str),encoding="utf8")
+              print("PAN_AI_FIRST_SNAPSHOT_EVIDENCE="+json.dumps(report,default=str)[:5500],flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\first_host_snapshot.py -Encoding UTF8
+          uv run --python 3.12 python -m py_compile .\first_host_snapshot.py
+          if($LASTEXITCODE -ne 0){throw 'PAN_AI_FIRST_SNAPSHOT_SCRIPT_INVALID_NO_HOST_CALL'}
+          uv run --python 3.12 python .\first_host_snapshot.py
+          if($LASTEXITCODE -ne 0){throw 'PAN_AI_FIRST_HOST_RESULT_UNKNOWN_NO_REPLAY'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-illustrator-one-real-host-snapshot
+          path: panda_illustrator_first_safe_snapshot.json
+          if-no-files-found: warn
+          retention-days: 14
