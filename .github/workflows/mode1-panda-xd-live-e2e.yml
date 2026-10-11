@@ -49,6 +49,36 @@ jobs:
           $flag=Join-Path $env:RUNNER_TEMP 'xd_gateway_refresh_required.flag'
           if(Test-Path -LiteralPath $flag){
             Write-Host 'XD_STALE_GATEWAY_REFRESH=START_OWNED_PROCESSES_ONLY'
+            $root=Join-Path $env:LOCALAPPDATA 'MCPAdobe'
+            $backup=Join-Path $root 'gateway.previous'
+            if(Test-Path -LiteralPath $backup){
+              if(-not (Test-Path -LiteralPath $backup -PathType Container)){throw 'XD_BACKUP_IS_NOT_DIRECTORY_REFUSE_MOVE'}
+              $exe=Join-Path $backup 'venv\Scripts\mcp-adobe.exe'
+              $metadata=Join-Path $backup 'install-metadata.json'
+              if(-not (Test-Path -LiteralPath $exe) -or -not (Test-Path -LiteralPath $metadata)){
+                throw 'XD_UNRECOGNIZED_PREVIOUS_HOST_BACKUP_REFUSE_MOVE'
+              }
+              $meta=Get-Content -LiteralPath $metadata -Raw | ConvertFrom-Json
+              if($meta.gateway_port -ne 8787 -or $meta.xd_port -ne 8765){
+                throw 'XD_PREVIOUS_BACKUP_PORTS_NOT_OWNED_REFUSE_MOVE'
+              }
+              $live=@(Get-NetTCPConnection -State Listen -LocalPort 8787 -ErrorAction SilentlyContinue)
+              foreach($listener in $live){
+                $proc=Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
+                if($proc -and ([string]$proc.ExecutablePath).StartsWith($backup,[StringComparison]::OrdinalIgnoreCase)){
+                  throw 'XD_ARCHIVED_BACKUP_IS_ACTIVE_PROCESS_REFUSE_MOVE'
+                }
+              }
+              $items=@(Get-ChildItem -LiteralPath $backup -Force -ErrorAction SilentlyContinue)
+              Write-Host "XD_PREVIOUS_BACKUP_INSPECTED=PASS path=$backup entries=$($items.Count) gatewayPort=$($meta.gateway_port)"
+              $archive=Join-Path $root "gateway.previous.preserved_$env:GITHUB_RUN_ID"
+              if(Test-Path -LiteralPath $archive){throw 'XD_BACKUP_ARCHIVE_ALREADY_EXISTS_REFUSE_OVERWRITE'}
+              Move-Item -LiteralPath $backup -Destination $archive -ErrorAction Stop
+              if(-not (Test-Path -LiteralPath (Join-Path $archive 'venv\Scripts\mcp-adobe.exe'))){
+                throw 'XD_PREVIOUS_BACKUP_ARCHIVE_NOT_VERIFIED'
+              }
+              Write-Host "XD_PREVIOUS_BACKUP_PRESERVED=PASS archive=$archive"
+            }
             powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_local_host.ps1 -SkipStartupRegistration
             if($LASTEXITCODE -ne 0){throw 'XD_VERSIONED_GATEWAY_INSTALL_FAILED_CHECK_ROLLBACK'}
             Write-Host 'XD_STALE_GATEWAY_REFRESH=INSTALL_COMPLETE_VERIFY_RUNTIME'
