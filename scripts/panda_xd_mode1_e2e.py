@@ -5,7 +5,7 @@ from pathlib import Path
 from mcp import Client
 
 ROOT=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"
-RUN=os.environ.get("GITHUB_RUN_ID","local")
+RUN=os.environ.get("PANDA_XD_RESUME_RUN_ID") or os.environ.get("GITHUB_RUN_ID","local")
 CHECKPOINT=ROOT/f"MCP_Mode1_Panda_XD_{RUN}.json"
 URL="http://127.0.0.1:8787/mcp"
 def rgb(c):return "#%02X%02X%02X"%c
@@ -64,30 +64,60 @@ def node_map(x):
             if guid: result[a["name"]]=str(guid)
     return result
 def apply_one():
-    # Sends only the official Adobe XD plugin command shortcut; NEVER synthesizes scenegraph state.
+    # Only issue one UXP Apply command when the target document actually owns
+    # Windows foreground. Foreground retries do not edit the XD scenegraph.
     cmd=r"""
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type @'
 using System;
 using System.Runtime.InteropServices;
 public static class XdMode1Native {
- [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+ [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd,int nCmdShow);
  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+ [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+ [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd,out uint pid);
 }
 '@
 $xd=Get-Process -ErrorAction SilentlyContinue | Where-Object {
- ($_.ProcessName -match '^(XD|AdobeXD)$' -or $_.MainWindowTitle -match 'Adobe XD') -and $_.MainWindowHandle -ne 0 -and $_.SessionId -eq 1
+ ($_.ProcessName -match '^(XD|AdobeXD)$' -or $_.MainWindowTitle -match 'Adobe XD') -and
+ $_.MainWindowHandle -ne 0 -and $_.SessionId -eq 1 -and
+ $_.MainWindowTitle -match '^Untitled.*Adobe XD$'
 } | Select-Object -First 1
-if(-not $xd){throw 'XD_INTERACTIVE_HOST_ABSENT'}
-[void][XdMode1Native]::ShowWindow($xd.MainWindowHandle,9)
-if(-not [XdMode1Native]::SetForegroundWindow($xd.MainWindowHandle)){throw 'XD_WINDOW_FOREGROUND_FAILED'}
-Start-Sleep -Milliseconds 350
+if(-not $xd){throw 'XD_TEST_DOCUMENT_WINDOW_ABSENT'}
+function Get-ForegroundProcessId {
+    $window=[XdMode1Native]::GetForegroundWindow()
+    $owner=[uint32]0
+    if($window -ne [IntPtr]::Zero){
+        [void][XdMode1Native]::GetWindowThreadProcessId($window,[ref]$owner)
+    }
+    return [int]$owner
+}
+$before=Get-ForegroundProcessId
+if($before -ne $xd.Id){
+    [void][XdMode1Native]::ShowWindow($xd.MainWindowHandle,9)
+    [void][XdMode1Native]::SetForegroundWindow($xd.MainWindowHandle)
+    Start-Sleep -Milliseconds 280
+}
+$after=Get-ForegroundProcessId
+if($after -ne $xd.Id){
+    $shell=New-Object -ComObject WScript.Shell
+    $activated=$shell.AppActivate([int]$xd.Id)
+    Start-Sleep -Milliseconds 380
+    $after=Get-ForegroundProcessId
+    Write-Output "XD_FOCUS_FALLBACK_REQUESTED=$activated actual=$after"
+}
+if($after -ne $xd.Id){
+    throw "XD_FOREGROUND_NOT_OWNED_NO_COMMAND before=$before actual=$after expected=$($xd.Id)"
+}
 [System.Windows.Forms.SendKeys]::SendWait('^%+8')
-Write-Output "XD_SINGLE_APPLY_REQUESTED PID=$($xd.Id)"
+Write-Output "XD_SINGLE_APPLY_REQUESTED PID=$($xd.Id) foreground=$after"
 """
-    p=subprocess.run(["powershell","-NoProfile","-NonInteractive","-Command",cmd],capture_output=True,text=True,timeout=18)
-    print("XD_APPLY_UI="+json.dumps({"rc":p.returncode,"stdout":p.stdout[-700:],"stderr":p.stderr[-1000:]}),flush=True)
-    if p.returncode:raise RuntimeError("XD_APPLY_COMMAND_FAILED_NO_REPLAY")
+    p=subprocess.run(["powershell","-NoProfile","-NonInteractive","-Command",cmd],
+                     capture_output=True,text=True,timeout=22)
+    print("XD_APPLY_UI="+json.dumps({"rc":p.returncode,"stdout":p.stdout[-1200:],
+          "stderr":p.stderr[-1200:]}),flush=True)
+    if p.returncode:
+        raise RuntimeError("XD_APPLY_COMMAND_NOT_SENT_AND_QUEUED_RECEIPT_PRESERVED")
 async def call(c,tool,cap,args=None):
     r=await c.call_tool(tool,{"application":"xd","capability":cap,"arguments":args or {}})
     p=r.structured_content
