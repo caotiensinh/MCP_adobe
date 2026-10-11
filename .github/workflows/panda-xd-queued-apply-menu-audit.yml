@@ -86,4 +86,22 @@ jobs:
           }
           Start-Sleep -Milliseconds 450
           Print-Menu $xd 'AFTER'
+          $allItems=$xd.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $submenus=@()
+          foreach($item in $allItems){
+            if([string]$item.Current.Name -eq 'MCP Adobe Bridge' -and
+               [string]$item.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'){
+              $submenus+=,$item
+            }
+          }
+          if($submenus.Count -ne 1){throw "XD_APPLY_AUDIT_BRIDGE_SUBMENU_NOT_UNIQUE count=$($submenus.Count)"}
+          try{
+            $subexp=$submenus[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+            $subexp.Expand()
+            Write-Host 'XD_APPLY_AUDIT_MCP_SUBMENU_EXPANDED=PASS'
+          }catch{
+            Write-Host "XD_APPLY_AUDIT_MCP_SUBMENU_NOT_EXPANDABLE=$($_.Exception.Message)"
+          }
+          Start-Sleep -Milliseconds 400
+          Print-Menu $xd 'MCP_SUBMENU'
           Write-Host 'XD_APPLY_AUDIT_NO_DOCUMENT_WRITE=PASS'
