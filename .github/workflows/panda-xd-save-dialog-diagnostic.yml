@@ -1,0 +1,82 @@
+name: PANDA XD read-only Save As UI inspection
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-save-dialog-diagnostic.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read current Adobe XD native window controls and save-file state only
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_SAVE_DIAG_WRONG_HOST'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class XdSaveDiag {
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+          }
+          '@
+          $current=[System.Diagnostics.Process]::GetCurrentProcess()
+          Write-Host "XD_SAVE_DIAG_SESSION=$($current.SessionId)"
+          $foreground=[XdSaveDiag]::GetForegroundWindow()
+          $owner=[uint32]0
+          if($foreground -ne [IntPtr]::Zero){[void][XdSaveDiag]::GetWindowThreadProcessId($foreground,[ref]$owner)}
+          $fg=Get-Process -Id $owner -ErrorAction SilentlyContinue
+          Write-Host "XD_SAVE_DIAG_FOREGROUND_PID=$owner process=$($fg.ProcessName) title=$($fg.MainWindowTitle)"
+          $windows=@(Get-Process -ErrorAction SilentlyContinue |
+            Where-Object {($_.ProcessName -match '^(XD|AdobeXD)$' -or $_.MainWindowTitle -match 'Adobe XD') -and $_.MainWindowHandle -ne 0 -and $_.SessionId -eq 1})
+          foreach($win in $windows){
+            Write-Host "XD_SAVE_DIAG_XD_WINDOW pid=$($win.Id) title=$($win.MainWindowTitle) hwnd=$($win.MainWindowHandle)"
+          }
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          for($i=0;$i -lt $top.Count;$i++){
+            $e=$top.Item($i)
+            Write-Host "XD_SAVE_DIAG_TOP_WINDOW title=$($e.Current.Name) class=$($e.Current.ClassName)"
+          }
+          foreach($win in $windows){
+            try{
+              $element=[System.Windows.Automation.AutomationElement]::FromHandle($win.MainWindowHandle)
+              $children=$element.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+              Write-Host "XD_SAVE_DIAG_CONTROL_TOTAL=$($children.Count) pid=$($win.Id)"
+              $count=0
+              for($i=0;$i -lt $children.Count;$i++){
+                $e=$children.Item($i)
+                $name=[string]$e.Current.Name
+                $automation=[string]$e.Current.AutomationId
+                $type=[string]$e.Current.ControlType.ProgrammaticName
+                $class=[string]$e.Current.ClassName
+                if(($name -or $automation) -and
+                   ($type -match 'Button|Edit|Menu|Window|Dialog|List|Tab' -or
+                    $name -match 'Save|Local|File|Browse|Open|Document')){
+                    Write-Host "XD_SAVE_DIAG_CONTROL name=$name id=$automation class=$class type=$type"
+                    $count++
+                  }
+                if($count -ge 150){break}
+              }
+            }catch{Write-Host "XD_SAVE_DIAG_UIA_ERROR=$($_.Exception.Message)"}
+          }
+          $folder=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $target=Join-Path $folder 'MCP_Mode1_Panda_XD_38132321143.xd'
+          Write-Host "XD_SAVE_DIAG_EXPECTED_NATIVE_FILE=$target exists=$(Test-Path -LiteralPath $target)"
+          if(Test-Path -LiteralPath $folder){
+            foreach($file in @(Get-ChildItem -LiteralPath $folder -File -Filter '*.xd' -ErrorAction SilentlyContinue | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 10)){
+              Write-Host "XD_SAVE_DIAG_EXISTING_XD_FILE=$($file.FullName) size=$($file.Length) utc=$($file.LastWriteTimeUtc.ToString('o'))"
+            }
+          }
+          Write-Host 'XD_SAVE_DIAG_READ_ONLY=PASS'
