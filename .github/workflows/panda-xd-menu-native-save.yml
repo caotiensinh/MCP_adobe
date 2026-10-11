@@ -16,7 +16,7 @@ jobs:
     timeout-minutes: 7
     steps:
       - uses: actions/checkout@v4
-      - name: Open real XD File menu and save existing Untitled test document
+      - name: Invoke measured AppMenu_SaveAs once and verify native file or actual picker
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
