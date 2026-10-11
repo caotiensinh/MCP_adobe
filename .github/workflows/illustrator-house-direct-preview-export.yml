@@ -13,7 +13,7 @@ concurrency:
 jobs:
   export:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 6
+    timeout-minutes: 7
     steps:
       - uses: actions/checkout@v4
       - name: Export actual saved Illustrator document as PNG and verify shape names
