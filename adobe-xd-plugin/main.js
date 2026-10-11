@@ -197,7 +197,22 @@ function applyMutation(item, selection) {
     node.fill = new Color(params.fill || "#4F7CFF");
     if (params.name) node.name = String(params.name);
     selection.insertionParent.addChild(node);
-    node.moveInParentCoordinates(safeNumber(params.x, 0), safeNumber(params.y, 0));
+    // MCP x/y are global canvas positions, not insertion-parent offsets.
+    // Artboards may be located away from (0,0); absolute placement is required.
+    const desiredX = safeNumber(params.x, NaN);
+    const desiredY = safeNumber(params.y, NaN);
+    const before = node.globalBounds;
+    if (![desiredX, desiredY].every(Number.isFinite) ||
+        !before || ![before.x, before.y, before.width, before.height].every(Number.isFinite) ||
+        !(before.width > 0) || !(before.height > 0)) {
+      throw new Error("XD shape has invalid global placement geometry");
+    }
+    node.moveInParentCoordinates(desiredX - before.x, desiredY - before.y);
+    const placed = node.globalBounds;
+    if (!placed || Math.abs(placed.x - desiredX) > 2 ||
+        Math.abs(placed.y - desiredY) > 2) {
+      throw new Error("XD shape global placement verification failed");
+    }
     return nodeInfo(node);
   }
 
@@ -287,7 +302,22 @@ function applyMutation(item, selection) {
     node.fill = new Color(params.fill || "#000000");
     if (params.name) node.name = String(params.name);
     selection.insertionParent.addChild(node);
-    node.moveInParentCoordinates(safeNumber(params.x, 0), safeNumber(params.y, 0));
+    // MCP x/y are global canvas positions, not insertion-parent offsets.
+    // Artboards may be located away from (0,0); absolute placement is required.
+    const desiredX = safeNumber(params.x, NaN);
+    const desiredY = safeNumber(params.y, NaN);
+    const before = node.globalBounds;
+    if (![desiredX, desiredY].every(Number.isFinite) ||
+        !before || ![before.x, before.y, before.width, before.height].every(Number.isFinite) ||
+        !(before.width > 0) || !(before.height > 0)) {
+      throw new Error("XD shape has invalid global placement geometry");
+    }
+    node.moveInParentCoordinates(desiredX - before.x, desiredY - before.y);
+    const placed = node.globalBounds;
+    if (!placed || Math.abs(placed.x - desiredX) > 2 ||
+        Math.abs(placed.y - desiredY) > 2) {
+      throw new Error("XD shape global placement verification failed");
+    }
     return nodeInfo(node);
   }
 
