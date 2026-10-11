@@ -1,0 +1,94 @@
+name: Red Panda PS AI XD live readiness before first drawing write
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-ps-ai-xd-readiness.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  readonly:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect actual Adobe process and unique host sessions read only
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'PANDA_RED_READINESS_WRONG_MACHINE'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'PANDA_RED_READINESS_NOT_INTERACTIVE'}
+          foreach($name in @('Photoshop.exe','Illustrator.exe','XD.exe','Adobe XD.exe')){
+            foreach($p in @(Get-CimInstance Win32_Process -Filter "Name='$name'" -ErrorAction SilentlyContinue)){
+              Write-Host "PANDA_RED_HOST_PROCESS name=$($p.Name) pid=$($p.ProcessId) session=$($p.SessionId)"
+            }
+          }
+          foreach($port in @(8787,8081,8765)){
+            $listeners=@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+            Write-Host "PANDA_RED_HOST_LISTENER port=$port count=$($listeners.Count)"
+          }
+      - name: Verify live MCP host capability, panel, document and queue without writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json,hashlib,os,time
+          from pathlib import Path
+          from mcp import Client
+          async def main():
+              all_status=[]
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  for app in ("photoshop","illustrator","xd"):
+                      t=time.perf_counter()
+                      args={"probe":False,"timeout":5} if app=="illustrator" else {}
+                      try:
+                          r=await asyncio.wait_for(c.call_tool("creative_read",{
+                              "application":app,"capability":"creative.health","arguments":args}),timeout=10)
+                          p=r.structured_content or {}
+                          data=p.get("result") or {}
+                          val=data.get("connection",{}).get("data",{}) if app=="illustrator" else data
+                          ok=(not r.is_error and p.get("ok") is True)
+                          ready=ok and (val.get("ready") is True if app=="illustrator" else
+                            val.get("bridge")=="connected" if app=="xd" else
+                            data.get("connected",data.get("ready",True)) is not False)
+                          obj={"app":app,"read_success":ok,"host_ready":ready,
+                            "latency_ms":round((time.perf_counter()-t)*1000,2),
+                            "bridge":val.get("bridge"),"build":val.get("bridge_build"),
+                            "panel":(val.get("layers") or {}).get("panel"),"pending":val.get("pending_count"),
+                            "error_content":[str(x)[:180] for x in r.content] if r.is_error else []}
+                          if app=="xd" and ready:
+                              sg=await c.call_tool("creative_read",{"application":"xd",
+                                  "capability":"creative.scenegraph.list","arguments":{}})
+                              obj["document_id"]=(sg.structured_content or {}).get("result",{}).get("document_id")
+                          if app=="photoshop" and ready:
+                              info=await asyncio.wait_for(c.call_tool("creative_read",{"application":"photoshop",
+                                  "capability":"creative.document.info","arguments":{}}),timeout=10)
+                              obj["document_read_ok"]=not info.is_error and (info.structured_content or {}).get("ok") is True
+                              obj["document_excerpt"]=str((info.structured_content or {}).get("result"))[:450]
+                          all_status.append(obj)
+                          print("PANDA_RED_LIVE_READINESS="+json.dumps(obj,default=str),flush=True)
+                      except Exception as exc:
+                          obj={"app":app,"read_success":False,"host_ready":False,
+                            "error":type(exc).__name__+":"+str(exc)[:350]}
+                          all_status.append(obj)
+                          print("PANDA_RED_LIVE_READINESS="+json.dumps(obj),flush=True)
+              Path("panda_red_live_readiness.json").write_text(json.dumps(all_status,indent=2,default=str),encoding="utf8")
+              print("PANDA_RED_READINESS_AUDIT_SAVED=PASS failures="+str(sum(not x["host_ready"] for x in all_status)),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\panda_red_live_readiness.py -Encoding UTF8
+          uv run --python 3.12 python .\panda_red_live_readiness.py
+          if($LASTEXITCODE -ne 0){throw 'PANDA_RED_READONLY_PRECHECK_EXCEPTION'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-red-triapp-live-readiness
+          path: panda_red_live_readiness.json
+          if-no-files-found: warn
+          retention-days: 14
