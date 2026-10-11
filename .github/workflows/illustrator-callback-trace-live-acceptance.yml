@@ -1,8 +1,10 @@
 name: Illustrator callback trace live acceptance
 on:
-  push:
-    branches: [feat/canvas-region-targeting]
-    paths: [".github/workflows/illustrator-callback-trace-live-acceptance.yml"]
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/illustrator-callback-trace-live-acceptance.yml"
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -11,88 +13,75 @@ concurrency:
 jobs:
   trace:
     runs-on: [self-hosted, Windows, X64]
-    timeout-minutes: 8
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: Backup and deploy validated upstream callback trace
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          $src=Join-Path (Get-Location) 'src\mcp_adobe\illustrator_upstream_trace.py'
-          $dst=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\venv\Lib\site-packages\illustrator_mcp\_mcp_adobe_trace.py'
-          $py=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\venv\Scripts\python.exe'
-          if(-not(Test-Path $src) -or -not(Test-Path $dst)){throw 'Tracer source or existing installation missing'}
-          $backup="$dst.callback_v1.bak"
-          if(-not(Test-Path $backup)){Copy-Item -LiteralPath $dst -Destination $backup -ErrorAction Stop}
-          Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop
-          & $py -m py_compile $dst
-          if($LASTEXITCODE -ne 0){Copy-Item $backup $dst -Force;throw 'Tracer invalid; restored backup'}
-          Write-Output 'CALLBACK_TRACE_DEPLOY=PASS'
-      - name: Restart only gateway under supervisor preserving Illustrator
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          $ai=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" | Where-Object {$_.SessionId -eq 1})
-          if($ai.Count -lt 1){throw 'Illustrator window absent'}
-          $listener=@(Get-NetTCPConnection -LocalPort 8787 -State Listen)
-          if($listener.Count -ne 1){throw 'Gateway not unique'}
-          $oldId=$listener[0].OwningProcess
-          $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$oldId"
-          if($owner.Name -ne 'python.exe' -or $owner.CommandLine -notmatch 'mcp-adobe.exe'){throw 'Gateway ownership not proven'}
-          $super=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\host-wrapper.pid'
-          if(-not(Test-Path $super)){throw 'Missing supervisor PID'}
-          $superPid=[int](Get-Content $super -Raw).Trim()
-          if(-not(Get-Process -Id $superPid -ErrorAction SilentlyContinue)){throw 'Supervisor absent'}
-          Stop-Process -Id $oldId -Force
-          $deadline=(Get-Date).AddSeconds(90)
-          $newId=0
-          do{
-            Start-Sleep -Seconds 2
-            $l=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
-            if($l.Count -eq 1 -and $l[0].OwningProcess -ne $oldId){$newId=$l[0].OwningProcess;break}
-          }until((Get-Date)-gt $deadline)
-          if($newId -eq 0){throw 'Gateway restart timeout'}
-          if(-not(Get-Process -Id $ai[0].ProcessId -ErrorAction SilentlyContinue)){throw 'Illustrator changed'}
-          Write-Output "CALLBACK_GATEWAY_RESTART=PASS old=$oldId new=$newId"
-      - name: Execute one bounded read-only health probe and inspect callback log
+      - name: Run one guarded live CEP probe and correlate fresh callback
         shell: powershell
         run: |
           $ErrorActionPreference='Stop'
           $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
           uv sync --python 3.12
-          if($LASTEXITCODE -ne 0){throw 'uv unavailable'}
+          if($LASTEXITCODE -ne 0){throw 'DEPENDENCY_SETUP_FAIL'}
           @'
-          import asyncio,json
+          import asyncio, json, os
+          from pathlib import Path
           from mcp import Client
+
+          TRACE=Path(os.environ["LOCALAPPDATA"])/"MCPAdobe"/"illustrator-mcp"/"callback_trace.log"
+
+          def unpack(r):
+              if r.is_error or not isinstance(r.structured_content,dict):
+                  raise RuntimeError("MCP_TOOL_ERROR")
+              p=r.structured_content
+              d=p.get("result",{}).get("connection",{}).get("data",{})
+              if not isinstance(d,dict) or not d:
+                  raise RuntimeError("HEALTH_PAYLOAD_MISSING")
+              return d
+
+          async def health(c,probe):
+              r=await c.call_tool("creative_read",{"application":"illustrator",
+                  "capability":"creative.health","arguments":{"probe":probe,"timeout":30 if probe else 5}})
+              return unpack(r)
+
           async def main():
               async with Client("http://127.0.0.1:8787/mcp") as c:
-                  h=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":False,"timeout":5}})
-                  p=h.structured_content
-                  if h.is_error or not isinstance(p,dict):
-                      print("HEALTH_TRANSPORT_FAIL",flush=True)
-                      return
-                  d=p.get("result",{}).get("connection",{}).get("data",{})
-                  b=d.get("blocking") or {}
-                  panel=d.get("layers",{}).get("panel") or {}
-                  print("BEFORE_PROBE="+json.dumps({"blockedAt":d.get("blockedAt"),"priorCompletionObserved":b.get("priorCompletionObserved"),"panelBusy":panel.get("busy"),"activeRequest":panel.get("activeRequestId"),"unresolved":d.get("execution",{}).get("unresolvedJobs")}),flush=True)
-                  safe_idle=(panel.get("busy") is False and panel.get("activeRequestId") is None
-                             and not d.get("execution",{}).get("unresolvedJobs"))
-                  safe_fence=(d.get("blockedAt")=="probe_fence" and b.get("priorCompletionObserved") is True)
-                  safe_unblocked=(d.get("blockedAt") in (None,"document") and not b)
-                  if safe_idle and (safe_fence or safe_unblocked):
-                      r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":True,"timeout":5}})
-                      print("READ_ONLY_PROBE_RESULT="+json.dumps({"error":r.is_error,"structured":r.structured_content},default=str)[:2800],flush=True)
-                  else:
-                      print("READ_ONLY_PROBE_SKIPPED=unsafe_or_no_fence",flush=True)
+                  before=await health(c,False)
+                  b=before.get("blocking") or {}
+                  panel=(before.get("layers") or {}).get("panel") or {}
+                  execution=before.get("execution") or {}
+                  state={"blockedAt":before.get("blockedAt"),"panelBusy":panel.get("busy"),
+                     "activeRequestId":panel.get("activeRequestId"),"unresolvedJobs":execution.get("unresolvedJobs"),
+                     "priorCompletionObserved":b.get("priorCompletionObserved")}
+                  print("ITEM_03_PREFLIGHT="+json.dumps(state),flush=True)
+                  if panel.get("busy") is not False or panel.get("activeRequestId") is not None or execution.get("unresolvedJobs"):
+                      raise RuntimeError("ITEM_03_BLOCKED_HOST_NOT_IDLE")
+                  if before.get("blockedAt") not in (None,"document","probe_fence"):
+                      raise RuntimeError("ITEM_03_BLOCKED_UNKNOWN_FENCE")
+                  if before.get("blockedAt")=="probe_fence" and b.get("priorCompletionObserved") is not True:
+                      raise RuntimeError("ITEM_03_BLOCKED_PREDECESSOR_UNPROVEN")
+                  # Cursor excludes all stale callback log entries from previous jobs.
+                  offset=TRACE.stat().st_size if TRACE.exists() else 0
+                  print("ITEM_03_TRACE_CURSOR="+str(offset),flush=True)
+                  after=await health(c,True)
+                  print("ITEM_03_PROBE="+json.dumps({"ready":after.get("ready"),"probed":after.get("probed"),
+                     "blockedAt":after.get("blockedAt")}),flush=True)
+                  if after.get("ready") is not True or after.get("probed") is not True or after.get("blockedAt") not in (None,"document"):
+                      raise RuntimeError("ITEM_03_FAIL_HOST_PROBE_NOT_VERIFIED")
+                  if not TRACE.exists():
+                      raise RuntimeError("ITEM_03_FAIL_TRACE_NOT_INSTALLED")
+                  with TRACE.open("rb") as fh:
+                      if fh.seek(0,2)<offset:
+                          raise RuntimeError("ITEM_03_FAIL_TRACE_ROTATED")
+                      fh.seek(offset)
+                      fresh=fh.read().decode("utf-8",errors="replace")
+                  lines=[x for x in fresh.splitlines() if "CEP_CALLBACK_HANDLED" in x and "kind=complete" in x]
+                  print("ITEM_03_FRESH_CALLBACK_COUNT="+str(len(lines)),flush=True)
+                  if not lines:
+                      raise RuntimeError("ITEM_03_FAIL_NO_FRESH_COMPLETION")
+                  print("ITEM_03_PASS_TRUSTED_PROBE_AND_FRESH_CALLBACK",flush=True)
+
           asyncio.run(main())
-          '@ | Set-Content -LiteralPath one_probe.py -Encoding UTF8
-          uv run python one_probe.py
-          Start-Sleep -Seconds 2
-          $log=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\callback_trace.log'
-          if(-not(Test-Path $log)){throw 'CALLBACK_TRACE_LOG_MISSING'}
-          $hits=@(Get-Content -LiteralPath $log -Tail 100 -ErrorAction Stop)
-          foreach($line in ($hits | Select-Object -Last 60)){Write-Output "CALLBACK_TRACE_LINE $line"}
-          $events=@($hits|Where-Object {$_ -match 'CEP_CALLBACK|HOST_TRACE'})
-          Write-Output "CALLBACK_TRACE_EVENT_COUNT=$($events.Count)"
-          if($events.Count -lt 1){throw 'CALLBACK_TRACE_NO_REAL_EVENTS'}
-          Write-Output 'CALLBACK_LOG_ACCEPTANCE=PASS'
+          '@ | Set-Content -LiteralPath item03_live.py -Encoding UTF8
+          uv run python item03_live.py
+          if($LASTEXITCODE -ne 0){throw 'ITEM_03_LIVE_ACCEPTANCE_FAIL'}
