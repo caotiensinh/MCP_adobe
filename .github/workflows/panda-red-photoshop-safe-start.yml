@@ -35,7 +35,14 @@ jobs:
           if(-not $exe -or -not(Test-Path -LiteralPath $exe -PathType Leaf)){throw 'RED_PS_INSTALLED_EXECUTABLE_NOT_FOUND'}
           Write-Host "RED_PS_EXE_PRESENT=PASS path=$exe"
           if($existing.Count -eq 0){
-            $p=Start-Process -FilePath $exe -PassThru
+            # Without this, GitHub Runner.Worker cleanup terminates Photoshop at
+            # the end of every job, forcing a costly launch for each test.
+            $originalTrackingId=$env:RUNNER_TRACKING_ID
+            try{
+              $env:RUNNER_TRACKING_ID=''
+              $p=Start-Process -FilePath $exe -PassThru
+              Write-Host "RED_PS_DETACHED_FROM_RUNNER_TRACKING=PASS pid=$($p.Id)"
+            }finally{$env:RUNNER_TRACKING_ID=$originalTrackingId}
             Write-Host "RED_PS_START_REQUESTED_ONCE=PASS pid=$($p.Id)"
           }else{Write-Host "RED_PS_ALREADY_RUNNING=PASS count=$($existing.Count) no-relaunch"}
           $deadline=(Get-Date).AddSeconds(110)
