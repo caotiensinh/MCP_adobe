@@ -1,8 +1,5 @@
 name: Illustrator gateway upstream ownership
 on:
-  pull_request:
-    branches: [main]
-    paths: [".github/workflows/illustrator-upstream-ownership.yml"]
   workflow_dispatch:
 permissions:
   contents: read
