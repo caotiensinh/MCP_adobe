@@ -70,6 +70,21 @@ jobs:
               Write-Host "XD_HWND_UIA parentPid=$($owner.Id) children=$($children.Count) descendants=$($desc.Count)"
             }catch{Write-Host "XD_HWND_UIA_ERROR parentPid=$($owner.Id) class=$($_.Exception.GetType().Name)"}
           }
+          $actual=[System.Windows.Automation.AutomationElement]::FromHandle($xd[0].MainWindowHandle)
+          $all=$actual.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          Write-Host "XD_NATIVE_CONTENT_UIA_TOTAL=$($all.Count)"
+          $printed=0
+          for($i=0;$i -lt $all.Count;$i++){
+            $n=$all[$i]
+            $name=[string]$n.Current.Name
+            $id=[string]$n.Current.AutomationId
+            $type=[string]$n.Current.ControlType.ProgrammaticName
+            if($i -lt 50 -or $name -match 'File|New|Create|Untitled|Save|Home|Design|Artboard|Menu|Toolbar' -or $id -match 'File|New|Create|Save|Home'){
+              Write-Host "XD_NATIVE_CONTENT_CONTROL idx=$i type=$type name=$($name.Substring(0,[Math]::Min(90,$name.Length))) id=$($id.Substring(0,[Math]::Min(90,$id.Length))) enabled=$($n.Current.IsEnabled)"
+              $printed++
+            }
+            if($printed -ge 160){break}
+          }
           $source=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
           if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne '3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'){throw 'XD_HWND_SOURCE_CHANGED'}
           Write-Host 'XD_HWND_READ_ONLY_CENSUS=PASS original_unchanged=1'
