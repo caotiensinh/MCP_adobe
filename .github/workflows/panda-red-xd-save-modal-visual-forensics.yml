@@ -1,0 +1,104 @@
+name: Panda XD Save As blocking modal screenshot read-only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-save-modal-visual-forensics.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: PrintWindow exact small Save As modal only and report all of its UI controls
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_MODAL_WRONG_DESKTOP'}
+          Add-Type -AssemblyName System.Drawing
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;using System.Runtime.InteropServices;using System.Text;
+          public class XdModalCapture {
+            public delegate bool EnumProc(IntPtr h,IntPtr a);
+            [StructLayout(LayoutKind.Sequential)] public struct RECT {public int Left;public int Top;public int Right;public int Bottom;}
+            [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb,IntPtr arg);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h,StringBuilder b,int length);
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out RECT r);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+            [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h,IntPtr hdc,uint flags);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+          }
+          '@
+          $folder=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $orig=Join-Path $folder 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $target=Join-Path $folder 'MCP_KFP4_Red_XD_38205166138.xd'
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if((Get-FileHash -LiteralPath $orig -Algorithm SHA256).Hash -ne $sha){throw 'XD_MODAL_SOURCE_CHANGED'}
+          $picker=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          if($picker.Count -ne 1){throw 'XD_MODAL_PICKER_NOT_UNIQUE'}
+          $pickerId=[uint32]$picker[0].Id
+          $handles=New-Object System.Collections.Generic.List[System.IntPtr]
+          $callback=[XdModalCapture+EnumProc]{
+            param([IntPtr]$hwnd,[IntPtr]$arg)
+            $p=[uint32]0
+            [void][XdModalCapture]::GetWindowThreadProcessId($hwnd,[ref]$p)
+            $cls=New-Object System.Text.StringBuilder(80)
+            [void][XdModalCapture]::GetClassName($hwnd,$cls,80)
+            if($p -eq $pickerId -and $cls.ToString() -eq '#32770' -and [XdModalCapture]::IsWindowVisible($hwnd)){$handles.Add($hwnd)}
+            return $true
+          }
+          [void][XdModalCapture]::EnumWindows($callback,[IntPtr]::Zero)
+          $small=@()
+          foreach($hwnd in $handles){
+            $ui=[System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+            $items=$ui.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+            Write-Host "XD_MODAL_CANDIDATE hwnd=$hwnd title=$($ui.Current.Name) descendants=$($items.Count)"
+            if($items.Count -le 10 -and [string]$ui.Current.Name -eq 'Save As'){$small+=,$hwnd}
+          }
+          if($small.Count -ne 1){throw "XD_MODAL_NOT_UNIQUE count=$($small.Count)"}
+          $handle=[IntPtr]$small[0]
+          $el=[System.Windows.Automation.AutomationElement]::FromHandle($handle)
+          $items=$el.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          foreach($n in $items){
+            Write-Host "XD_MODAL_ELEMENT type=$($n.Current.ControlType.ProgrammaticName) name=$($n.Current.Name) id=$($n.Current.AutomationId) enabled=$($n.Current.IsEnabled)"
+          }
+          $rect=New-Object XdModalCapture+RECT
+          if(-not([XdModalCapture]::GetWindowRect($handle,[ref]$rect))){throw 'XD_MODAL_RECT_UNAVAILABLE'}
+          $width=$rect.Right-$rect.Left;$height=$rect.Bottom-$rect.Top
+          Write-Host "XD_MODAL_BOUNDS width=$width height=$height x=$($rect.Left) y=$($rect.Top) foreground=$([XdModalCapture]::GetForegroundWindow())"
+          if($width -lt 150 -or $height -lt 60 -or $width -gt 1800 -or $height -gt 1100){throw 'XD_MODAL_BOUNDS_UNEXPECTED'}
+          $output=Join-Path $env:RUNNER_TEMP 'xd_red_modal_evidence'
+          New-Item -ItemType Directory -Force -Path $output|Out-Null
+          $bitmap=New-Object System.Drawing.Bitmap($width,$height)
+          $graphics=[System.Drawing.Graphics]::FromImage($bitmap)
+          $hdc=[IntPtr]::Zero
+          try{
+            $hdc=$graphics.GetHdc()
+            $ok=[XdModalCapture]::PrintWindow($handle,$hdc,[uint32]0)
+            Write-Host "XD_MODAL_PRINTWINDOW_SUCCESS=$ok"
+          }finally{
+            if($hdc -ne [IntPtr]::Zero){$graphics.ReleaseHdc($hdc)}
+            $graphics.Dispose()
+          }
+          if(-not $ok){$bitmap.Dispose();throw 'XD_MODAL_PRINTWINDOW_FAILED'}
+          $image=Join-Path $output 'xd_save_as_blocking_dialog.png'
+          try{$bitmap.Save($image,[System.Drawing.Imaging.ImageFormat]::Png)}finally{$bitmap.Dispose()}
+          $bytes=(Get-Item -LiteralPath $image).Length
+          Write-Host "XD_MODAL_SCREENSHOT_CAPTURED bytes=$bytes targetExists=$(Test-Path -LiteralPath $target)"
+          if($bytes -lt 1400){throw 'XD_MODAL_CAPTURE_TOO_SMALL'}
+          if((Get-FileHash -LiteralPath $orig -Algorithm SHA256).Hash -ne $sha){throw 'XD_MODAL_ORIGINAL_CHANGED_AFTER_CAPTURE'}
+          Write-Host 'XD_MODAL_READONLY_EVIDENCE=PASS'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-red-xd-blocking-save-modal-image
+          path: ${{ runner.temp }}/xd_red_modal_evidence/xd_save_as_blocking_dialog.png
+          if-no-files-found: warn
+          retention-days: 14
