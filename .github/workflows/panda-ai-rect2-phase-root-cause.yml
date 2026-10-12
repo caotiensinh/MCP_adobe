@@ -1,0 +1,79 @@
+name: Panda Illustrator rect2 exact host phase root cause without replay
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-ai-rect2-phase-root-cause.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - name: Read exact retained job phases and current queue, zero host dispatch
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'RECT2_NOT_MRCAO'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json
+          from mcp import Client
+          JOB="job_3a2e6b7b4e61"
+          async def read(c,cap,arg):
+              r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"illustrator","capability":cap,"arguments":arg}),timeout=18)
+              p=r.structured_content or {}
+              if r.is_error or p.get("ok") is not True:raise RuntimeError("RECT2_NONHOST_READ_FAILED:"+cap)
+              return p["result"]
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  h=await read(c,"creative.health",{"probe":False,"timeout":5})
+                  d=(h.get("connection") or {}).get("data") or {}
+                  q=d.get("execution") or {}
+                  panel=(d.get("layers") or {}).get("panel") or {}
+                  if q.get("unresolvedJobs") not in ([],[JOB]):
+                      raise RuntimeError("RECT2_FOREIGN_FENCE_PRESENT")
+                  s=await read(c,"creative.job.status",{"jobId":JOB,"detail":"full"})
+                  job=((s.get("data") or {}).get("job") or {})
+                  j=(job.get("journal") or {})
+                  records=[]
+                  for i,x in enumerate(j.get("records") or []):
+                      integrity=x.get("integrity") or {}
+                      records.append({"ordinal":i+1,"kind":x.get("kind"),"command":x.get("command"),
+                        "readOnly":x.get("readOnly"),"execution":x.get("execution"),
+                        "integrity_status":integrity.get("status"),"integrity_reason":integrity.get("reason"),
+                        "transferBytes":(integrity.get("descriptor") or {}).get("byteLength"),
+                        "effects":x.get("effects"),"effectSteps":x.get("effectSteps"),
+                        "hostSession":x.get("hostSession"),"sequence":x.get("sequence")})
+                  output={"fence":q.get("unresolvedJobs"),"waiting":q.get("waiting"),
+                    "active":q.get("activeJob"),"panel_busy":panel.get("busy"),
+                    "job":{"jobId":job.get("jobId"),"status":job.get("status"),
+                      "error":job.get("error"),"label":job.get("label"),
+                      "outcomeSource":job.get("outcomeSource"),
+                      "journal_incomplete":j.get("incomplete")},"records":records}
+                  print("RECT2_PHASE_AUDIT="+json.dumps(output,default=str),flush=True)
+                  print("RECT2_NONHOST_SAFE=PASS no host evaluation",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\rect2_phases.py -Encoding UTF8
+          uv run --python 3.12 python .\rect2_phases.py
+          if($LASTEXITCODE -ne 0){throw 'RECT2_AUDIT_FAILED_NO_REPLAY'}
+      - name: Read only upstream callback phase trace, if available
+        shell: powershell
+        run: |
+          $f=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\callback_trace.log'
+          if(-not(Test-Path -LiteralPath $f)){Write-Host 'RECT2_TRACE_ABSENT';exit 0}
+          $lines=@(Get-Content -LiteralPath $f -Tail 280 -ErrorAction SilentlyContinue)
+          $matches=@($lines | Where-Object {$_ -match '2026-10-12 01:5[89]:|2026-10-12 02:0[01]:|CEP_CALLBACK|HOST_TRACE'})
+          foreach($x in ($matches|Select-Object -Last 55)){
+            $clean=([string]$x) -replace '(?i)(token|password|secret|authorization|api[_-]?key)\s*[:=]\s*[^\s,}]+','$1=[REDACTED]'
+            if($clean.Length -gt 490){$clean=$clean.Substring(0,490)}
+            Write-Host "RECT2_CALLBACK_TRACE=$clean"
+          }
+          Write-Host "RECT2_TRACE_COUNT=$($matches.Count)"
