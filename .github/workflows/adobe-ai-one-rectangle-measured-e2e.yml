@@ -1,0 +1,46 @@
+name: Adobe AI one rectangle measured MCP native E2E isolated
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/adobe-ai-one-rectangle-measured-e2e.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  rectangle:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert AI is only active Adobe application and no foreign Illustrator windows
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'AI_RECT_E2E_WRONG_SESSION'}
+          foreach($name in @('Photoshop','XD')){
+            if(@(Get-Process -Name $name -ErrorAction SilentlyContinue).Count -gt 0){throw "AI_RECT_E2E_PARALLEL_ADOBE_$name"}
+          }
+          $ai=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          if($ai.Count -ne 1 -or $ai[0].MainWindowHandle -eq 0){throw 'AI_RECT_E2E_ILLUSTRATOR_WINDOW_NOT_UNIQUE'}
+          Write-Host "AI_RECT_E2E_ONE_APP_READY=PASS pid=$($ai[0].Id) title=$($ai[0].MainWindowTitle)"
+          if($ai[0].MainWindowTitle -ne 'Adobe Illustrator 2023'){throw 'AI_RECT_E2E_FOREIGN_DOCUMENT_OR_WINDOW_PRESENT'}
+          Write-Host 'AI_RECT_E2E_SAFE_EMPTY_EDITOR=PASS'
+      - name: Create exactly one rectangle via real MCP and save distinct native AI with readback
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run --python 3.12 python scripts/adobe_ai_one_rectangle_measured_once.py
+          if($LASTEXITCODE -ne 0){throw 'AI_RECT_E2E_MCP_READBACK_OR_NATIVE_SAVE_NOT_VERIFIED_NO_REPLAY'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: adobe-serial-ai-one-rectangle-native-and-timings
+          path: ${{ runner.temp }}/single_rectangle_ai_artifact/*
+          retention-days: 14
+          if-no-files-found: warn
