@@ -15,6 +15,9 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          clean: false
+          persist-credentials: false
       - name: Invoke exact XD Connect once; worker count is advisory, document ownership mandatory
         shell: powershell
         run: |
