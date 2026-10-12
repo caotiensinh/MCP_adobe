@@ -1,0 +1,76 @@
+name: Panda Illustrator saved second vector offline PDF geometry evidence and immutable artifact
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-ai-native-second-vector-offline-validation.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  synthetic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.17'
+      - name: Validate negative and positive read-only geometry against actual synthetic PDFs
+        run: |
+          uv run --with pymupdf --python 3.12 python -m unittest tests.test_panda_illustrator_native_pdf_audit -v
+  native:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - name: Copy verified newly persisted AI checkpoint and source without Adobe interaction
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'RECT2_PDF_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $source=Join-Path $root 'MCP_KFP4_Red_AI_Fresh_38157335430.ai'
+          $target=Join-Path $root 'MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai'
+          $a='25D46AAACC766759D11C920872D9EE1CC26861A145826143161698E97CA14B77'
+          $b='EC6D2239B3547845C16C80997CA716F50FB8E5F4F5F3F8D57E85079581FA89A2'
+          if((Get-FileHash $source -Algorithm SHA256).Hash -ne $a){throw 'RECT2_PDF_ORIGINAL_SOURCE_DIVERGED'}
+          if((Get-FileHash $target -Algorithm SHA256).Hash -ne $b){throw 'RECT2_PDF_NATIVE_SAVED_CHECKPOINT_DIVERGED'}
+          $folder=Join-Path $PWD 'panda_ai_saved_two'
+          New-Item -ItemType Directory -Path $folder -Force|Out-Null
+          Copy-Item -LiteralPath $target -Destination (Join-Path $folder 'kung_fu_panda_red_illustrator_saved.ai') -ErrorAction Stop
+          if((Get-FileHash (Join-Path $folder 'kung_fu_panda_red_illustrator_saved.ai') -Algorithm SHA256).Hash -ne $b){
+            throw 'RECT2_PDF_COPIED_NATIVE_SHA_MISMATCH'
+          }
+          Write-Host "RECT2_PDF_NATIVE_FILE_PERSISTED=PASS bytes=$((Get-Item $target).Length) sha256=$b source_unchanged=1"
+      - name: Read PDF-compatible Illustrator vectors offline (no GUI or MCP writes)
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $source=Join-Path $root 'MCP_KFP4_Red_AI_Fresh_38157335430.ai'
+          $target=Join-Path $root 'MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai'
+          uv run --with pymupdf --python 3.12 python scripts/panda_illustrator_native_pdf_audit.py --source "$source" --target "$target" --output "panda_ai_saved_two/geometry_manifest.json"
+          if($LASTEXITCODE -ne 0){throw 'RECT2_PDF_AUDIT_FAILED_READONLY'}
+          @'
+          import json
+          from pathlib import Path
+          data=json.loads(Path("panda_ai_saved_two/geometry_manifest.json").read_text(encoding="utf8"))
+          summary=data.get("additional_vector_evidence") or {}
+          if summary.get("verified"):
+              import fitz
+              with fitz.open(str(Path.home()/"Documents"/"MCPAdobe"/"MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai")) as native:
+                  native[0].get_pixmap(matrix=fitz.Matrix(1,1),alpha=False).save("panda_ai_saved_two/illustrator_native_preview.png")
+              print("RECT2_PDF_PREVIEW=PASS geometry_verified=1",flush=True)
+          else:
+              print("RECT2_PDF_GEOMETRY=UNVERIFIED saved_file_still_preserved reason="+str(summary.get("reason")),flush=True)
+          '@ | Set-Content .\panda_ai_pdf_render.py -Encoding UTF8
+          uv run --with pymupdf --python 3.12 python .\panda_ai_pdf_render.py
+          if($LASTEXITCODE -ne 0){throw 'RECT2_PDF_RENDER_FAILED'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-illustrator-real-saved-native-two-vector-evidence
+          path: panda_ai_saved_two/*
+          if-no-files-found: error
+          retention-days: 14
