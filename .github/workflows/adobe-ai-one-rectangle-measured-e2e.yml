@@ -35,6 +35,21 @@ jobs:
             $taskName='MCPAdobe-Illustrator-Interactive'
             $task=Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
             if($task){
+              # Existing task is owned by a different Windows identity on this
+              # machine (verified MRCAO run 38249168772). Preserve it.
+              $priorActions=@($task.Actions)
+              if($priorActions.Count -ne 1 -or [string]$priorActions[0].Execute -ine $exe){
+                throw 'AI_RECT_E2E_EXISTING_TASK_UNEXPECTED_ACTION'
+              }
+              $oldPrincipal=[string]$task.Principal.UserId
+              $mySid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+              if($oldPrincipal -ine $user -and $oldPrincipal -ine $mySid){
+                Write-Host 'AI_RECT_E2E_FOREIGN_PRINCIPAL_TASK_PRESERVED=PASS'
+                $taskName='MCPAdobe-Rectangle-Illustrator-Session1'
+                $task=Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+              }
+            }
+            if($task){
               $taskActions=@($task.Actions)
               $taskExe=if($taskActions.Count -eq 1){[string]$taskActions[0].Execute}else{''}
               $taskOwner=[string]$task.Principal.UserId
