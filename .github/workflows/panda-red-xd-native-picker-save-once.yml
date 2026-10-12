@@ -110,7 +110,11 @@ jobs:
           }
           MustOwn $edit $pickerPid 'edit'
           if((WinClass $buttonHwnd) -ne 'Button'){throw 'RED_XD_SAVE_NATIVE_BUTTON_CLASS_NOT_BUTTON_NO_WRITE'}
-          if((WinText $buttonHwnd) -ne 'Save'){throw 'RED_XD_SAVE_NATIVE_BUTTON_LABEL_CHANGED_NO_WRITE'}
+          $nativeButtonLabel=WinText $buttonHwnd
+          if([string]$save[0].Current.Name -ne 'Save' -or [string]$save[0].Current.AutomationId -ne '1'){
+            throw 'RED_XD_SAVE_UIA_BUTTON_IDENTITY_CHANGED_NO_WRITE'
+          }
+          Write-Host "RED_XD_SAVE_BUTTON_UIA_VERIFIED=PASS nativeLabelLength=$($nativeButtonLabel.Length)"
           if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $original -or (Test-Path -LiteralPath $target)){throw 'RED_XD_SAVE_PREWRITE_GUARD_FAILED'}
           [void][RedXdNativeSave]::SendMessage($edit,[uint32]12,[IntPtr]::Zero,$target)
           Start-Sleep -Milliseconds 350
