@@ -71,7 +71,7 @@ jobs:
             $id=[XdPickerNativeEdit]::GetDlgCtrlID($h)
             $p=[XdPickerNativeEdit]::GetParent($h)
             $pClass=ClassOf $p
-            $pId=[XdPickerNativeEdit]::GetDlgCtrlID($p)
+            $parentControlId=[XdPickerNativeEdit]::GetDlgCtrlID($p)
             $owner=[uint32]0
             [void][XdPickerNativeEdit]::GetWindowThreadProcessId($h,[ref]$owner)
             if($owner -ne $targetPid){continue}
@@ -80,7 +80,7 @@ jobs:
             if($cls -match 'Edit|ComboBox|Button|Static' -or $id -in @(1,1090,1148,1152,1001)){
               $value=TextOf $h
               if($cls -notmatch 'Edit|ComboBox' -and $value.Length -gt 60){$value=$value.Substring(0,60)}
-              Write-Host "XD_EDIT_CENSUS_ITEM hwnd=$h id=$id class=$cls parent=$p parent_class=$pClass parent_id=$pId text=$value visible=$([XdPickerNativeEdit]::IsWindowVisible($h))"
+              Write-Host "XD_EDIT_CENSUS_ITEM hwnd=$h id=$id class=$cls parent=$p parent_class=$pClass parent_id=$parentControlId text=$value visible=$([XdPickerNativeEdit]::IsWindowVisible($h))"
             }
           }
           Write-Host "XD_EDIT_CENSUS_SUMMARY editCount=$edited comboCount=$combos"
