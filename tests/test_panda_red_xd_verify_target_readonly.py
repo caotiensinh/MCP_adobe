@@ -6,7 +6,14 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from scripts import panda_red_xd_verify_target_readonly as cli
+import importlib.util
+from pathlib import Path
+
+_cli_path = Path(__file__).resolve().parents[1] / "scripts" / "panda_red_xd_verify_target_readonly.py"
+_spec = importlib.util.spec_from_file_location("panda_red_xd_verify_target_readonly", _cli_path)
+assert _spec is not None and _spec.loader is not None
+cli = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(cli)
 from mcp_adobe.xd_red_poster_guard import XdRedGuardError
 
 NEW_DOC = "new-red-doc-pinned-id"
