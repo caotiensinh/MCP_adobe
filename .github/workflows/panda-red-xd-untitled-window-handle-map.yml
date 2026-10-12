@@ -1,0 +1,89 @@
+name: Panda XD map original and Untitled native CoreWindows without mutation
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-untitled-window-handle-map.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  read:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Correlate each XD.exe CoreWindow title and HWND with UWP app frames and focused element
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_HANDLES_WRONG_HOST'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;using System.Runtime.InteropServices;using System.Text;
+          public class XdHandles {
+            public delegate bool EnumProc(IntPtr hwnd,IntPtr unused);
+            [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc f,IntPtr unused);
+            [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent,EnumProc f,IntPtr unused);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h,StringBuilder s,int max);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h,StringBuilder s,int max);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out RECT r);
+            [StructLayout(LayoutKind.Sequential)] public struct RECT {public int L;public int T;public int R;public int B;}
+          }
+          '@
+          function Record([IntPtr]$hwnd,[string]$kind){
+            $p=[uint32]0
+            [void][XdHandles]::GetWindowThreadProcessId($hwnd,[ref]$p)
+            $cls=New-Object System.Text.StringBuilder(100)
+            $txt=New-Object System.Text.StringBuilder(180)
+            [void][XdHandles]::GetClassName($hwnd,$cls,100)
+            [void][XdHandles]::GetWindowText($hwnd,$txt,180)
+            $rect=New-Object XdHandles+RECT
+            [void][XdHandles]::GetWindowRect($hwnd,[ref]$rect)
+            Write-Host "XD_HANDLES_WINDOW kind=$kind hwnd=$hwnd pid=$p class=$($cls.ToString()) title=$($txt.ToString()) visible=$([XdHandles]::IsWindowVisible($hwnd)) rect=$($rect.L),$($rect.T),$($rect.R),$($rect.B)"
+            if($cls.ToString() -eq 'Windows.UI.Core.CoreWindow'){
+              $root=[System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+              $cond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'TitleText')
+              $titles=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$cond)
+              foreach($t in $titles){Write-Host "XD_HANDLES_CORE_TITLE hwnd=$hwnd name=$($t.Current.Name)"}
+              $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+              Write-Host "XD_HANDLES_CORE_CONTROLS hwnd=$hwnd count=$($all.Count)"
+            }
+          }
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          if($xd.Count -ne 1){throw 'XD_HANDLES_XD_PROC_COUNT'}
+          Write-Host "XD_HANDLES_XD_PROCESS pid=$($xd[0].Id) mainHwnd=$($xd[0].MainWindowHandle)"
+          $pidXD=[uint32]$xd[0].Id
+          $handles=New-Object System.Collections.Generic.List[System.IntPtr]
+          $callback=[XdHandles+EnumProc]{
+            param([IntPtr]$h,[IntPtr]$u)
+            $p=[uint32]0
+            [void][XdHandles]::GetWindowThreadProcessId($h,[ref]$p)
+            if($p -eq $pidXD){$handles.Add($h)}
+            return $true
+          }
+          [void][XdHandles]::EnumWindows($callback,[IntPtr]::Zero)
+          foreach($h in $handles){Record $h 'xd-top'}
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $tops=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          foreach($w in $tops){
+            $n=[string]$w.Current.Name
+            if($n -match 'Adobe XD$'){
+              $frameH=[IntPtr]$w.Current.NativeWindowHandle
+              Record $frameH 'appframe'
+              $children=New-Object System.Collections.Generic.List[System.IntPtr]
+              $child=[XdHandles+EnumProc]{param([IntPtr]$h,[IntPtr]$u); if($children.Count -lt 30){$children.Add($h)};return $true}
+              [void][XdHandles]::EnumChildWindows($frameH,$child,[IntPtr]::Zero)
+              foreach($childH in $children){Record $childH 'frame-child'}
+            }
+          }
+          $fg=[XdHandles]::GetForegroundWindow()
+          Record $fg 'foreground'
+          $file=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne '3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'){throw 'XD_HANDLES_SOURCE_CHANGED'}
+          Write-Host 'XD_HANDLES_READONLY=PASS'
