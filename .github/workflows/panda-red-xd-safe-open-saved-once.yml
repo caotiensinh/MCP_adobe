@@ -1,0 +1,76 @@
+name: Panda red XD open verified native draft once (no Adobe restart)
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-safe-open-saved-once.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  open_once:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Guard unique blank XD background host and open exact saved red native once
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_RED_OPEN_WRONG_HOST_SESSION'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $old=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $target=Join-Path $root 'MCP_KFP4_Red_XD_38205166138.xd'
+          $oldHash='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          $targetHash='58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'
+          if((Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash -ne $oldHash){throw 'XD_RED_OPEN_ORIGINAL_SOURCE_CHANGED'}
+          if((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $targetHash){throw 'XD_RED_OPEN_DRAFT_CHANGED'}
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1})
+          $frames=@(Get-Process -Name ApplicationFrameHost -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1})
+          $pickers=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1})
+          $ws=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "XD_RED_OPEN_PRECHECK xd=$($xd.Count) frames=$($frames.Count) pickers=$($pickers.Count) ws=$($ws.Count)"
+          if($xd.Count -ne 1 -or $xd[0].MainWindowHandle -ne 0 -or
+             $frames.Count -ne 0 -or $pickers.Count -ne 0 -or $ws.Count -ne 0){
+            throw 'XD_RED_OPEN_EXISTING_INTERACTIVE_OR_AMBIGUOUS_HOST_STOP'
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          function Get-AdobeWindows {
+            $top=[System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+              [System.Windows.Automation.TreeScope]::Children,
+              [System.Windows.Automation.Condition]::TrueCondition)
+            $arr=@()
+            foreach($w in $top){
+              $name=[string]$w.Current.Name
+              if($name -match 'Adobe XD|MCP_Mode1_Panda_XD|MCP_KFP4_Red_XD|Untitled'){ $arr+=,$name }
+            }
+            return @($arr)
+          }
+          $pre=@(Get-AdobeWindows)
+          if($pre.Count -gt 0){throw "XD_RED_OPEN_EXISTING_DOCUMENT_WINDOWS count=$($pre.Count)"}
+          Write-Host 'XD_RED_OPEN_GUARD=PASS; no existing interactive document windows; native hashes preserved'
+          Start-Process -FilePath $target -ErrorAction Stop
+          Write-Host 'XD_RED_OPEN_NATIVE_REQUEST=ONCE'
+          $deadline=(Get-Date).AddSeconds(55)
+          $found=$false
+          do{
+            Start-Sleep -Seconds 2
+            $titles=@(Get-AdobeWindows)
+            foreach($title in $titles){
+              if($title -match '^MCP_KFP4_Red_XD_38205166138.*Adobe XD$'){
+                Write-Host "XD_RED_OPEN_TARGET_WINDOW=$title";$found=$true
+              }else{Write-Host "XD_RED_OPEN_OTHER_WINDOW=$title"}
+            }
+            if($titles.Count -gt 1){throw 'XD_RED_OPEN_MULTIPLE_UNEXPECTED_WINDOWS_STOP'}
+          }until($found -or (Get-Date) -ge $deadline)
+          if((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $targetHash -or
+             (Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash -ne $oldHash){
+            throw 'XD_RED_OPEN_NATIVE_MUTATED_STOP'
+          }
+          Write-Host 'XD_RED_OPEN_NATIVE_HASHES_PRESERVED=PASS'
+          if(-not $found){throw 'XD_RED_OPEN_GUI_OWNERSHIP_UNKNOWN_NO_REPLAY'}
+          Write-Host 'XD_RED_OPEN_REAL_SAVED_DOCUMENT=PASS'
+          $connect=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "XD_RED_OPEN_WS_8765_ESTABLISHED=$($connect.Count)"
