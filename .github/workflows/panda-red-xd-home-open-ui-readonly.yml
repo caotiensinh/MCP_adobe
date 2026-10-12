@@ -25,13 +25,13 @@ jobs:
           Add-Type -AssemblyName UIAutomationTypes
           $root=[System.Windows.Automation.AutomationElement]::RootElement
           $windows=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
-          $home=@()
+          $xdHomeFrames=@()
           foreach($w in $windows){
-            if([string]$w.Current.Name -eq 'Adobe XD' -and [string]$w.Current.ClassName -eq 'ApplicationFrameWindow'){$home+=,$w}
+            if([string]$w.Current.Name -eq 'Adobe XD' -and [string]$w.Current.ClassName -eq 'ApplicationFrameWindow'){$xdHomeFrames+=,$w}
           }
-          Write-Host "XD_HOME_EXACT_FRAME_COUNT=$($home.Count)"
-          if($home.Count -ne 1){throw 'XD_HOME_FRAME_AMBIGUOUS_STOP'}
-          $win=$home[0]
+          Write-Host "XD_HOME_EXACT_FRAME_COUNT=$($xdHomeFrames.Count)"
+          if($xdHomeFrames.Count -ne 1){throw 'XD_HOME_FRAME_AMBIGUOUS_STOP'}
+          $win=$xdHomeFrames[0]
           $children=$win.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
           Write-Host "XD_HOME_FRAME_CHILDREN=$($children.Count)"
           foreach($child in $children){
