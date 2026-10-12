@@ -39,11 +39,11 @@ jobs:
             [void][XdFinalSave]::GetClassName($h,$b,100)
             return $b.ToString()
           }
-          function MustOwn([IntPtr]$h,[uint32]$pid,[string]$label){
+          function MustOwn([IntPtr]$h,[uint32]$expectedOwnerId,[string]$label){
             if($h -eq [IntPtr]::Zero){throw "XD_FINAL_MISSING_$label"}
             $p=[uint32]0
             [void][XdFinalSave]::GetWindowThreadProcessId($h,[ref]$p)
-            if($p -ne $pid){throw "XD_FINAL_FOREIGN_OWNER_$label"}
+            if($p -ne $expectedOwnerId){throw "XD_FINAL_FOREIGN_OWNER_$label"}
           }
           $dir=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
           $source=Join-Path $dir 'MCP_Mode1_Panda_XD_38136531800.xd'
