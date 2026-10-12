@@ -63,11 +63,37 @@ if($xd.MainWindowTitle -ne 'Adobe XD'){
   throw 'XD_BOOTSTRAP_UNEXPECTED_EXISTING_DOCUMENT_REFUSE_NEW'
 }
 Focus-Xd $xd
-$root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
+# Live MRCAO evidence run 38250963810: Create exists under the unique
+# ApplicationFrameWindow > Windows.UI.Core.CoreWindow, not reliably beneath
+# Get-Process.MainWindowHandle on first Home render. Wait for exact UIA tree.
+$desktop=[System.Windows.Automation.AutomationElement]::RootElement
 $cond=New-Object System.Windows.Automation.PropertyCondition(
   [System.Windows.Automation.AutomationElement]::AutomationIdProperty,'sidebar-work--create')
-$button=$root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$cond)
-if(-not $button){throw 'XD_BOOTSTRAP_HOME_CREATE_CONTROL_MISSING'}
+$button=$null
+$deadline=(Get-Date).AddSeconds(35)
+do {
+  $tops=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,
+    [System.Windows.Automation.Condition]::TrueCondition)
+  $frames=@($tops|Where-Object{[string]$_.Current.Name -eq 'Adobe XD' -and
+    [string]$_.Current.ClassName -eq 'ApplicationFrameWindow'})
+  if($frames.Count -gt 1){throw 'XD_BOOTSTRAP_MULTIPLE_HOME_WINDOWS'}
+  if($frames.Count -eq 1){
+    $children=$frames[0].FindAll([System.Windows.Automation.TreeScope]::Children,
+      [System.Windows.Automation.Condition]::TrueCondition)
+    $cores=@($children|Where-Object{[string]$_.Current.ClassName -eq 'Windows.UI.Core.CoreWindow'})
+    if($cores.Count -gt 1){throw 'XD_BOOTSTRAP_AMBIGUOUS_COREWINDOW'}
+    if($cores.Count -eq 1){
+      $buttons=$cores[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,$cond)
+      if($buttons.Count -gt 1){throw 'XD_BOOTSTRAP_MULTIPLE_CREATE_CONTROLS'}
+      if($buttons.Count -eq 1 -and
+          $buttons[0].Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and
+          $buttons[0].Current.IsEnabled){$button=$buttons[0];break}
+    }
+  }
+  Start-Sleep -Milliseconds 500
+}until((Get-Date)-ge $deadline)
+if(-not $button){throw 'XD_BOOTSTRAP_HOME_CREATE_NOT_READY_NO_CLICK'}
+Write-Host 'XD_BOOTSTRAP_EXACT_HOME_CREATE_VERIFIED=PASS'
 try{
   $invoke=$button.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
   $invoke.Invoke()
