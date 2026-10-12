@@ -48,6 +48,23 @@ jobs:
           }
           Start-Sleep -Milliseconds 400
           $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          Write-Host "XD_CORE_MENU_DESCENDANTS_AFTER_EXPAND=$($all.Count)"
+          $printed=0
+          for($i=0;$i -lt $all.Count;$i++){
+            $node=$all[$i]
+            $name=[string]$node.Current.Name;$ident=[string]$node.Current.AutomationId
+            $type=[string]$node.Current.ControlType.ProgrammaticName
+            if($i -lt 30 -or $name -match 'New|Create|Document|Recent|Save|Open|Local' -or $ident -match 'New|Create|Document|Save|Open'){
+              Write-Host "XD_CORE_MENU_NODE index=$i type=$type name=$($name.Substring(0,[Math]::Min($name.Length,90))) id=$($ident.Substring(0,[Math]::Min($ident.Length,90)))"
+              $printed++
+            }
+            if($printed -ge 120){break}
+          }
+          $fileChildren=$file.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          Write-Host "XD_CORE_MENU_FILE_SUBTREE_COUNT=$($fileChildren.Count)"
+          foreach($node in $fileChildren){
+            Write-Host "XD_CORE_MENU_FILE_CHILD name=$($node.Current.Name) id=$($node.Current.AutomationId) type=$($node.Current.ControlType.ProgrammaticName)"
+          }
           $menus=@($all|Where-Object{$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'})
           Write-Host "XD_CORE_MENU_TOTAL_ITEMS=$($menus.Count)"
           foreach($item in $menus){
