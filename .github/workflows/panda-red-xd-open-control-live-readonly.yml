@@ -1,0 +1,65 @@
+name: Panda red XD exact live Home Open control discovery read only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-open-control-live-readonly.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Enumerate actual Adobe XD CoreWindow Open file controls no UI input
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_OPEN_UI_WRONG_SESSION'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          foreach($pair in @(
+            @('MCP_Mode1_Panda_XD_38136531800.xd','3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'),
+            @('MCP_KFP4_Red_XD_38205166138.xd','58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'))) {
+            if((Get-FileHash -LiteralPath (Join-Path $root $pair[0]) -Algorithm SHA256).Hash -ne $pair[1]){throw 'XD_OPEN_UI_NATIVE_CHANGED'}
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $frames=@($top|Where-Object{[string]$_.Current.Name -eq 'Adobe XD' -and [string]$_.Current.ClassName -eq 'ApplicationFrameWindow'})
+          $others=@($top|Where-Object{[string]$_.Current.Name -match 'MCP_Mode1_Panda_XD|MCP_KFP4_Red_XD|Untitled|Save As'})
+          $pickers=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})
+          Write-Host "XD_OPEN_UI_FRAME_COUNT=$($frames.Count) others=$($others.Count) pickers=$($pickers.Count)"
+          if($frames.Count -ne 1 -or $others.Count -ne 0 -or $pickers.Count -ne 0){throw 'XD_OPEN_UI_AMBIGUOUS_DESKTOP'}
+          $children=$frames[0].FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $cores=@($children|Where-Object{[string]$_.Current.ClassName -eq 'Windows.UI.Core.CoreWindow'})
+          Write-Host "XD_OPEN_UI_CORE_COUNT=$($cores.Count)"
+          if($cores.Count -ne 1){throw 'XD_OPEN_UI_CORE_NOT_UNIQUE'}
+          $core=$cores[0]
+          $nodes=$core.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          Write-Host "XD_OPEN_UI_TOTAL_DESCENDANTS=$($nodes.Count)"
+          $matchCount=0
+          for($index=0;$index -lt $nodes.Count;$index++){
+            $node=$nodes[$index]
+            try{
+              $name=[string]$node.Current.Name;$id=[string]$node.Current.AutomationId
+              $type=[string]$node.Current.ControlType.ProgrammaticName
+              $isCandidate=($name -match '(?i)open|local|browse|recent|ファイル|開く|MCP_KFP4|MCPAdobe|file' -or
+                  $id -match '(?i)open|local|browse|recent|file|work--open')
+              if($isCandidate){$matchCount++}
+              if(($index -lt 80 -or $isCandidate) -and $index -lt 1200){
+                $shortName=$name.Substring(0,[Math]::Min($name.Length,120))
+                $shortId=$id.Substring(0,[Math]::Min($id.Length,120))
+                Write-Host "XD_OPEN_UI_NODE index=$index type=$type name=$shortName id=$shortId enabled=$($node.Current.IsEnabled) candidate=$isCandidate"
+              }
+            }catch{}
+          }
+          Write-Host "XD_OPEN_UI_CANDIDATE_COUNT=$matchCount"
+          foreach($port in @(8765)){
+            $estab=@(Get-NetTCPConnection -LocalPort $port -State Established -ErrorAction SilentlyContinue)
+            Write-Host "XD_OPEN_UI_PLUGIN_WS_ESTABLISHED=$($estab.Count)"
+          }
+          Write-Host 'XD_OPEN_UI_INSPECT_DONE_NO_CLICK=PASS'
