@@ -1,0 +1,70 @@
+name: Panda 2026-10-12 MRCAO live read-only host census
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-20261012-mrcao-live-readonly-census.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  census:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect live desktop, bridge ports and immutable Adobe source SHA without touching any app
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO') { throw 'CENSUS_WRONG_HOST' }
+          $session = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          Write-Host "CENSUS_HOST=MRCAO runner_session=$session"
+          if($session -ne 1) { throw 'CENSUS_WRONG_SESSION_NO_GUI_ACTION' }
+          $names = @('XD','Illustrator','Photoshop','CEPHtmlEngine','ApplicationFrameHost','PickerHost')
+          foreach($name in $names) {
+            $processes = @(Get-Process -Name $name -ErrorAction SilentlyContinue)
+            Write-Host "CENSUS_PROCESS_COUNT name=$name count=$($processes.Count)"
+            foreach($p in $processes) {
+              Write-Host "CENSUS_PROCESS name=$name pid=$($p.Id) session=$($p.SessionId) window_handle=$($p.MainWindowHandle) responding=$($p.Responding)"
+            }
+          }
+          try {
+            Add-Type -AssemblyName UIAutomationClient
+            Add-Type -AssemblyName UIAutomationTypes
+            $uiRoot = [System.Windows.Automation.AutomationElement]::RootElement
+            $top = $uiRoot.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+            foreach($w in $top) {
+              $title = [string]$w.Current.Name
+              if($title -match 'Adobe|Illustrator|Photoshop|Save As|Kung Fu|MCP_KFP4|Panda') {
+                Write-Host "CENSUS_WINDOW title=$title pid=$($w.Current.ProcessId) type=$($w.Current.ControlType.ProgrammaticName)"
+              }
+            }
+          } catch {
+            Write-Host "CENSUS_UIA_ERROR type=$($_.Exception.GetType().Name) message=$($_.Exception.Message)"
+          }
+          foreach($port in @(8787,8765,8081)) {
+            $listeners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+            $connected = @(Get-NetTCPConnection -LocalPort $port -State Established -ErrorAction SilentlyContinue)
+            $owners = @($listeners | ForEach-Object { $_.OwningProcess })
+            Write-Host "CENSUS_PORT port=$port listen=$($listeners.Count) established=$($connected.Count) owner_pids=$($owners -join ',')"
+          }
+          $root = Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $checks = @(
+            @{file='MCP_Mode1_Panda_XD_38136531800.xd'; sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'},
+            @{file='MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai'; sha='EC6D2239B3547845C16C80997CA716F50FB8E5F4F5F3F8D57E85079581FA89A2'},
+            @{file='rect2_before_uia_save_38194275753\source_before.ai'; sha='25D46AAACC766759D11C920872D9EE1CC26861A145826143161698E97CA14B77'}
+          )
+          foreach($check in $checks) {
+            $file = Join-Path $root $check.file
+            if(-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              Write-Host "CENSUS_NATIVE file=$($check.file) status=MISSING"
+              continue
+            }
+            $actual = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+            $bytes = (Get-Item -LiteralPath $file).Length
+            $status = if($actual -eq $check.sha) { 'MATCH' } else { 'DIVERGED' }
+            Write-Host "CENSUS_NATIVE file=$($check.file) status=$status sha256=$actual bytes=$bytes"
+          }
+          Write-Host 'CENSUS_READ_ONLY_COMPLETE=PASS'
