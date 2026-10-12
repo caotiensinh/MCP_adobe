@@ -1,0 +1,74 @@
+name: Panda Illustrator live CEP C014 fence read-only census no Git checkout
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-20261012-illustrator-readonly-fence-census.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  census:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Check real Illustrator host and immutable native checkpoint before MCP read
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'AI_READ_WRONG_SESSION'}
+          $native=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai'
+          if((Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash -ne 'EC6D2239B3547845C16C80997CA716F50FB8E5F4F5F3F8D57E85079581FA89A2'){throw 'AI_READ_NATIVE_SHA_CHANGED'}
+          $ai=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+          $cep=@(Get-Process -Name CEPHtmlEngine -ErrorAction SilentlyContinue)
+          $ws=@(Get-NetTCPConnection -LocalPort 8081 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "AI_READ_PROCESS_CENSUS ai_gui=$($ai.Count) cep=$($cep.Count) ws=$($ws.Count)"
+          if($ai.Count -ne 1 -or $ws.Count -lt 1){throw 'AI_READ_HOST_NOT_READY_NO_HOST_CALL'}
+      - name: Read actual gateway Illustrator passive health and C014 fence without probe or writes
+        shell: powershell
+        env:
+          UV_LINK_MODE: copy
+          PYTHONUTF8: '1'
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $py=Join-Path $env:RUNNER_TEMP 'panda_ai_passive_fence_probe.py'
+          @'
+          import asyncio,json,time,hashlib,os
+          from pathlib import Path
+          from mcp import Client
+          PATH=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"/"MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai"
+          SHA="ec6d2239b3547845c16c80997ca716f50fb8e5f4f5f3f8d57e85079581fa89a2"
+          def verify():
+              if hashlib.sha256(PATH.read_bytes()).hexdigest()!=SHA:
+                  raise RuntimeError("AI_READ_IMMUTABLE_CHECKPOINT_CHANGED")
+          async def main():
+              verify()
+              t=time.perf_counter()
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await asyncio.wait_for(c.call_tool("creative_read",{
+                    "application":"illustrator","capability":"creative.health",
+                    "arguments":{"probe":False,"timeout":6}}),timeout=17)
+              ms=round((time.perf_counter()-t)*1000,2)
+              p=r.structured_content or {}
+              d=((p.get("result") or {}).get("connection") or {}).get("data") or {}
+              panel=(d.get("layers") or {}).get("panel") or {}
+              execu=d.get("execution") or {}
+              result={"transport_ok":not r.is_error,"gateway_ok":p.get("ok"),
+                      "latency_ms":ms,"ready":d.get("ready"),"blocked_at":d.get("blockedAt"),
+                      "panel_status":panel.get("status"),"panel_busy":panel.get("busy"),
+                      "active_request":panel.get("activeRequestId"),
+                      "waiting":execu.get("waiting"),"active_job":execu.get("activeJob"),
+                      "unresolved_jobs":execu.get("unresolvedJobs"),"recovery":d.get("recovery")}
+              verify()
+              print("AI_READ_ONLY_C014_LIVE_STATUS="+json.dumps(result,default=str,ensure_ascii=False)[:9000],flush=True)
+              if r.is_error or p.get("ok") is not True:raise RuntimeError("AI_READ_PASSIVE_HEALTH_TOOL_ERROR")
+              if panel.get("busy") is True or execu.get("unresolvedJobs") or execu.get("activeJob"):
+                  print("AI_READ_HOST_MUTATION_NOT_AUTHORIZED=TRUE",flush=True)
+              print("AI_READ_ONLY_HOST_HEALTH_RECEIVED=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath $py -Encoding UTF8
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python "$py"
+          if($LASTEXITCODE -ne 0){throw 'AI_READ_ONLY_HEALTH_FAILED_DO_NOT_RETRY'}
