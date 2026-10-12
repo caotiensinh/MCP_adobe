@@ -1,0 +1,70 @@
+name: Panda AI post unknown save disk readback and exact fenced job inspection
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-ai-post-unknown-save-disk-readback.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - name: Inspect native file and live process without opening, saving or calling host
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'RECT2_DISK_WRONG_HOST'}
+          $folder=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          foreach($filename in @('MCP_KFP4_Red_AI_Fresh_38157335430.ai','MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai')){
+            $p=Join-Path $folder $filename
+            if(-not(Test-Path $p -PathType Leaf)){throw 'RECT2_DISK_NATIVE_MISSING'}
+            $file=Get-Item $p
+            Write-Host "RECT2_DISK_CHECK name=$filename sha256=$((Get-FileHash $p -Algorithm SHA256).Hash) bytes=$($file.Length) modifiedUTC=$($file.LastWriteTimeUtc.ToString('o'))"
+          }
+          foreach($name in @('Illustrator','XD','Photoshop')){
+            foreach($p in @(Get-Process -Name $name -ErrorAction SilentlyContinue)){
+              Write-Host "RECT2_DISK_GUI name=$name pid=$($p.Id) responding=$($p.Responding) title=$($p.MainWindowTitle)"
+            }
+          }
+          $trace=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\callback_trace.log'
+          if(Test-Path $trace){
+            foreach($l in @(Get-Content $trace -Tail 12)){
+              $v=([string]$l) -replace '(?i)(token|password|secret|authorization|api[_-]?key)\s*[:=]\s*[^\s,}]+','$1=[REDACTED]'
+              Write-Host "RECT2_DISK_TRACE=$v"
+            }
+          }
+          Write-Host 'RECT2_DISK_ONLY_AUDIT=PASS'
+      - name: Read coordinator status without dispatching host evaluation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":False,"timeout":5}}),timeout=18)
+                  p=r.structured_content or {}
+                  if r.is_error or p.get("ok") is not True:raise RuntimeError("RECT2_DISK_HEALTH_UNAVAILABLE")
+                  d=((p.get("result") or {}).get("connection") or {}).get("data") or {}
+                  q=d.get("execution") or {}
+                  print("RECT2_DISK_FENCE="+json.dumps({"ids":q.get("unresolvedJobs"),"active":q.get("activeJob"),
+                    "waiting":q.get("waiting"),"panel":(d.get("layers") or {}).get("panel")},default=str),flush=True)
+                  for id in q.get("unresolvedJobs") or []:
+                      s=await asyncio.wait_for(c.call_tool("creative_read",{"application":"illustrator","capability":"creative.job.status","arguments":{"jobId":id,"detail":"full"}}),timeout=18)
+                      job=((((s.structured_content or {}).get("result") or {}).get("data") or {}).get("job") or {})
+                      print("RECT2_DISK_UNKNOWN="+json.dumps({"id":id,"status":job.get("status"),
+                        "label":job.get("label"),"error":job.get("error"),"outcomeSource":job.get("outcomeSource")},default=str),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\rect2_disk_only.py -Encoding UTF8
+          uv run --python 3.12 python .\rect2_disk_only.py
+          if($LASTEXITCODE -ne 0){throw 'RECT2_DISK_STATE_UNKNOWN'}
