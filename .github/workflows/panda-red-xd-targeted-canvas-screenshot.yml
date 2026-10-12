@@ -1,0 +1,77 @@
+name: Panda red XD current saved 880x700 editor window visual acceptance screenshot
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-targeted-canvas-screenshot.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  capture:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Screenshot ONLY owned red XD editor frame without document edits
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_RED_SCREEN_WRONG_SESSION'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          foreach($pair in @(
+            @('MCP_Mode1_Panda_XD_38136531800.xd','3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'),
+            @('MCP_KFP4_Red_XD_38205166138.xd','58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'))) {
+            if((Get-FileHash -LiteralPath (Join-Path $root $pair[0]) -Algorithm SHA256).Hash -ne $pair[1]){throw 'XD_RED_SCREEN_NATIVE_CHANGED'}
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -AssemblyName System.Drawing
+          Add-Type @'
+          using System;using System.Runtime.InteropServices;
+          public static class RedXdScreen {
+            [StructLayout(LayoutKind.Sequential)] public struct RECT {public int Left;public int Top;public int Right;public int Bottom;}
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out RECT rect);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+          }
+          '@
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $red=@($top|Where-Object{[string]$_.Current.Name -match '^MCP_KFP4_Red_XD_38205166138.*Adobe XD$' -and [string]$_.Current.ClassName -eq 'ApplicationFrameWindow'})
+          $picker=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          if($red.Count -ne 1 -or $picker.Count -ne 0){throw 'XD_RED_SCREEN_TARGET_OR_PICKER_AMBIGUOUS'}
+          $hwnd=[IntPtr]$red[0].Current.NativeWindowHandle
+          [void][RedXdScreen]::SetForegroundWindow($hwnd)
+          Start-Sleep -Milliseconds 550
+          if([RedXdScreen]::GetForegroundWindow() -ne $hwnd){throw 'XD_RED_SCREEN_NOT_FOREGROUND_NO_CAPTURE'}
+          $rect=New-Object RedXdScreen+RECT
+          if(-not [RedXdScreen]::GetWindowRect($hwnd,[ref]$rect)){throw 'XD_RED_SCREEN_RECT_MISSING'}
+          $width=$rect.Right-$rect.Left;$height=$rect.Bottom-$rect.Top
+          if($width -lt 600 -or $height -lt 500 -or $width -gt 4000 -or $height -gt 3000){throw 'XD_RED_SCREEN_FRAME_SIZE_OUT_OF_BOUNDS'}
+          $out=Join-Path $env:RUNNER_TEMP 'panda_red_xd_canvas_snapshot'
+          New-Item -Path $out -ItemType Directory -Force|Out-Null
+          $path=Join-Path $out 'red_xd_live_editor_window.png'
+          $bmp=New-Object System.Drawing.Bitmap($width,$height)
+          $g=[System.Drawing.Graphics]::FromImage($bmp)
+          try{
+            $g.CopyFromScreen($rect.Left,$rect.Top,0,0,(New-Object System.Drawing.Size($width,$height)))
+            $bmp.Save($path,[System.Drawing.Imaging.ImageFormat]::Png)
+          }finally{$g.Dispose();$bmp.Dispose()}
+          $size=(Get-Item -LiteralPath $path).Length
+          if($size -lt 6000){throw 'XD_RED_SCREEN_SNAPSHOT_TOO_SMALL'}
+          Write-Host "XD_RED_SCREEN_CAPTURE=PASS left=$($rect.Left) top=$($rect.Top) width=$width height=$height bytes=$size"
+          Write-Host "XD_RED_SCREEN_IMAGE_SHA256=$((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash)"
+          foreach($pair in @(
+            @('MCP_Mode1_Panda_XD_38136531800.xd','3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'),
+            @('MCP_KFP4_Red_XD_38205166138.xd','58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'))) {
+            if((Get-FileHash -LiteralPath (Join-Path $root $pair[0]) -Algorithm SHA256).Hash -ne $pair[1]){throw 'XD_RED_SCREEN_NATIVE_CHANGED_AFTER'}
+          }
+          Write-Host 'XD_RED_SCREEN_NATIVE_PRESERVED=PASS'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-red-xd-actual-editor-window
+          path: ${{ runner.temp }}/panda_red_xd_canvas_snapshot/red_xd_live_editor_window.png
+          if-no-files-found: warn
+          retention-days: 14
