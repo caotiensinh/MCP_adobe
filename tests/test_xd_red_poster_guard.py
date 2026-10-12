@@ -9,7 +9,7 @@ import pytest
 from mcp_adobe import xd_red_poster_guard as guard
 
 
-DOC = "red-880x700-pinned-uuid"
+DOC = guard.NEW_DOCUMENT_ID
 OLD = guard.OLD_DOCUMENT_ID
 
 
@@ -20,7 +20,7 @@ def states():
         "complete": True,
         "document_id": DOC,
         "nodes": [{
-            "id": "red-artboard-id",
+            "id": guard.NEW_ARTBOARD_ID,
             "type": "Artboard",
             "bounds": {"left": 0, "top": 0, "right": 880, "bottom": 700},
             "children": [],
@@ -44,7 +44,7 @@ def test_correct_pinned_new_empty_artboard_passes():
     assert result == {
         "ready_for_first_write": True,
         "document_id": DOC,
-        "artboard_id": "red-artboard-id",
+        "artboard_id": guard.NEW_ARTBOARD_ID,
         "width": 880,
         "height": 700,
         "pending_count": 0,
@@ -139,3 +139,75 @@ def test_native_sha_guards_both_source_and_red_draft(tmp_path, monkeypatch):
     dst.unlink()
     with pytest.raises(guard.XdRedGuardError, match="FILE_MISSING"):
         guard.verify_native_files(tmp_path)
+
+
+def adobe_v57_native_live_states():
+    """Recorded real XD bridge shape from MRCAO run 38232233337."""
+    health, _flat, scene = states()
+    document = {
+        "rootChildren": 1,
+        "insertionParent": {
+            "guid": DOC,
+            "name": None,
+            "type": "RootNode",
+            "visible": True,
+            "bounds": {"x": 0, "y": 0, "width": 880, "height": 700},
+        },
+        "insertionParentChildren": [{
+            "guid": guard.NEW_ARTBOARD_ID,
+            "name": "SPRK_default_preset_name_custom – 1",
+            "type": "Artboard",
+            "visible": True,
+            "bounds": {"x": 0, "y": 0, "width": 880, "height": 700},
+        }],
+    }
+    return health, document, scene
+
+
+def test_actual_adobe_v57_nested_document_root_matches_saved_native():
+    health, document, scene = adobe_v57_native_live_states()
+    proof = verify(health, document, scene)
+    assert proof["ready_for_first_write"] is True
+    assert proof["document_id"] == guard.NEW_DOCUMENT_ID
+    assert proof["artboard_id"] == guard.NEW_ARTBOARD_ID
+
+
+@pytest.mark.parametrize("mutation", [
+    "other_root_guid", "conflicting_direct_id", "root_wrong_type",
+    "wrong_child_count", "wrong_child_guid", "wrong_child_type",
+    "root_width_wrong", "child_height_wrong", "child_bounds_nan",
+    "missing_child_bounds",
+])
+def test_actual_adobe_v57_inconsistent_identity_and_bounds_rejected(mutation):
+    health, document, scene = adobe_v57_native_live_states()
+    root = document["insertionParent"]
+    child = document["insertionParentChildren"][0]
+    if mutation == "other_root_guid":
+        root["guid"] = "untrusted-other-open-document"
+    elif mutation == "conflicting_direct_id":
+        document["id"] = "another-document-id"
+    elif mutation == "root_wrong_type":
+        root["type"] = "Artboard"
+    elif mutation == "wrong_child_count":
+        document["rootChildren"] = 2
+    elif mutation == "wrong_child_guid":
+        child["guid"] = "wrong-artboard"
+    elif mutation == "wrong_child_type":
+        child["type"] = "Rectangle"
+    elif mutation == "root_width_wrong":
+        root["bounds"]["width"] = 881
+    elif mutation == "child_height_wrong":
+        child["bounds"]["height"] = 699
+    elif mutation == "child_bounds_nan":
+        child["bounds"]["x"] = float("nan")
+    elif mutation == "missing_child_bounds":
+        child["bounds"] = None
+    with pytest.raises(guard.XdRedGuardError):
+        verify(health, document, scene)
+
+
+def test_correct_doc_wrong_native_artboard_guid_refused():
+    health, document, scene = adobe_v57_native_live_states()
+    scene["nodes"][0]["id"] = "fake-but-identical-880x700-artboard"
+    with pytest.raises(guard.XdRedGuardError, match="NATIVE_ARTBOARD_ID_MISMATCH"):
+        verify(health, document, scene)
