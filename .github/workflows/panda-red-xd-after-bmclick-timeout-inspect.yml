@@ -63,6 +63,24 @@ jobs:
             }
             [void][XdPostTimeout]::EnumWindows($cb,[IntPtr]::Zero)
             Write-Host "XD_POST_TIMEOUT_DIALOGS=$($list.Count)"
+            foreach($dialogHandle in $list){
+              $item=[System.Windows.Automation.AutomationElement]::FromHandle($dialogHandle)
+              Write-Host "XD_POST_TIMEOUT_DIALOG hwnd=$dialogHandle title=$($item.Current.Name) class=$($item.Current.ClassName) pid=$($item.Current.ProcessId)"
+              $allNodes=$item.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+              Write-Host "XD_POST_TIMEOUT_DIALOG_ELEMENTS hwnd=$dialogHandle count=$($allNodes.Count)"
+              $shown=0
+              foreach($element in $allNodes){
+                $label=[string]$element.Current.Name
+                $ident=[string]$element.Current.AutomationId
+                $type=[string]$element.Current.ControlType.ProgrammaticName
+                if($label -match 'Save|Cancel|Confirm|Replace|Already|exists|Yes|No|Untitled|File name|Error|Retry|OK' -or $ident -match '^1$|^2$|1001|FileName'){
+                  Write-Host "XD_POST_TIMEOUT_DIALOG_CONTROL dialog=$dialogHandle type=$type name=$($label.Substring(0,[Math]::Min(120,$label.Length))) id=$ident enabled=$($element.Current.IsEnabled)"
+                  $shown++
+                }
+                if($shown -ge 45){break}
+              }
+            }
+
             if($list.Count -eq 1){
               $dialog=[System.Windows.Automation.AutomationElement]::FromHandle($list[0])
               $all=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
