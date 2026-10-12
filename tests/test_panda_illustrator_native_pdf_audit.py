@@ -23,14 +23,14 @@ class NativeIllustratorGeometryTests(unittest.TestCase):
     def tearDown(self):
         self.folder.cleanup()
 
-    def _make_pdf(self, second):
+    def _make_pdf(self, path, second):
         fitz = self.fitz
         doc = fitz.open()
         page = doc.new_page(width=880, height=1265)
         page.draw_rect(fitz.Rect(0, 0, 880, 1265), color=None, fill=(.74, 0, 0))
         if second:
             page.draw_rect(fitz.Rect(0, 0, 880, 700), color=None, fill=(.96, .18, .03))
-        doc.save(str(self.two if second else self.base))
+        doc.save(str(path))
         doc.close()
 
     def test_real_persisted_second_rectangle_detected(self):
