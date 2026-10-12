@@ -1,0 +1,76 @@
+name: Adobe Illustrator rectangle post launch process and host ownership passive reconcile
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/adobe-ai-rectangle-postlaunch-host-passive-reconcile.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  observe:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: See if first Illustrator start created delayed windows, never restart or mutate
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'AI_RECT_OBSERVE_WRONG_SESSION'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $ai=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue)
+          $ps=@(Get-Process -Name Photoshop -ErrorAction SilentlyContinue)
+          Write-Host "AI_RECT_LATE_APP_COUNTS illustrator=$($ai.Count) xd=$($xd.Count) photoshop=$($ps.Count)"
+          foreach($p in $ai){
+            Write-Host "AI_RECT_LATE_PROCESS pid=$($p.Id) session=$($p.SessionId) responding=$($p.Responding) hwnd=$($p.MainWindowHandle) title=$($p.MainWindowTitle) start_utc=$($p.StartTime.ToUniversalTime().ToString('o'))"
+          }
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          foreach($w in $top){
+            $name=[string]$w.Current.Name
+            if($name -match 'Illustrator|Adobe|Plugin|Error|警告|Missing|Recovery|Welcome'){
+              Write-Host "AI_RECT_LATE_WINDOW title=$name class=$($w.Current.ClassName) pid=$($w.Current.ProcessId) hwnd=$($w.Current.NativeWindowHandle)"
+            }
+          }
+          foreach($port in @(8787,8081,8765)){
+            $list=@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+            $est=@(Get-NetTCPConnection -LocalPort $port -State Established -ErrorAction SilentlyContinue)
+            Write-Host "AI_RECT_LATE_SOCKET port=$port listening=$($list.Count) established=$($est.Count)"
+          }
+          Write-Host 'AI_RECT_LATE_NO_HOST_MUTATION=PASS'
+      - name: Read one Illustrator MCP health status without trusted probe or job operations
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $py=Join-Path $env:RUNNER_TEMP 'ai_one_rect_late_health.py'
+          @'
+          import asyncio,json,time
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  t=time.perf_counter()
+                  r=await asyncio.wait_for(c.call_tool("creative_read",{
+                    "application":"illustrator","capability":"creative.health",
+                    "arguments":{"probe":False,"timeout":5}}),timeout=10)
+                  payload=r.structured_content or {}
+                  data=((payload.get("result") or {}).get("connection") or {}).get("data") or {}
+                  exe=data.get("execution") or {}
+                  print("AI_RECT_LATE_HEALTH="+json.dumps({
+                    "elapsed_ms":round((time.perf_counter()-t)*1000,2),
+                    "ok":payload.get("ok"),"is_error":r.is_error,
+                    "ready":data.get("ready"),"blockedAt":data.get("blockedAt"),
+                    "unresolvedJobs":exe.get("unresolvedJobs"),
+                    "panel":(data.get("layers") or {}).get("panel"),
+                    "illustrator":(data.get("layers") or {}).get("illustrator")
+                  },default=str)[:3000],flush=True)
+          try:asyncio.run(main())
+          except Exception as e:print("AI_RECT_LATE_HEALTH_UNKNOWN="+type(e).__name__+":"+str(e)[:120],flush=True)
+          '@ | Set-Content -LiteralPath $py -Encoding UTF8
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python $py
+          if($LASTEXITCODE -ne 0){throw 'AI_RECT_HEALTH_DIAG_TOOL_ERROR'}
