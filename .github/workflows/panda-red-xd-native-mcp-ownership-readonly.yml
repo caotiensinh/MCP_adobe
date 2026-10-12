@@ -1,0 +1,91 @@
+name: Panda red XD new native checkpoint and live MCP document ownership
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-native-mcp-ownership-readonly.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  readback:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Native file checksum and current XD UI windows, no mutation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RED_XD_OWNER_WRONG_DESKTOP'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $source=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $target=Join-Path $root 'MCP_KFP4_Red_XD_38205166138.xd'
+          $orig='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          $new='58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $orig){throw 'RED_XD_OWNER_SOURCE_CHANGED'}
+          if(-not (Test-Path -LiteralPath $target -PathType Leaf)){throw 'RED_XD_OWNER_NEW_FILE_MISSING'}
+          $actual=(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+          if($actual -ne $new){throw 'RED_XD_OWNER_NEW_FILE_CHANGED_BEFORE_WORK'}
+          $archive=[System.IO.Compression.ZipFile]::OpenRead($target)
+          try{
+            $names=@($archive.Entries|ForEach-Object {$_.FullName})
+            Write-Host "RED_XD_OWNER_NATIVE_ARCHIVE entries=$($names.Count) bytes=$((Get-Item $target).Length) sha=$actual"
+            foreach($name in $names){Write-Host "RED_XD_OWNER_ARCHIVE_ENTRY=$name"}
+          }finally{$archive.Dispose()}
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          foreach($w in $top){
+            $title=[string]$w.Current.Name
+            if($title -match 'Adobe XD|Save As|MCP_KFP4|Untitled'){
+              Write-Host "RED_XD_OWNER_WINDOW title=$title pid=$($w.Current.ProcessId) class=$($w.Current.ClassName)"
+            }
+          }
+          $pickers=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1})
+          Write-Host "RED_XD_OWNER_PICKER_COUNT=$($pickers.Count)"
+          if($pickers.Count -ne 0){throw 'RED_XD_OWNER_PICKER_PRESENT_REFUSE_WRITES'}
+          Write-Host 'RED_XD_OWNER_NATIVE_READBACK=PASS'
+      - name: Read real XD MCP health and scenegraph without changing queue or document
+        shell: powershell
+        env:
+          UV_LINK_MODE: copy
+          PYTHONUTF8: '1'
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $py=Join-Path $env:RUNNER_TEMP 'panda_red_xd_mcp_owner_readonly.py'
+          @'
+          import asyncio,json,hashlib,os
+          from pathlib import Path
+          from mcp import Client
+          root=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"
+          src=root/"MCP_Mode1_Panda_XD_38136531800.xd"
+          dst=root/"MCP_KFP4_Red_XD_38205166138.xd"
+          old="3a10e1510abc41eccd4485d6f852ea6ced7acc2cf50109e7c1bd123353589ed1"
+          new="58966788cf369885c2395ce217d6e0443ed57bcd7f40bd550b2f3a24c2b5b831"
+          def check():
+              if hashlib.sha256(src.read_bytes()).hexdigest()!=old:raise RuntimeError("RED_OWNER_SOURCE_MUTATED")
+              if hashlib.sha256(dst.read_bytes()).hexdigest()!=new:raise RuntimeError("RED_OWNER_NEW_NATIVE_MUTATED")
+          async def main():
+              check()
+              async with Client("http://127.0.0.1:8787/mcp") as client:
+                  for cap in ("creative.health","creative.document.info","creative.scenegraph.list"):
+                      try:
+                          r=await asyncio.wait_for(client.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=14)
+                          data=r.structured_content or {}
+                          result=data.get("result") or {}
+                          print("RED_XD_OWNER_LIVE_READ="+json.dumps({"cap":cap,"is_error":r.is_error,"ok":data.get("ok"),"result":result},default=str)[:13000],flush=True)
+                          if r.is_error or data.get("ok") is not True:raise RuntimeError("RED_OWNER_MCP_READ_FAILED_"+cap)
+                      except Exception as exc:
+                          print("RED_XD_OWNER_MCP_EXCEPTION="+cap+" "+str(exc)[:250],flush=True)
+                          raise
+              check()
+              print("RED_XD_OWNER_READONLY_COMPLETED=PASS",flush=True)
+          asyncio.run(main())
+          '@|Set-Content -LiteralPath $py -Encoding UTF8
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python "$py"
+          if($LASTEXITCODE -ne 0){throw 'RED_XD_OWNER_MCP_NOT_VERIFIED'}
