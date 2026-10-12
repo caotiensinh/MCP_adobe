@@ -1,0 +1,21 @@
+name: Panda Illustrator offline PDF geometry contract unit regression
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-ai-native-pdf-parser-unit.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  synthetic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.17'
+      - name: Validate real synthetic PDF geometries and checksum refusal
+        run: |
+          uv run --with pymupdf --python 3.12 python -m py_compile scripts/panda_illustrator_native_pdf_audit.py tests/test_panda_illustrator_native_pdf_audit.py
+          uv run --with pymupdf --python 3.12 python -m unittest tests.test_panda_illustrator_native_pdf_audit -v
