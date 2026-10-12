@@ -1,0 +1,96 @@
+name: Panda red XD staged live MCP ownership diagnostics with durable logs
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-mcp-staged-diagnostics.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Inspect runner Python runtime and gateway listening without writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Host "RED_MCP_DIAG_HOST=$env:COMPUTERNAME SESSION=$([Diagnostics.Process]::GetCurrentProcess().SessionId)"
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RED_MCP_DIAG_NOT_MRCAO'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv --version
+          if($LASTEXITCODE -ne 0){throw 'RED_MCP_DIAG_UV_MISSING'}
+          $ports=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+          Write-Host "RED_MCP_DIAG_PORT_8787_LISTEN=$($ports.Count)"
+          if($ports.Count -lt 1){throw 'RED_MCP_DIAG_GATEWAY_NOT_LISTENING'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $old=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $new=Join-Path $root 'MCP_KFP4_Red_XD_38205166138.xd'
+          if((Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash -ne '3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'){throw 'RED_MCP_DIAG_OLD_SOURCE_CHANGED'}
+          if((Get-FileHash -LiteralPath $new -Algorithm SHA256).Hash -ne '58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'){throw 'RED_MCP_DIAG_NEW_SOURCE_CHANGED'}
+          Write-Host 'RED_MCP_DIAG_NATIVE_CHECKSUMS=PASS'
+      - name: Dump bounded diagnostics for each MCP read, never mutate XD
+        shell: powershell
+        env:
+          UV_LINK_MODE: copy
+          PYTHONUTF8: '1'
+        run: |
+          $ErrorActionPreference='Continue'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $out=Join-Path $env:RUNNER_TEMP 'red_xd_diagnostics'
+          New-Item -ItemType Directory -Path $out -Force|Out-Null
+          $py=Join-Path $out 'readback.py'
+          @'
+          import asyncio,json,os,time,traceback
+          from pathlib import Path
+          from mcp import Client
+          OUT=Path(os.environ["RUNNER_TEMP"])/"red_xd_diagnostics"/"stages.jsonl"
+          def record(label, **fields):
+              data={"stage":label,"at":time.time(),**fields}
+              with OUT.open("a", encoding="utf-8") as fh:
+                  fh.write(json.dumps(data,ensure_ascii=True,default=str)+"\n")
+              print("RED_MCP_DIAG="+json.dumps(data,default=str)[:6000],flush=True)
+          async def main():
+              record("client_connect_begin")
+              async with asyncio.timeout(38):
+                  async with Client("http://127.0.0.1:8787/mcp") as c:
+                      record("client_connected")
+                      for cap in ("creative.health","creative.document.info","creative.scenegraph.list"):
+                          start=time.perf_counter()
+                          record("read_begin",cap=cap)
+                          try:
+                              result=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=10)
+                              d=result.structured_content or {}
+                              data=d.get("result") or {}
+                              overview={"bridge":data.get("bridge"),"pending_count":data.get("pending_count"),
+                              "document_id":data.get("document_id"),"complete":data.get("complete"),
+                              "nodes":len(data.get("nodes") or []),"application":data.get("application")}
+                              record("read_end",cap=cap,latency_ms=round((time.perf_counter()-start)*1000,1),
+                                is_error=result.is_error,ok=d.get("ok"),overview=overview)
+                              if result.is_error or d.get("ok") is not True:
+                                  raise RuntimeError("RED_MCP_DIAG_CAPABILITY_FAILED "+cap+" "+str(result.content)[:200])
+                          except Exception as e:
+                              record("read_failed",cap=cap,type=type(e).__name__,reason=str(e)[:400])
+                              raise
+                      record("all_reads_passed")
+          try:
+              asyncio.run(main())
+          except Exception as e:
+              record("fatal",error_type=type(e).__name__,message=str(e)[:600],trace=traceback.format_exc()[-2800:])
+              raise
+          '@|Set-Content -LiteralPath $py -Encoding UTF8
+          Write-Host 'RED_MCP_DIAG_UV_START'
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python "$py" 2>&1 | Tee-Object -FilePath (Join-Path $out 'uv_stdout.txt')
+          $exit=$LASTEXITCODE
+          Write-Host "RED_MCP_DIAG_UV_EXIT_CODE=$exit"
+          if($exit -ne 0){throw 'RED_MCP_DIAG_COMMAND_FAILED'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-red-xd-mcp-staged-readonly-evidence
+          path: ${{ runner.temp }}/red_xd_diagnostics/*
+          if-no-files-found: warn
+          retention-days: 14
