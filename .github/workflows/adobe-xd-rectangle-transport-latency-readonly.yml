@@ -1,0 +1,80 @@
+name: Adobe XD one rectangle benchmark transport health and scenegraph timings
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/adobe-xd-rectangle-transport-latency-readonly.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  xd_timings:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Probe XD MCP 10x timings, no mutations or app switches
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_TIMING_WRONG_SESSION'}
+          if(@(Get-Process -Name Illustrator,Photoshop -ErrorAction SilentlyContinue).Count -ne 0){throw 'XD_TIMING_SERIAL_APP_VIOLATION'}
+          if(@(Get-Process -Name XD -ErrorAction SilentlyContinue).Count -ne 1){throw 'XD_TIMING_XD_PROCESS_NOT_UNIQUE'}
+          $out=Join-Path $env:RUNNER_TEMP 'adobe_xd_rect_transport_latency'
+          New-Item -ItemType Directory -Force -Path $out |Out-Null
+          $py=Join-Path $out 'timing.py'
+          @'
+          import asyncio, json, os, statistics, time
+          from pathlib import Path
+          from mcp import Client
+          from mcp_adobe.xd_red_poster_guard import verify_native_files
+          root=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"
+          report=Path(os.environ["RUNNER_TEMP"])/"adobe_xd_rect_transport_latency"/"measured.json"
+          async def main():
+              proof=verify_native_files(root)
+              rows=[]
+              async with Client("http://127.0.0.1:8787/mcp") as client:
+                  for cap in ("creative.health","creative.document.info","creative.scenegraph.list"):
+                      for sample in range(10):
+                          start=time.perf_counter_ns()
+                          raw=await asyncio.wait_for(client.call_tool("creative_read",{
+                              "application":"xd","capability":cap,"arguments":{}}),timeout=8)
+                          elapsed=(time.perf_counter_ns()-start)/1e6
+                          data=raw.structured_content or {}
+                          result=data.get("result") or {}
+                          rows.append({"capability":cap,"n":sample+1,"ms":round(elapsed,3),
+                              "ok":data.get("ok") is True and not raw.is_error,
+                              "pending_count":result.get("pending_count"),
+                              "document_id":result.get("document_id") or
+                                  (result.get("insertionParent") or {}).get("guid"),
+                              "nodes":len(result.get("nodes") or [])})
+                          if raw.is_error or data.get("ok") is not True:
+                              raise RuntimeError("XD_TIMING_READ_FAILED "+cap+" n="+str(sample))
+                  print("XD_RECT_LATENCY_DID_NOT_QUEUE_SHAPES=TRUE",flush=True)
+              if verify_native_files(root)!=proof:raise RuntimeError("XD_TIMING_NATIVE_CHANGED")
+              summary={}
+              for cap in ("creative.health","creative.document.info","creative.scenegraph.list"):
+                  values=sorted(x["ms"] for x in rows if x["capability"]==cap)
+                  summary[cap]={"samples":len(values),"p50_ms":round(statistics.median(values),3),
+                                "p95_ms":values[9],"min_ms":values[0],"max_ms":values[-1]}
+              result={"application":"xd","test":"one-rectangle-readiness-transport-only",
+                  "rectangle_created":False,"bridge_and_readback_metrics_ms":summary,
+                  "last_document_id":rows[-1]["document_id"],
+                  "last_artboards":rows[-1]["nodes"],"native_sha_guard":True,"rows":rows}
+              report.write_text(json.dumps(result,indent=2),encoding="utf-8")
+              print("XD_RECT_TRANSPORT_TIMINGS="+json.dumps({k:v for k,v in result.items() if k!="rows"}),flush=True)
+          asyncio.run(main())
+          '@|Set-Content -LiteralPath $py -Encoding UTF8
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run --python 3.12 python $py
+          if($LASTEXITCODE -ne 0){throw 'XD_TIMING_PROBE_FAILED'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xd-rect-transport-timing-30-readbacks
+          path: ${{ runner.temp }}/adobe_xd_rect_transport_latency/measured.json
+          retention-days: 14
+          if-no-files-found: warn
