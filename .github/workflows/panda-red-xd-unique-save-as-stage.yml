@@ -1,0 +1,69 @@
+name: Panda red XD staged Save As for unique 880x700 draft
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-unique-save-as-stage.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Invoke Save As Local once only on unique Untitled XD and inspect Windows picker
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RED_XD_STAGE_WRONG_DESKTOP'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type @'
+          using System;using System.Runtime.InteropServices;
+          public class RedXdSaveStage {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+          }
+          '@
+          $base=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $source=Join-Path $base 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $destination=Join-Path $base 'MCP_KFP4_Red_XD_38205166138.xd'
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $sha){throw 'RED_XD_STAGE_SOURCE_DIVERGED'}
+          if(Test-Path -LiteralPath $destination){throw 'RED_XD_STAGE_TARGET_EXISTS_STOP'}
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $tops=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $drafts=@($tops|Where-Object{[string]$_.Current.Name -match '^Untitled.*Adobe XD$' -and [string]$_.Current.ClassName -eq 'ApplicationFrameWindow'})
+          $old=@($tops|Where-Object{[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+          $picker=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          Write-Host "RED_XD_SAVE_STAGE_PREFLIGHT draft=$($drafts.Count) original=$($old.Count) picker=$($picker.Count)"
+          if($drafts.Count -ne 1 -or $old.Count -ne 1 -or $picker.Count -ne 0){throw 'RED_XD_STAGE_AMBIGUOUS_OR_DIALOG_PRESENT_NO_SHORTCUT'}
+          $handle=[IntPtr]$drafts[0].Current.NativeWindowHandle
+          if($handle -eq [IntPtr]::Zero){throw 'RED_XD_STAGE_DRAFT_HWND_MISSING'}
+          [void][RedXdSaveStage]::SetForegroundWindow($handle)
+          Start-Sleep -Milliseconds 550
+          if([RedXdSaveStage]::GetForegroundWindow() -ne $handle){throw 'RED_XD_STAGE_DRAFT_NOT_FOREGROUND_NO_INPUT'}
+          [System.Windows.Forms.SendKeys]::SendWait('^%+s')
+          Write-Host 'RED_XD_SAVE_AS_LOCAL_SHORTCUT_SENT_ONCE=PASS'
+          $deadline=(Get-Date).AddSeconds(35)
+          $found=@()
+          do{
+            Start-Sleep -Milliseconds 650
+            $tops=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+            $found=@($tops|Where-Object{
+              [string]$_.Current.Name -match 'Save As|Save a File|Save Local' -or
+              [string]$_.Current.ClassName -eq '#32770'
+            })
+            if($found.Count -gt 0){break}
+          }until((Get-Date)-ge $deadline)
+          foreach($dlg in $found){Write-Host "RED_XD_STAGE_DIALOG title=$($dlg.Current.Name) class=$($dlg.Current.ClassName) pid=$($dlg.Current.ProcessId)"}
+          $picker=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          Write-Host "RED_XD_STAGE_PICKER_COUNT=$($picker.Count)"
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $sha){throw 'RED_XD_STAGE_SOURCE_MODIFIED'}
+          if($found.Count -eq 0){throw 'RED_XD_STAGE_SAVE_DIALOG_NOT_OBSERVED_NO_REPLAY'}
+          Write-Host 'RED_XD_STAGE_SAVE_DIALOG_VISIBLE=PASS original_unchanged=1'
