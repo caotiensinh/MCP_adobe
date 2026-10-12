@@ -35,6 +35,11 @@ jobs:
             $taskName='MCPAdobe-Illustrator-Interactive'
             $task=Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
             if($task){
+              $taskActions=@($task.Actions)
+              $taskExe=if($taskActions.Count -eq 1){[string]$taskActions[0].Execute}else{''}
+              $taskOwner=[string]$task.Principal.UserId
+              $currentSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+              Write-Host "AI_RECT_TASK_AUDIT action_count=$($taskActions.Count) exe_match=$($taskExe -ieq $exe) owner_name_match=$($taskOwner -ieq $user) owner_sid_match=$($taskOwner -ieq $currentSid) logon=$($task.Principal.LogonType)"
               if(@($task.Actions).Count -ne 1 -or $task.Actions[0].Execute -ine $exe -or
                  $task.Principal.UserId -ine $user){
                 throw 'AI_RECT_E2E_PERSISTENT_TASK_COLLISION_NO_START'
