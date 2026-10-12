@@ -1,0 +1,75 @@
+name: Panda XD native child HWND and actual GUI focus inspection read only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-20261012-xd-native-window-hwnd-census.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  census:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Identify actual XD.exe native content HWND without sending any UI input
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_HWND_WRONG_DESKTOP'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          using System.Text;
+          public class XdHwndCensus {
+            public delegate bool EnumProc(IntPtr hWnd,IntPtr lParam);
+            [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent, EnumProc callback, IntPtr value);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd,out uint pid);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hWnd,StringBuilder s,int max);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd,StringBuilder s,int max);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+          }
+          '@
+          function Meta([IntPtr]$h) {
+            $pidValue=[uint32]0
+            [void][XdHwndCensus]::GetWindowThreadProcessId($h,[ref]$pidValue)
+            $cls=New-Object System.Text.StringBuilder(256)
+            $txt=New-Object System.Text.StringBuilder(256)
+            [void][XdHwndCensus]::GetClassName($h,$cls,256)
+            [void][XdHwndCensus]::GetWindowText($h,$txt,256)
+            return "hwnd=$h pid=$pidValue class=$($cls.ToString()) visible=$([XdHwndCensus]::IsWindowVisible($h)) title=$($txt.ToString())"
+          }
+          $frame=@(Get-Process -Name ApplicationFrameHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1 -and $_.MainWindowTitle -match 'MCP_Mode1_Panda_XD_38136531800'})
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          if($frame.Count -ne 1 -or $xd.Count -ne 1){throw "XD_HWND_OWNER_AMBIGUOUS frame=$($frame.Count) xd=$($xd.Count)"}
+          Write-Host "XD_HWND_FRAME=$(Meta $frame[0].MainWindowHandle)"
+          Write-Host "XD_HWND_PROCESS=$(Meta $xd[0].MainWindowHandle)"
+          $foreground=[XdHwndCensus]::GetForegroundWindow()
+          Write-Host "XD_HWND_FOREGROUND=$(Meta $foreground)"
+          foreach($owner in @($frame[0],$xd[0])){
+            $handle=$owner.MainWindowHandle
+            if($handle -eq [IntPtr]::Zero){continue}
+            $observed=New-Object System.Collections.Generic.List[string]
+            $callback=[XdHwndCensus+EnumProc]{
+              param([IntPtr]$child,[IntPtr]$ignored)
+              if($observed.Count -lt 80){$observed.Add((Meta $child))}
+              return $true
+            }
+            [void][XdHwndCensus]::EnumChildWindows($handle,$callback,[IntPtr]::Zero)
+            Write-Host "XD_HWND_CHILDREN parentPid=$($owner.Id) sampled=$($observed.Count)"
+            foreach($item in $observed){Write-Host "XD_HWND_CHILD $item"}
+            try{
+              $uia=[System.Windows.Automation.AutomationElement]::FromHandle($handle)
+              $children=$uia.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+              $desc=$uia.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+              Write-Host "XD_HWND_UIA parentPid=$($owner.Id) children=$($children.Count) descendants=$($desc.Count)"
+            }catch{Write-Host "XD_HWND_UIA_ERROR parentPid=$($owner.Id) class=$($_.Exception.GetType().Name)"}
+          }
+          $source=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne '3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'){throw 'XD_HWND_SOURCE_CHANGED'}
+          Write-Host 'XD_HWND_READ_ONLY_CENSUS=PASS original_unchanged=1'
