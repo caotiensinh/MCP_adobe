@@ -83,9 +83,9 @@ jobs:
           $elements=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
           $filename=@($elements|Where-Object{[string]$_.Current.AutomationId -eq '1001' -and [string]$_.Current.Name -eq 'Untitled-1.xd'})
           $save=@($elements|Where-Object{[string]$_.Current.AutomationId -eq '1' -and [string]$_.Current.Name -eq 'Save' -and $_.Current.IsEnabled})
-          $host=@($elements|Where-Object{[string]$_.Current.AutomationId -eq 'FileNameControlHost'})
-          Write-Host "RED_XD_NATIVE_SAVE_CONTROLS filename=$($filename.Count) save=$($save.Count) host=$($host.Count)"
-          if($filename.Count -ne 1 -or $save.Count -ne 1 -or $host.Count -ne 1){throw 'RED_XD_SAVE_CONTROL_AMBIGUITY'}
+          $filenameHost=@($elements|Where-Object{[string]$_.Current.AutomationId -eq 'FileNameControlHost'})
+          Write-Host "RED_XD_NATIVE_SAVE_CONTROLS filename=$($filename.Count) save=$($save.Count) host=$($filenameHost.Count)"
+          if($filename.Count -ne 1 -or $save.Count -ne 1 -or $filenameHost.Count -ne 1){throw 'RED_XD_SAVE_CONTROL_AMBIGUITY'}
           $fileHandle=[IntPtr]$filename[0].Current.NativeWindowHandle
           $buttonHwnd=[IntPtr]$save[0].Current.NativeWindowHandle
           MustOwn $dialogHwnd $pickerPid 'dialog'
@@ -129,10 +129,16 @@ jobs:
             $count=$archive.Entries.Count
           }finally{$archive.Dispose()}
           Write-Host "RED_XD_NATIVE_FILE_PERSISTED=PASS bytes=$($second.Length) sha256=$sha entries=$count original_unchanged=1 target=$target"
+          $artifactDir=Join-Path $env:RUNNER_TEMP 'panda_red_xd_native_artifact'
+          New-Item -ItemType Directory -Path $artifactDir -Force|Out-Null
+          $proof=Join-Path $artifactDir 'MCP_KFP4_Red_XD_38205166138.xd'
+          Copy-Item -LiteralPath $target -Destination $proof -ErrorAction Stop
+          if((Get-FileHash -LiteralPath $proof -Algorithm SHA256).Hash -ne $sha){throw 'RED_XD_SAVE_ARTIFACT_CHECKSUM_MISMATCH'}
+          Write-Host 'RED_XD_SAVE_ARTIFACT_COPY_VERIFIED=PASS'
       - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: panda-red-xd-38205166138-native
-          path: C:/Users/MRCAO/Documents/MCPAdobe/MCP_KFP4_Red_XD_38205166138.xd
+          path: ${{ runner.temp }}/panda_red_xd_native_artifact/MCP_KFP4_Red_XD_38205166138.xd
           if-no-files-found: warn
           retention-days: 14
