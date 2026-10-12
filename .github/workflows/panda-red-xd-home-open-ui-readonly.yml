@@ -1,0 +1,58 @@
+name: Panda red XD Home exact local file Open UIA read-only census
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-home-open-ui-readonly.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  census:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Find exact XD Home Open controls; never invoke or click
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_HOME_WRONG_SESSION'}
+          $native=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_KFP4_Red_XD_38205166138.xd'
+          if((Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash -ne '58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'){throw 'XD_HOME_NATIVE_CHANGED'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $windows=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $home=@()
+          foreach($w in $windows){
+            if([string]$w.Current.Name -eq 'Adobe XD' -and [string]$w.Current.ClassName -eq 'ApplicationFrameWindow'){$home+=,$w}
+          }
+          Write-Host "XD_HOME_EXACT_FRAME_COUNT=$($home.Count)"
+          if($home.Count -ne 1){throw 'XD_HOME_FRAME_AMBIGUOUS_STOP'}
+          $win=$home[0]
+          $children=$win.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          Write-Host "XD_HOME_FRAME_CHILDREN=$($children.Count)"
+          foreach($child in $children){
+            Write-Host "XD_HOME_CHILD class=$($child.Current.ClassName) pid=$($child.Current.ProcessId) title=$($child.Current.Name)"
+            if($child.Current.ClassName -ne 'Windows.UI.Core.CoreWindow'){continue}
+            $buttons=$child.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+            Write-Host "XD_HOME_CORE_DESCENDANTS=$($buttons.Count)"
+            $hits=0
+            foreach($node in $buttons){
+              if($hits -ge 80){break}
+              try{
+                $name=[string]$node.Current.Name
+                $id=[string]$node.Current.AutomationId
+                $type=[string]$node.Current.ControlType.ProgrammaticName
+                if($name -match '(?i)open|local|browse|recent|MCP_KFP4|MCPAdobe|ファイル|開く' -or
+                   $id -match '(?i)open|local|browse|recent'){
+                  $hits++
+                  Write-Host "XD_HOME_CANDIDATE name=$name id=$id type=$type enabled=$($node.Current.IsEnabled)"
+                }
+              }catch{}
+            }
+            Write-Host "XD_HOME_CANDIDATE_COUNT=$hits"
+          }
+          Write-Host 'XD_HOME_CENSUS_NO_GUI_INPUT=PASS'
