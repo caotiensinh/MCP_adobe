@@ -1,0 +1,129 @@
+name: Panda red XD verified existing filename click native Save once
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-verified-picker-click-save-only.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  finalize:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Read exact existing native filename; BM_CLICK Save once; verify native XD archive and source hash
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RED_XD_FINAL_WRONG_DESKTOP'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          Add-Type @'
+          using System;using System.Runtime.InteropServices;using System.Text;
+          public class XdFinalSave {
+            public delegate bool EnumProc(IntPtr h,IntPtr arg);
+            [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb,IntPtr arg);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h,StringBuilder s,int len);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h,uint m,IntPtr w,StringBuilder buf);
+            [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
+          }
+          '@
+          function ClassOf([IntPtr]$h){
+            $b=New-Object System.Text.StringBuilder(100)
+            [void][XdFinalSave]::GetClassName($h,$b,100)
+            return $b.ToString()
+          }
+          function MustOwn([IntPtr]$h,[uint32]$pid,[string]$label){
+            if($h -eq [IntPtr]::Zero){throw "XD_FINAL_MISSING_$label"}
+            $p=[uint32]0
+            [void][XdFinalSave]::GetWindowThreadProcessId($h,[ref]$p)
+            if($p -ne $pid){throw "XD_FINAL_FOREIGN_OWNER_$label"}
+          }
+          $dir=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $source=Join-Path $dir 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $target=Join-Path $dir 'MCP_KFP4_Red_XD_38205166138.xd'
+          $original='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $original){throw 'XD_FINAL_SOURCE_CHANGED'}
+          if(Test-Path -LiteralPath $target){throw 'XD_FINAL_TARGET_ALREADY_EXISTS_RECONCILE_NO_CLICK'}
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $drafts=@($top|Where-Object{[string]$_.Current.Name -match '^Untitled-1.*Adobe XD$'})
+          $old=@($top|Where-Object{[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+          $picker=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          Write-Host "XD_FINAL_PREFLIGHT draft=$($drafts.Count) source=$($old.Count) picker=$($picker.Count)"
+          if($drafts.Count -ne 1 -or $old.Count -ne 1 -or $picker.Count -ne 1){throw 'XD_FINAL_DESKTOP_NOT_EXCLUSIVE'}
+          $pickerPid=[uint32]$picker[0].Id
+          $dialogs=New-Object System.Collections.Generic.List[System.IntPtr]
+          $cb=[XdFinalSave+EnumProc]{
+            param([IntPtr]$h,[IntPtr]$arg)
+            $pidValue=[uint32]0
+            [void][XdFinalSave]::GetWindowThreadProcessId($h,[ref]$pidValue)
+            if($pidValue -eq $pickerPid -and (ClassOf $h) -eq '#32770' -and [XdFinalSave]::IsWindowVisible($h)){$dialogs.Add($h)}
+            return $true
+          }
+          [void][XdFinalSave]::EnumWindows($cb,[IntPtr]::Zero)
+          if($dialogs.Count -ne 1){throw 'XD_FINAL_DIALOG_NOT_UNIQUE'}
+          $dialog=[System.Windows.Automation.AutomationElement]::FromHandle($dialogs[0])
+          if([string]$dialog.Current.Name -ne 'Save As'){throw 'XD_FINAL_DIALOG_TITLE_MISMATCH'}
+          $nodes=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $edits=@($nodes|Where-Object{[string]$_.Current.AutomationId -eq '1001' -and [string]$_.Current.ClassName -eq 'Edit'})
+          $saves=@($nodes|Where-Object{[string]$_.Current.AutomationId -eq '1' -and [string]$_.Current.Name -eq 'Save' -and $_.Current.IsEnabled})
+          if($edits.Count -ne 1 -or $saves.Count -ne 1){throw 'XD_FINAL_EDIT_OR_SAVE_NOT_UNIQUE'}
+          $editHwnd=[IntPtr]$edits[0].Current.NativeWindowHandle
+          $saveHwnd=[IntPtr]$saves[0].Current.NativeWindowHandle
+          MustOwn $editHwnd $pickerPid 'edit'
+          MustOwn $saveHwnd $pickerPid 'save'
+          if((ClassOf $editHwnd) -ne 'Edit' -or (ClassOf $saveHwnd) -ne 'Button'){throw 'XD_FINAL_NATIVE_CONTROL_CLASS_MISMATCH'}
+          $length=[XdFinalSave]::SendMessage($editHwnd,[uint32]14,[IntPtr]::Zero,[IntPtr]::Zero).ToInt64()
+          $buffer=New-Object System.Text.StringBuilder(4096)
+          $copied=[XdFinalSave]::SendMessage($editHwnd,[uint32]13,[IntPtr]4096,$buffer).ToInt64()
+          $actual=$buffer.ToString()
+          Write-Host "XD_FINAL_FILENAME_READBACK length=$length copied=$copied expectedMatch=$($actual -eq $target)"
+          if($actual -ne $target -or $copied -ne $length){throw 'XD_FINAL_FILENAME_NOT_EXACT_NO_CLICK'}
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $original -or (Test-Path -LiteralPath $target)){throw 'XD_FINAL_GUARD_CHANGED_NO_CLICK'}
+          [void][XdFinalSave]::SendMessage($saveHwnd,[uint32]245,[IntPtr]::Zero,[IntPtr]::Zero)
+          Write-Host 'XD_FINAL_SAVE_BM_CLICK_ONCE=PASS'
+          $deadline=(Get-Date).AddSeconds(40)
+          do{Start-Sleep -Milliseconds 600}until((Test-Path -LiteralPath $target -PathType Leaf) -or (Get-Date)-ge $deadline)
+          if(-not(Test-Path -LiteralPath $target -PathType Leaf)){throw 'XD_FINAL_WRITE_UNKNOWN_DO_NOT_RECLICK'}
+          Start-Sleep -Seconds 2
+          $before=Get-Item -LiteralPath $target
+          Start-Sleep -Seconds 2
+          $after=Get-Item -LiteralPath $target
+          if($before.Length -ne $after.Length -or $after.Length -lt 1000){throw 'XD_FINAL_NATIVE_NOT_STABLE'}
+          $hash=(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+          $z=[System.IO.Compression.ZipFile]::OpenRead($target)
+          try{
+            $entries=$z.Entries.Count
+            if($entries -lt 3){throw 'XD_FINAL_INVALID_NATIVE_ZIP'}
+            foreach($entry in $z.Entries){
+              if($entry.Length -gt 0){
+                $stream=$entry.Open()
+                try{
+                  $bufferBytes=New-Object byte[] 8192
+                  while($stream.Read($bufferBytes,0,$bufferBytes.Length) -gt 0){}
+                }finally{$stream.Dispose()}
+              }
+            }
+          }finally{$z.Dispose()}
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $original){throw 'XD_FINAL_ORIGINAL_CHANGED_AFTER_SAVE'}
+          Write-Host "XD_FINAL_NATIVE_FILE_VERIFIED=PASS bytes=$($after.Length) sha256=$hash zipEntries=$entries originalUnchanged=1"
+          $output=Join-Path $env:RUNNER_TEMP 'panda_red_xd_native_saved'
+          New-Item -ItemType Directory -Force -Path $output|Out-Null
+          $copy=Join-Path $output 'MCP_KFP4_Red_XD_38205166138.xd'
+          Copy-Item -LiteralPath $target -Destination $copy -ErrorAction Stop
+          if((Get-FileHash -LiteralPath $copy -Algorithm SHA256).Hash -ne $hash){throw 'XD_FINAL_ARTIFACT_HASH_DIVERGED'}
+          Write-Host 'XD_FINAL_ARTIFACT_COPY=PASS'
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: panda-red-xd-native-saved-38205166138
+          path: ${{ runner.temp }}/panda_red_xd_native_saved/MCP_KFP4_Red_XD_38205166138.xd
+          if-no-files-found: error
+          retention-days: 14
