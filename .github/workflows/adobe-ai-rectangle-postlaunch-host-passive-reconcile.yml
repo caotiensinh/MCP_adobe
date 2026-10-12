@@ -67,7 +67,9 @@ jobs:
                     "ready":data.get("ready"),"blockedAt":data.get("blockedAt"),
                     "unresolvedJobs":exe.get("unresolvedJobs"),
                     "panel":(data.get("layers") or {}).get("panel"),
-                    "illustrator":(data.get("layers") or {}).get("illustrator")
+                    "illustrator":(data.get("layers") or {}).get("illustrator"),
+                    "document":(data.get("layers") or {}).get("document"),
+                    "blocking":data.get("blocking")
                   },default=str)[:3000],flush=True)
           try:asyncio.run(main())
           except Exception as e:print("AI_RECT_LATE_HEALTH_UNKNOWN="+type(e).__name__+":"+str(e)[:120],flush=True)
