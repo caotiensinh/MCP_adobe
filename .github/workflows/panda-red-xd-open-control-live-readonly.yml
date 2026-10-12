@@ -47,8 +47,8 @@ jobs:
             try{
               $name=[string]$node.Current.Name;$id=[string]$node.Current.AutomationId
               $type=[string]$node.Current.ControlType.ProgrammaticName
-              $isCandidate=($name -match '(?i)open|local|browse|recent|ファイル|開く|MCP_KFP4|MCPAdobe|file|create|new|新規|作成|スタート' -or
-                  $id -match '(?i)open|local|browse|recent|file|create|new|work--open|work--create')
+              $isCandidate=(($name -match '(?i)open|local|browse|recent|MCP_KFP4|MCPAdobe|file|create|new') -or
+                  ($id -match '(?i)open|local|browse|recent|file|create|new|work--open|work--create'))
               if($isCandidate){$matchCount++}
               if(($index -lt 80 -or $isCandidate) -and $index -lt 1200){
                 $shortName=$name.Substring(0,[Math]::Min($name.Length,120))
