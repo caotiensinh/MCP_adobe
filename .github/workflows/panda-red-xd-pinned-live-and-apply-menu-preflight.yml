@@ -73,6 +73,6 @@ jobs:
         if: always()
         with:
           name: panda-red-xd-firstwrite-pinned-native-evidence
-          path: {{ runner.temp }}/red_xd_pinned_preflight.json
+          path: ${{ runner.temp }}/red_xd_pinned_preflight.json
           if-no-files-found: warn
           retention-days: 14
