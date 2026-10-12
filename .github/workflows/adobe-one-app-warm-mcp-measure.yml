@@ -1,0 +1,64 @@
+name: Adobe one-app MCP warm path latency (no app startup, no native edits)
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/adobe-one-app-warm-mcp-measure.yml"]
+  workflow_dispatch:
+    inputs:
+      application:
+        type: choice
+        description: Existing single Adobe app process to benchmark without launching anything
+        required: true
+        default: illustrator
+        options: [illustrator, xd, photoshop]
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  warm_measure:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    env:
+      ADOBE_TEST_APP: ${{ inputs.application || 'illustrator' }}
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require exact single already-open app, forbid startup and other app processes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'WARM_APP_WRONG_HOST_SESSION'}
+          $map=@{illustrator='Illustrator';xd='XD';photoshop='Photoshop'}
+          if(-not $map.ContainsKey($env:ADOBE_TEST_APP)){throw 'WARM_APP_INVALID'}
+          foreach($key in @('illustrator','xd','photoshop')){
+            $apps=@(Get-Process -Name $map[$key] -ErrorAction SilentlyContinue)
+            Write-Host "WARM_APP_PROCESS app=$key count=$($apps.Count)"
+            if($key -eq $env:ADOBE_TEST_APP){
+              if($apps.Count -ne 1){throw 'WARM_APP_TARGET_PROCESS_ABSENT_OR_DUPLICATE_NO_LAUNCH'}
+            }elseif($apps.Count -ne 0){
+              throw 'WARM_APP_OTHER_ADOBE_PROCESS_ACTIVE_REFUSE_BENCH'
+            }
+          }
+          $tcp=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+          if($tcp.Count -ne 1){throw 'WARM_APP_GATEWAY_NOT_UNIQUE'}
+          Write-Host 'WARM_APP_EXISTING_SINGLE_APP_GATE=PASS'
+      - name: Benchmark one persistent MCP client and twelve real warm readbacks
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $env:ADOBE_SESSION='1'
+          $env:ADOBE_WARM_REPORT=Join-Path $env:RUNNER_TEMP 'adobe_mcp_warm_once.json'
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python scripts/adobe_mcp_warm_single_session_probe.py $env:ADOBE_TEST_APP
+          if($LASTEXITCODE -ne 0){throw 'WARM_APP_MCP_READBACK_FAILED_NO_RETRY'}
+          Write-Host 'WARM_APP_NO_RESET_NO_DOCUMENT_MUTATION=PASS'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: adobe-one-app-real-warm-transport-metrics
+          path: ${{ runner.temp }}/adobe_mcp_warm_once.json
+          if-no-files-found: warn
+          retention-days: 14
