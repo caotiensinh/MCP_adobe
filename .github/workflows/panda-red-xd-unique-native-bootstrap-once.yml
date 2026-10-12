@@ -1,0 +1,139 @@
+name: Panda red XD separate native draft bootstrap once
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-unique-native-bootstrap-once.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  bootstrap:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    steps:
+      - name: Verify exact XD source, live idle MCP queue and saved geometry
+        shell: powershell
+        env:
+          UV_LINK_MODE: copy
+          PYTHONUTF8: '1'
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RED_XD_WRONG_DESKTOP'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $py=Join-Path $env:RUNNER_TEMP 'panda_red_xd_preflight.py'
+          @'
+          import asyncio,hashlib,os
+          from pathlib import Path
+          from mcp import Client
+          root=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"
+          src=root/"MCP_Mode1_Panda_XD_38136531800.xd"
+          target=root/("MCP_KFP4_Red_XD_"+os.environ["GITHUB_RUN_ID"]+".xd")
+          expected="3a10e1510abc41eccd4485d6f852ea6ced7acc2cf50109e7c1bd123353589ed1"
+          def check():
+              if hashlib.sha256(src.read_bytes()).hexdigest()!=expected:raise RuntimeError("RED_XD_SOURCE_DIVERGED")
+              if target.exists():raise RuntimeError("RED_XD_TARGET_ALREADY_EXISTS")
+          async def main():
+              check()
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  async def read(cap):
+                      r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=15)
+                      if r.is_error or not isinstance(r.structured_content,dict) or r.structured_content.get("ok") is not True:raise RuntimeError("RED_XD_MCP_READ_FAILED "+cap)
+                      return r.structured_content["result"]
+                  h=await read("creative.health");g=await read("creative.scenegraph.list")
+                  if h.get("bridge")!="connected" or h.get("pending_count")!=0:raise RuntimeError("RED_XD_BRIDGE_NOT_IDLE")
+                  if g.get("document_id")!="98d6635b-3767-4254-b200-ec8442b69ad2":raise RuntimeError("RED_XD_NOT_ORIGINAL_DOCUMENT")
+                  boards=g.get("nodes") or []
+                  if len(boards)!=1 or len(boards[0].get("children") or [])!=32:raise RuntimeError("RED_XD_ORIGINAL_32_NOT_VERIFIED")
+              check()
+              print("RED_XD_SAFE_PREFLIGHT=PASS pending=0 native_source_unchanged=1",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath $py -Encoding UTF8
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python "$py"
+          if($LASTEXITCODE -ne 0){throw 'RED_XD_SAFE_PREFLIGHT_FAILED_NO_GUI_COMMAND'}
+      - name: Create uniquely named new XD document with one verified UIA Save As
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RED_XD_WRONG_SESSION'}
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;using System.Runtime.InteropServices;
+          public static class RedXdWindow {
+          [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+          [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+          [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+          }
+          '@
+          function Tops {
+            $root=[System.Windows.Automation.AutomationElement]::RootElement
+            return $root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          }
+          function Focus-Verified($w) {
+            $hwnd=[IntPtr]$w.Current.NativeWindowHandle
+            if($hwnd -eq [IntPtr]::Zero){throw 'RED_XD_WINDOW_HWND_MISSING'}
+            [void][RedXdWindow]::SetForegroundWindow($hwnd)
+            Start-Sleep -Milliseconds 550
+            $pidValue=[uint32]0
+            [void][RedXdWindow]::GetWindowThreadProcessId([RedXdWindow]::GetForegroundWindow(),[ref]$pidValue)
+            if($pidValue -ne [uint32]$w.Current.ProcessId){throw 'RED_XD_NOT_FOREGROUND_STOP'}
+          }
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $source=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $target=Join-Path $root ("MCP_KFP4_Red_XD_"+$env:GITHUB_RUN_ID+".xd")
+          $original='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if(Test-Path -LiteralPath $target){throw 'RED_XD_TARGET_ALREADY_EXISTS'}
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $original){throw 'RED_XD_SOURCE_CHANGED'}
+          $all=Tops
+          $src=@($all|Where-Object {[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+          $other=@($all|Where-Object {[string]$_.Current.Name -match 'Adobe XD$' -and [string]$_.Current.Name -notmatch '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+          $picker=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1})
+          Write-Host "RED_XD_NEW_PREFLIGHT source=$($src.Count) other=$($other.Count) picker=$($picker.Count)"
+          if($src.Count -ne 1 -or $other.Count -gt 0 -or $picker.Count -gt 0){throw 'RED_XD_GUI_OWNERSHIP_AMBIGUOUS'}
+          Focus-Verified $src[0]
+          [System.Windows.Forms.SendKeys]::SendWait('^n')
+          Write-Host 'RED_XD_NEW_HOTKEY_SENT_ONCE=PASS'
+          $deadline=(Get-Date).AddSeconds(65);$draft=$null
+          do{
+            Start-Sleep -Milliseconds 700
+            $found=@(Tops|Where-Object {[string]$_.Current.Name -match '^Untitled.*Adobe XD$'})
+            if($found.Count -gt 1){throw 'RED_XD_MULTIPLE_DRAFT_WINDOWS'}
+            if($found.Count -eq 1){$draft=$found[0];break}
+          }until((Get-Date)-ge $deadline)
+          if(-not $draft){throw 'RED_XD_DRAFT_NOT_VISIBLE_NO_HOTKEY_REPLAY'}
+          Write-Host "RED_XD_UNTITLED_LIVE=PASS title=$($draft.Current.Name)"
+          Focus-Verified $draft
+          [System.Windows.Forms.SendKeys]::SendWait('^%+s')
+          Write-Host 'RED_XD_SAVE_AS_HOTKEY_SENT_ONCE=PASS'
+          $deadline=(Get-Date).AddSeconds(35);$dlg=$null
+          do{
+            Start-Sleep -Milliseconds 600
+            $items=Tops
+            $dialogs=@($items|Where-Object {$_.Current.ClassName -eq '#32770' -and [string]$_.Current.Name -match 'Save|保存|名前'})
+            if($dialogs.Count -gt 1){throw 'RED_XD_SAVE_DIALOG_AMBIGUOUS'}
+            if($dialogs.Count -eq 1){$dlg=$dialogs[0];break}
+          }until((Get-Date)-ge $deadline)
+          if(-not $dlg){throw 'RED_XD_SAVE_DIALOG_NOT_FOUND_NO_REPEAT'}
+          $editType=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Edit)
+          $edits=$dlg.FindAll([System.Windows.Automation.TreeScope]::Descendants,$editType)
+          $filename=@($edits|Where-Object {[string]$_.Current.AutomationId -match '^(1001|FileName)$' -or [string]$_.Current.Name -match 'File name|ファイル名'})
+          if($filename.Count -ne 1){throw "RED_XD_FILENAME_CONTROL_AMBIGUOUS count=$($filename.Count)"}
+          $filename[0].GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($target)
+          $buttonType=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button)
+          $buttons=$dlg.FindAll([System.Windows.Automation.TreeScope]::Descendants,$buttonType)
+          $save=@($buttons|Where-Object {[string]$_.Current.Name -match '^Save$|^保存' -or [string]$_.Current.AutomationId -eq '1'})
+          if($save.Count -ne 1){throw 'RED_XD_SAVE_BUTTON_AMBIGUOUS'}
+          $save[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+          Write-Host 'RED_XD_SAVE_CLICKED_ONCE=PASS'
+          $deadline=(Get-Date).AddSeconds(40)
+          do{Start-Sleep -Milliseconds 700}until((Test-Path -LiteralPath $target -PathType Leaf) -or (Get-Date)-ge $deadline)
+          if(-not(Test-Path -LiteralPath $target -PathType Leaf)){throw 'RED_XD_UNVERIFIED_NATIVE_NO_RETRY'}
+          $file=Get-Item -LiteralPath $target
+          if($file.Length -lt 1000){throw 'RED_XD_NATIVE_TOO_SMALL'}
+          $sha=(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $original){throw 'RED_XD_ORIGINAL_CHANGED'}
+          Write-Host "RED_XD_NEW_NATIVE_SAVED=PASS sha256=$sha bytes=$($file.Length) original_unchanged=1"
