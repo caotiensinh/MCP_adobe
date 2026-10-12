@@ -42,6 +42,8 @@ jobs:
           Write-Host "PANDA_XD_OPEN_PREFLIGHT home=$($xdHomeWindows.Count) requestedDoc=$($document.Count) otherDocs=$($other.Count)"
           if($other.Count -gt 0 -or $document.Count -gt 1){throw 'PANDA_XD_OPEN_OTHER_DOCUMENT_UNSAFE'}
           $socket=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          $pickers=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})
+          if($pickers.Count -gt 0){throw 'PANDA_XD_OPEN_NATIVE_PICKER_ACTIVE_REFUSE'}
           if($document.Count -eq 0){
             if($xdHomeWindows.Count -ne 1 -or $socket.Count -ne 0){
               throw 'PANDA_XD_OPEN_NO_UNIQUE_IDLE_HOME'
