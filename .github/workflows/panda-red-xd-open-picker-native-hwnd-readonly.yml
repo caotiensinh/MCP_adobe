@@ -1,0 +1,88 @@
+name: Panda red XD exact Open picker native HWND subtree read-only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-open-picker-native-hwnd-readonly.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  read_only:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Examine only File name and Open native handles and child classes without edits
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_PICKER_NATIVE_WRONG_SESSION'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;using System.Text;using System.Runtime.InteropServices;
+          public static class XdOpenHandles {
+            public delegate bool Callback(IntPtr hwnd,IntPtr lp);
+            [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent,Callback cb,IntPtr p);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd,out uint pid);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd,StringBuilder value,int len);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd,StringBuilder value,int len);
+          }
+          '@
+          $native=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_KFP4_Red_XD_38205166138.xd'
+          if((Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash -ne '58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'){throw 'XD_PICKER_NATIVE_DRAFT_CHANGED'}
+          $pickers=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          if($pickers.Count -ne 1){throw 'XD_PICKER_NATIVE_NOT_UNIQUE'}
+          $pickerId=[uint32]$pickers[0].Id
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $tops=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $homes=@($tops|Where-Object{[string]$_.Current.Name -eq 'Adobe XD' -and [string]$_.Current.ClassName -eq 'ApplicationFrameWindow'})
+          if($homes.Count -ne 1){throw 'XD_PICKER_NATIVE_XD_HOME_MISMATCH'}
+          $nodes=$homes[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $dialogs=@($nodes|Where-Object{[int]$_.Current.ProcessId -eq $pickerId -and [string]$_.Current.Name -eq 'Open' -and $_.Current.ControlType.ProgrammaticName -eq 'ControlType.Window'})
+          if($dialogs.Count -ne 1){throw "XD_PICKER_NATIVE_DIALOG_NOT_UNIQUE count=$($dialogs.Count)"}
+          $all=$dialogs[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $namePanes=@($all|Where-Object{[int]$_.Current.ProcessId -eq $pickerId -and [string]$_.Current.Name -eq 'File name:' -and [string]$_.Current.AutomationId -eq '1090'})
+          $openPanes=@($all|Where-Object{[int]$_.Current.ProcessId -eq $pickerId -and [string]$_.Current.Name -eq 'Open' -and [string]$_.Current.AutomationId -eq '1'})
+          Write-Host "XD_PICKER_NATIVE_EXACT_PANES filename=$($namePanes.Count) open=$($openPanes.Count)"
+          if($namePanes.Count -ne 1 -or $openPanes.Count -ne 1){throw 'XD_PICKER_NATIVE_CONTROLS_NOT_UNIQUE'}
+          function ClassOf([IntPtr]$handle) {
+            $txt=New-Object System.Text.StringBuilder(128)
+            [void][XdOpenHandles]::GetClassName($handle,$txt,128)
+            return $txt.ToString()
+          }
+          function WindowText([IntPtr]$handle) {
+            $txt=New-Object System.Text.StringBuilder(300)
+            [void][XdOpenHandles]::GetWindowText($handle,$txt,300)
+            return $txt.ToString()
+          }
+          foreach($pair in @(@('filename',$namePanes[0]),@('open_button',$openPanes[0]))){
+            $label=[string]$pair[0]
+            $node=$pair[1]
+            $h=[IntPtr]$node.Current.NativeWindowHandle
+            $owner=[uint32]0
+            [void][XdOpenHandles]::GetWindowThreadProcessId($h,[ref]$owner)
+            Write-Host "XD_PICKER_NATIVE_CONTROL label=$label hwnd=$h owner=$owner class=$(ClassOf $h) text=$(WindowText $h)"
+            if($owner -ne $pickerId -or $h -eq [IntPtr]::Zero){throw 'XD_PICKER_NATIVE_FOREIGN_TARGET'}
+            $children=New-Object System.Collections.Generic.List[System.IntPtr]
+            $cb=[XdOpenHandles+Callback]{
+              param([IntPtr]$c,[IntPtr]$unused)
+              $children.Add($c)
+              return $true
+            }
+            [void][XdOpenHandles]::EnumChildWindows($h,$cb,[IntPtr]::Zero)
+            Write-Host "XD_PICKER_NATIVE_SUBTREE label=$label nodes=$($children.Count)"
+            foreach($c in @($children|Select-Object -First 45)){
+              $pidValue=[uint32]0
+              [void][XdOpenHandles]::GetWindowThreadProcessId($c,[ref]$pidValue)
+              Write-Host "XD_PICKER_NATIVE_CHILD label=$label hwnd=$c pid=$pidValue class=$(ClassOf $c) text=$(WindowText $c)"
+            }
+            $ui=$node.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+            Write-Host "XD_PICKER_NATIVE_UIA_CHILD_COUNT label=$label count=$($ui.Count)"
+            foreach($e in @($ui|Select-Object -First 20)){
+              Write-Host "XD_PICKER_NATIVE_UIA_CHILD label=$label type=$($e.Current.ControlType.ProgrammaticName) id=$($e.Current.AutomationId) name=$($e.Current.Name) hwnd=$($e.Current.NativeWindowHandle)"
+            }
+          }
+          Write-Host 'XD_PICKER_NATIVE_ONLY_READ=PASS'
