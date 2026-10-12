@@ -1,17 +1,8 @@
 name: Mode1 Illustrator live E2E on MRCAO
 
+# Real Adobe GUI writes must never auto-run merely because the adapter changed.
+# Trigger exclusively by explicit workflow_dispatch after session/document guards.
 on:
-  push:
-    branches: [feat/canvas-region-targeting]
-    paths:
-      - ".github/workflows/mode1-illustrator-live-acceptance.yml"
-      - "src/mcp_adobe/illustrator.py"
-      - "src/mcp_adobe/illustrator_cep.py"
-      - "src/mcp_adobe/server.py"
-      - "scripts/install_local_host.ps1"
-      - "scripts/ensure_illustrator_cep_bootstrap.ps1"
-      - "tests/test_illustrator_cep_bootstrap_contract.py"
-      - "scripts/illustrator_cep_fallback_transport.html"
   workflow_dispatch:
 
 permissions:
