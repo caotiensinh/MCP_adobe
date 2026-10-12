@@ -29,7 +29,7 @@ jobs:
           $ErrorActionPreference='Stop'
           if($env:COMPUTERNAME -ne 'MRCAO'){throw 'RECT2_PDF_WRONG_HOST'}
           $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
-          $source=Join-Path $root 'MCP_KFP4_Red_AI_Fresh_38157335430.ai'
+          $source=Join-Path $root 'rect2_before_uia_save_38194275753\source_before.ai'
           $target=Join-Path $root 'MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai'
           $a='25D46AAACC766759D11C920872D9EE1CC26861A145826143161698E97CA14B77'
           $b='EC6D2239B3547845C16C80997CA716F50FB8E5F4F5F3F8D57E85079581FA89A2'
@@ -48,7 +48,7 @@ jobs:
           $ErrorActionPreference='Stop'
           $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
           $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
-          $source=Join-Path $root 'MCP_KFP4_Red_AI_Fresh_38157335430.ai'
+          $source=Join-Path $root 'rect2_before_uia_save_38194275753\source_before.ai'
           $target=Join-Path $root 'MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai'
           uv run --with pymupdf --python 3.12 python scripts/panda_illustrator_native_pdf_audit.py --source "$source" --target "$target" --output "panda_ai_saved_two/geometry_manifest.json"
           if($LASTEXITCODE -ne 0){throw 'RECT2_PDF_AUDIT_FAILED_READONLY'}
