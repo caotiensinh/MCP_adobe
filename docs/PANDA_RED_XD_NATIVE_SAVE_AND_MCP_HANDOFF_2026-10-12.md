@@ -83,3 +83,11 @@ Direct GitHub Actions REST readback shows that labels are **not** the blocker: b
 The safety syntax/policy check [38212953094](https://github.com/caotiensinh/MCP_adobe/actions/runs/38212953094) **PASS** on GitHub-hosted PowerShell; [38212953085](https://github.com/caotiensinh/MCP_adobe/actions/runs/38212953085) existing adapter CI **PASS**.
 
 **Acceptance after the local recovery:** this alone does not claim GitHub runner online; wait until queued job `114676329079` is assigned to ID 2 and completes. Read its steps, MCP UUID, queue and native checksums before authorizing the first red background rectangle. Do not queue duplicate desktop runs.
+
+### MRCAO recovery verifier additions
+
+Recovery script now checks `github.com` and `api.github.com` outbound TCP/443 even if a runner Listener process exists, records the latest three `_diag/Runner_*.log` timestamps/sizes without exposing raw sensitive lines, and separates `-DiagnoseOnly` from any recovery attempt when a conflicting runner service exists. Never disables or stops the service automatically.
+
+The latest version's PowerShell syntax and scoped-action safety check [38213328404](https://github.com/caotiensinh/MCP_adobe/actions/runs/38213328404) **SUCCESS**; baseline PS/XD/AI adapter unit [38213328377](https://github.com/caotiensinh/MCP_adobe/actions/runs/38213328377) **SUCCESS**. This does not mean recovery was executed locally: no remote host management channel can access an unassigned runner in this context.
+
+Interactive use **on MRCAO, Session 1**: download current `scripts/recover_mrcao_runner_safe.ps1` from the private repository while signed in, then execute it with Windows PowerShell; `-DiagnoseOnly` is read-only. The file writes `%TEMP%\mrcao_adobe_runner_recovery.json`. Do not paste runner `.credentials`, PATs, or raw runner diagnostic logs into a chat.
