@@ -99,8 +99,15 @@ jobs:
           }
           [void][RedXdNativeSave]::EnumChildWindows($fileHandle,$childCb,[IntPtr]::Zero)
           Write-Host "RED_XD_NATIVE_SAVE_EDIT_CANDIDATES=$($children.Count) filenameClass=$(WinClass $fileHandle) saveClass=$(WinClass $buttonHwnd)"
-          if($children.Count -ne 1){throw 'RED_XD_SAVE_FILENAME_EDIT_NOT_UNIQUE_NO_WRITE'}
-          $edit=[IntPtr]$children[0]
+          $edit=[IntPtr]::Zero
+          if($children.Count -eq 1){
+            $edit=[IntPtr]$children[0]
+          }elseif($children.Count -eq 0 -and (WinClass $fileHandle) -eq 'Edit'){
+            $edit=$fileHandle
+            Write-Host 'RED_XD_NATIVE_SAVE_DIRECT_FILENAME_EDIT_SELECTED=PASS'
+          }else{
+            throw 'RED_XD_SAVE_FILENAME_EDIT_NOT_UNIQUE_NO_WRITE'
+          }
           MustOwn $edit $pickerPid 'edit'
           if((WinClass $buttonHwnd) -ne 'Button'){throw 'RED_XD_SAVE_NATIVE_BUTTON_CLASS_NOT_BUTTON_NO_WRITE'}
           if((WinText $buttonHwnd) -ne 'Save'){throw 'RED_XD_SAVE_NATIVE_BUTTON_LABEL_CHANGED_NO_WRITE'}
