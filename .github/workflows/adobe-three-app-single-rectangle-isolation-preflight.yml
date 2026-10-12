@@ -50,6 +50,11 @@ jobs:
             }
           }
           $activeKinds=@($nameMap.Keys|Where-Object{$evidence.process_counts[$_] -gt 0})
+          $xdNow=@(Get-Process -Name XD -ErrorAction SilentlyContinue)
+          $frames=@(Get-Process -Name ApplicationFrameHost -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})
+          Write-Host "SERIAL_RECT_CURRENT_XD_COUNT=$($xdNow.Count) FRAMEHOST_COUNT=$($frames.Count)"
+          $evidence.xd_process_count=$xdNow.Count
+          $evidence.application_frame_host_session1=$frames.Count
           $evidence.active_app_kinds=$activeKinds
           if($activeKinds.Count -gt 1){
             $evidence.blocker='MULTIPLE_ADOBE_APPLICATIONS_ALREADY_RUNNING'
