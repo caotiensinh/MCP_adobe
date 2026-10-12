@@ -24,6 +24,16 @@ jobs:
           $root=[System.Windows.Automation.AutomationElement]::RootElement
           $top=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
           Write-Host "XD_POST_HOTKEY_TOP_WINDOW_COUNT=$($top.Count)"
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+          if($xd.Count -ne 1){throw 'XD_AFTER_HOME_XD_PROCESS_NOT_UNIQUE'}
+          $core=[System.Windows.Automation.AutomationElement]::FromHandle($xd[0].MainWindowHandle)
+          foreach($id in @('sidebar-work--create','titlebarHomeButton','AppMenu_File')){
+            $cond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,$id)
+            $controls=$core.FindAll([System.Windows.Automation.TreeScope]::Descendants,$cond)
+            Write-Host "XD_AFTER_HOME_CONTROL id=$id count=$($controls.Count)"
+            foreach($c in $controls){Write-Host "XD_AFTER_HOME_CONTROL_DETAIL id=$id enabled=$($c.Current.IsEnabled) name=$($c.Current.Name) type=$($c.Current.ControlType.ProgrammaticName)"}
+          }
+
           foreach($w in $top){
             $title=[string]$w.Current.Name
             if($title.Length -gt 220){$title=$title.Substring(0,220)}
