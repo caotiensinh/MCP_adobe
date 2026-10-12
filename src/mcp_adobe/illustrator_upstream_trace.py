@@ -13,6 +13,22 @@ from typing import Any
 log = logging.getLogger("mcp_adobe.illustrator_trace")
 
 
+def _verified_payload_completion(envelope: dict[str, Any], pending: Any) -> bool:
+    """Only a successfully assembled, correlated payload proves prior host completion.
+
+    Upstream can ACK and set the predecessor fence on a C014 complete message;
+    that transport acknowledgement alone cannot prove host effects finished.
+    """
+    if envelope.get("type", "complete") != "complete" or envelope.get("payloadError"):
+        return False
+    if pending is None or pending.request_token != envelope.get("requestToken"):
+        return False
+    receiver = getattr(pending, "payload", None)
+    return bool(receiver is not None
+                and isinstance(getattr(receiver, "descriptor", None), dict)
+                and getattr(receiver, "failure", None) is None)
+
+
 def install_trace(bridge_class: type) -> None:
     # Separate upstream file: gateway parent logs do not capture every child.
     trace_path = Path(os.environ.get("LOCALAPPDATA", ".")) / "MCPAdobe" / "illustrator-mcp" / "callback_trace.log"
@@ -62,8 +78,8 @@ def install_trace(bridge_class: type) -> None:
                 # The upstream handler itself records matched late completions.
                 # Snapshot the exact fence before invoking it, then undo only
                 # an unauthorized stale-generation transition after handling.
-                stale_fence = None
-                stale_prior = None
+                tracked_fence = None
+                tracked_prior = None
                 if kind == "complete" and isinstance(envelope, dict):
                     from illustrator_mcp.execution import get_coordinator
                     upstream_coordinator = get_coordinator()
@@ -71,14 +87,24 @@ def install_trace(bridge_class: type) -> None:
                     if (isinstance(candidate, dict)
                             and candidate.get("requestId") == request_id
                             and candidate.get("requestToken") == envelope.get("requestToken")
-                            and isinstance(candidate.get("connectionGeneration"), int)
-                            and candidate["connectionGeneration"] != upstream_coordinator.connection_generation):
-                        stale_fence = candidate
-                        stale_prior = candidate.get("priorCompletionObserved")
+                            and isinstance(candidate.get("connectionGeneration"), int)):
+                        tracked_fence = candidate
+                        tracked_prior = candidate.get("priorCompletionObserved")
                 result = await original_handle(self, message)
-                if stale_fence is not None and upstream_coordinator.probe_fence is stale_fence:
-                    stale_fence["priorCompletionObserved"] = stale_prior
-                    log.warning("CEP_STALE_GENERATION_IGNORED requestId=%s", str(request_id)[:48])
+                if tracked_fence is not None and upstream_coordinator.probe_fence is tracked_fence:
+                    same_generation = tracked_fence["connectionGeneration"] == upstream_coordinator.connection_generation
+                    verified = same_generation and _verified_payload_completion(envelope, pending)
+                    if verified:
+                        tracked_fence["priorCompletionObserved"] = True
+                        log.warning("CEP_VERIFIED_FENCE_COMPLETION requestId=%s generation=%s",
+                                    str(request_id)[:48], tracked_fence["connectionGeneration"])
+                    else:
+                        # Upstream may optimistically mark any matching complete,
+                        # even C014 missing_descriptor. Undo that unproven promotion.
+                        tracked_fence["priorCompletionObserved"] = tracked_prior
+                        log.warning("CEP_UNVERIFIED_FENCE_COMPLETION_IGNORED requestId=%s generation=%s payloadError=%s",
+                                    str(request_id)[:48], tracked_fence["connectionGeneration"],
+                                    str(envelope.get("payloadError"))[:80])
                 # A C013 result is terminal/unknown for this request, not a
                 # license to retry. Discard ONLY the cached epoch hint so a
                 # future safely admitted request can bind to the actual JSX
@@ -87,23 +113,6 @@ def install_trace(bridge_class: type) -> None:
                         and envelope.get("payloadError") == "stale_host_session"):
                     self._host_payload_session = None
                     log.warning("CEP_HOST_EPOCH_CACHE_INVALIDATED reason=C013")
-                # Correlate a late completion after the original handler safely
-                # discarded/ACKed it. Never unlock here: only establish the
-                # observed predecessor completion required by a later trusted probe.
-                if kind == "complete" and isinstance(envelope, dict):
-                    from illustrator_mcp.execution import get_coordinator
-                    coordinator = get_coordinator()
-                    fence = coordinator.probe_fence
-                    if (isinstance(fence, dict)
-                            and fence.get("requestId") == request_id
-                            and fence.get("requestToken") == envelope.get("requestToken")
-                            and isinstance(fence.get("connectionGeneration"), int)
-                            and fence.get("connectionGeneration") == coordinator.connection_generation
-                            and isinstance(envelope.get("requestToken"), str)
-                            and envelope.get("requestToken")):
-                        fence["priorCompletionObserved"] = True
-                        log.warning("CEP_LATE_FENCE_COMPLETION requestId=%s generation=%s",
-                                    str(request_id)[:48], fence.get("connectionGeneration"))
                 if kind is not None and kind != "heartbeat":
                     log.warning("CEP_CALLBACK_HANDLED kind=%s requestId=%s panelBusy=%s activeRequest=%s",
                                 str(kind)[:36], str(request_id)[:48],
