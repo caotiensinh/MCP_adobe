@@ -1,0 +1,84 @@
+name: Panda red XD launch exact registered UWP app once if fully closed
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-guarded-registered-app-launch-once.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  launch_once:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Verify absence of XD and native preservation, start exact Adobe XD once
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_SAFE_LAUNCH_WRONG_HOST_OR_SESSION'}
+          foreach($pair in @(
+            @('MCP_Mode1_Panda_XD_38136531800.xd','3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'),
+            @('MCP_KFP4_Red_XD_38205166138.xd','58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'))) {
+            $file=Join-Path (Join-Path $env:USERPROFILE 'Documents\MCPAdobe') $pair[0]
+            if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $pair[1]){throw 'XD_SAFE_LAUNCH_NATIVE_CHANGED'}
+          }
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          $picker=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          $connections=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          function Get-XdFrames {
+            $arr=@()
+            foreach($node in $desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)){
+              try{
+                $name=[string]$node.Current.Name
+                if($name -match 'Adobe XD|MCP_Mode1_Panda_XD|MCP_KFP4_Red_XD|Untitled' -and
+                  [string]$node.Current.ClassName -eq 'ApplicationFrameWindow'){$arr+=,$node}
+              }catch{}
+            }
+            return @($arr)
+          }
+          $before=@(Get-XdFrames)
+          Write-Host "XD_SAFE_LAUNCH_PREFLIGHT xd=$($xd.Count) pickers=$($picker.Count) websocket=$($connections.Count) frames=$($before.Count)"
+          if($xd.Count -ne 0 -or $picker.Count -ne 0 -or $connections.Count -ne 0 -or $before.Count -ne 0){
+            throw 'XD_SAFE_LAUNCH_EXISTING_STATE_REFUSE_DUPLICATE'
+          }
+          $apps=@(Get-StartApps -ErrorAction Stop | Where-Object {$_.Name -eq 'Adobe XD'})
+          if($apps.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$apps[0].AppID)){
+            throw "XD_SAFE_LAUNCH_REGISTRATION_NOT_UNIQUE count=$($apps.Count)"
+          }
+          $registered=Get-AppxPackage -ErrorAction Stop | Where-Object {$_.Name -match '^Adobe\.CC\.XD$|^Adobe\.XD$'}
+          Write-Host "XD_SAFE_LAUNCH_APPX_PACKAGES=$(@($registered).Count)"
+          $appId=[string]$apps[0].AppID
+          Write-Host "XD_SAFE_LAUNCH_APP_REGISTERED=PASS appname=Adobe XD"
+          Start-Process -FilePath explorer.exe -ArgumentList ("shell:AppsFolder\"+$appId) -ErrorAction Stop
+          Write-Host 'XD_SAFE_LAUNCH_ONCE=REQUESTED'
+          $until=(Get-Date).AddSeconds(75)
+          $found=$false
+          do {
+            Start-Sleep -Seconds 3
+            $running=@(Get-Process -Name XD -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+            $seen=@(Get-XdFrames)
+            $core=0
+            foreach($frame in $seen){
+              $children=$frame.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+              foreach($child in $children){
+                if([string]$child.Current.ClassName -eq 'Windows.UI.Core.CoreWindow'){$core++}
+              }
+            }
+            Write-Host "XD_SAFE_LAUNCH_OBSERVE running=$($running.Count) frames=$($seen.Count) core=$core titles=$((@($seen|ForEach-Object{$_.Current.Name})) -join ';')"
+            if($core -gt 0){$found=$true;break}
+          }until((Get-Date) -ge $until)
+          foreach($pair in @(
+            @('MCP_Mode1_Panda_XD_38136531800.xd','3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'),
+            @('MCP_KFP4_Red_XD_38205166138.xd','58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'))) {
+            $file=Join-Path (Join-Path $env:USERPROFILE 'Documents\MCPAdobe') $pair[0]
+            if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $pair[1]){throw 'XD_SAFE_LAUNCH_NATIVE_CHANGED_AFTER_START'}
+          }
+          Write-Host 'XD_SAFE_LAUNCH_TWO_NATIVE_HASHES_PRESERVED=PASS'
+          if(-not $found){throw 'XD_SAFE_LAUNCH_EDITOR_COREWINDOW_NOT_READY_NO_REPLAY'}
+          Write-Host 'XD_SAFE_LAUNCH_COREWINDOW_PRESENT=PASS'
