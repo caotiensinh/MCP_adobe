@@ -1,0 +1,86 @@
+{
+  "schema": "mcp-adobe-golden-baseline/v1",
+  "baseline_id": "2026-10-12-verified-connections",
+  "baseline_ref": "76762f7545b6eaf75fab778e5bb956f48822de8e",
+  "description": "Protect reviewed integration source; Git blob hashes prove checked-in source only, NOT installed host deployment.",
+  "update_policy": "Explicitly update manifest with review reason, unit tests and live host readback proof. Branch-protection review must be separately configured by repo admin.",
+  "locked": [
+    {
+      "path": "src/mcp_adobe/xd.py",
+      "git_blob_sha": "d2bc0dcd53a6c954381f5b196f993d254d5549ee",
+      "verification_scope": "historical XD live and adapter unit",
+      "evidence_run": 38232069131
+    },
+    {
+      "path": "src/mcp_adobe/photoshop.py",
+      "git_blob_sha": "d1e6d540009072a4981c23353e0dfa10266bc926",
+      "verification_scope": "historical Photoshop native and adapter unit",
+      "evidence_run": 38213328377
+    },
+    {
+      "path": "src/mcp_adobe/illustrator.py",
+      "git_blob_sha": "c271d489e39710243526f1cb1885f79e7dc04b77",
+      "verification_scope": "historical Illustrator one-rectangle readback and unit",
+      "evidence_run": 38049761683
+    },
+    {
+      "path": "src/mcp_adobe/illustrator_cep.py",
+      "git_blob_sha": "e3de7aec5470c80b7cb583bc4fe12fed2975e1c6",
+      "verification_scope": "historical Illustrator one-rectangle and unit",
+      "evidence_run": 38049761683
+    },
+    {
+      "path": "src/mcp_adobe/illustrator_upstream_trace.py",
+      "git_blob_sha": "4a2f06e70455c8b18352241c72599ebd2e7f8b3e",
+      "verification_scope": "unit only, not confirmed deployed on MRCAO",
+      "evidence_run": 38209149111
+    },
+    {
+      "path": "adobe-xd-plugin/main.js",
+      "git_blob_sha": "a55c3cdf650f3ec55dcec7ceb7aefc97e6b343a8",
+      "verification_scope": "historical XD live bridge and scenegraph",
+      "evidence_run": 38232069131
+    },
+    {
+      "path": "adobe-xd-plugin/manifest.json",
+      "git_blob_sha": "cc06ecc37aedc9c5d48c3dff5cb3fcc667d12c00",
+      "verification_scope": "historical XD live bridge and scenegraph",
+      "evidence_run": 38232069131
+    },
+    {
+      "path": "src/mcp_adobe/server.py",
+      "git_blob_sha": "9a5f30316779a06dbadba31617ef2c7fd0fe024a",
+      "verification_scope": "historical XD and AI gateway responses",
+      "evidence_run": 38244152869
+    }
+  ],
+  "latency_reference": {
+    "scope": "XD warm read-only connected host; NOT full E2E / cold launch / native save",
+    "xd_health": {
+      "samples": 30,
+      "p50_ms": 17.95,
+      "p95_ms": 23.57
+    },
+    "xd_scenegraph": {
+      "samples": 30,
+      "p50_ms": 23.18,
+      "p95_ms": 36.01
+    },
+    "xd_source_run": 38198624299,
+    "ai_health_live_samples_ms": [
+      95.84,
+      111.54,
+      188.94
+    ],
+    "ai_startup_observation": "40-second launcher deadline expired before window readback; window later appeared, exact time not captured",
+    "serial_ai_xd_ps_one_rectangle_status": "NOT_YET_ACCEPTED"
+  },
+  "upgrade_requirements": [
+    "PR lists changed protected files and reason",
+    "Update baseline SHA explicitly",
+    "Hosted tests pass",
+    "Live host smoke and native checksum",
+    "Equivalent-environment p50/p95 measurements",
+    "Rollback point preserved"
+  ]
+}
