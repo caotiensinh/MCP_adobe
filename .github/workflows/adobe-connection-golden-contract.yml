@@ -1,0 +1,35 @@
+name: Adobe MCP protected known-good source and contract tests
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - "src/mcp_adobe/**"
+      - "adobe-xd-plugin/**"
+      - "contracts/adobe_connection_goldens.json"
+      - "tests/test_adobe_connection_goldens.py"
+      - ".github/workflows/adobe-connection-golden-contract.yml"
+  pull_request:
+    paths:
+      - "src/mcp_adobe/**"
+      - "adobe-xd-plugin/**"
+      - "contracts/adobe_connection_goldens.json"
+      - "tests/test_adobe_connection_goldens.py"
+      - ".github/workflows/adobe-connection-golden-contract.yml"
+permissions:
+  contents: read
+concurrency:
+  group: adobe-golden-source-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  locked-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify pinned Git blob identities and documented warm-only latency
+        run: python3 -m unittest discover -s tests -p 'test_adobe_connection_goldens.py' -v
+      - name: Report guarantee boundary
+        run: |
+          echo "GOLDEN_SOURCE_INTEGRITY=PASS"
+          echo "This is a protected source snapshot, NOT proof of Adobe app runtime or live E2E."
+          echo "Updating a protected SHA requires a reviewed golden baseline and live readback proof."
