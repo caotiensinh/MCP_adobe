@@ -74,7 +74,13 @@ jobs:
           $modal=[System.Windows.Automation.AutomationElement]::FromHandle($small[0])
           $all=$modal.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
           $ok=@($all|Where-Object{[string]$_.Current.AutomationId -eq 'CommandButton_1' -and [string]$_.Current.Name -eq 'OK' -and $_.Current.IsEnabled})
-          $path=@($all|Where-Object{[string]$_.Current.Name -eq $target})
+          $path=@($all|Where-Object{
+            $message=[string]$_.Current.Name
+            $message.StartsWith($target) -and
+              $message.Contains('An outgoing call cannot be made') -and
+              $message.Contains('input-synchronous call')
+          })
+          Write-Host "XD_RPC_MODAL_GUARD_MATCHES ok=$($ok.Count) rpcMessage=$($path.Count)"
           if($ok.Count -ne 1 -or $path.Count -ne 1){throw 'XD_RPC_MODAL_NOT_SAME_PATH_OR_BUTTON'}
           $button=[IntPtr]$ok[0].Current.NativeWindowHandle
           $buttonList=@()
