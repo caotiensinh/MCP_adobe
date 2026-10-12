@@ -1,0 +1,133 @@
+name: Panda red XD open verified saved native once through exact Win32 picker control
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-open-native-file-via-exact-picker-once.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  open_once:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Set only verified filename Edit then PostMessage Open once and audit actual XD document
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_NATIVE_OPEN_WRONG_HOST_SESSION'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $old=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $target=Join-Path $root 'MCP_KFP4_Red_XD_38205166138.xd'
+          $oldSha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          $newSha='58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'
+          if((Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash -ne $oldSha -or
+             (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $newSha){throw 'XD_NATIVE_OPEN_SOURCE_CHANGED'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;using System.Runtime.InteropServices;using System.Text;
+          public static class XdNativeOpen {
+            public delegate bool Callback(IntPtr h,IntPtr data);
+            [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr h,Callback callback,IntPtr data);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h,StringBuilder value,int max);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h,StringBuilder value,int max);
+            [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr h);
+            [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+            public static extern IntPtr SendMessageTimeout(IntPtr h,uint m,UIntPtr w,string s,uint flags,uint timeout,out UIntPtr result);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+            public static extern IntPtr SendMessageTimeout(IntPtr h,uint m,UIntPtr w,StringBuilder buffer,uint flags,uint timeout,out UIntPtr result);
+            [DllImport("user32.dll",SetLastError=true)] public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
+          }
+          '@
+          function ClassOf([IntPtr]$handle) {
+            $buffer=New-Object System.Text.StringBuilder(130)
+            [void][XdNativeOpen]::GetClassName($handle,$buffer,130)
+            return $buffer.ToString()
+          }
+          function TextOf([IntPtr]$handle) {
+            $buffer=New-Object System.Text.StringBuilder(130)
+            [void][XdNativeOpen]::GetWindowText($handle,$buffer,130)
+            return $buffer.ToString()
+          }
+          $pickers=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})
+          if($pickers.Count -ne 1 -or $xd.Count -ne 1){throw 'XD_NATIVE_OPEN_PICKER_OR_XD_AMBIGUOUS'}
+          $pickerPidValue=[uint32]$pickers[0].Id
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $tops=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $frames=@($tops|Where-Object{[string]$_.Current.Name -eq 'Adobe XD' -and [string]$_.Current.ClassName -eq 'ApplicationFrameWindow'})
+          $docs=@($tops|Where-Object{[string]$_.Current.Name -match 'MCP_Mode1_Panda_XD|MCP_KFP4_Red_XD|Untitled'})
+          if($frames.Count -ne 1 -or $docs.Count -ne 0){throw 'XD_NATIVE_OPEN_EXISTING_DOCUMENT_BLOCK'}
+          $ui=$frames[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $dialogs=@($ui|Where-Object{[uint32]$_.Current.ProcessId -eq $pickerPidValue -and
+            [string]$_.Current.Name -eq 'Open' -and $_.Current.ControlType.ProgrammaticName -eq 'ControlType.Window'})
+          if($dialogs.Count -ne 1){throw "XD_NATIVE_OPEN_DIALOG_AMBIGUOUS count=$($dialogs.Count)"}
+          $dialogHandle=[IntPtr]$dialogs[0].Current.NativeWindowHandle
+          if((ClassOf $dialogHandle) -ne '#32770'){throw 'XD_NATIVE_OPEN_DIALOG_NOT_WIN32'}
+          $controls=New-Object System.Collections.Generic.List[System.IntPtr]
+          $cb=[XdNativeOpen+Callback]{
+            param([IntPtr]$h,[IntPtr]$ignored)
+            $controls.Add($h)
+            return $true
+          }
+          [void][XdNativeOpen]::EnumChildWindows($dialogHandle,$cb,[IntPtr]::Zero)
+          $edits=@();$openButtons=@()
+          foreach($handle in $controls) {
+            $owner=[uint32]0
+            [void][XdNativeOpen]::GetWindowThreadProcessId($handle,[ref]$owner)
+            if($owner -ne $pickerPidValue -or -not [XdNativeOpen]::IsWindowVisible($handle)){continue}
+            $id=[XdNativeOpen]::GetDlgCtrlID($handle)
+            $class=ClassOf $handle
+            if($id -eq 1148 -and $class -eq 'Edit'){
+              $combo=[XdNativeOpen]::GetParent($handle)
+              $comboex=[XdNativeOpen]::GetParent($combo)
+              if((ClassOf $combo) -eq 'ComboBox' -and
+                 (ClassOf $comboex) -eq 'ComboBoxEx32' -and
+                 [XdNativeOpen]::GetDlgCtrlID($combo) -eq 1148 -and
+                 [XdNativeOpen]::GetDlgCtrlID($comboex) -eq 1148) {$edits+=,$handle}
+            }
+            if($id -eq 1 -and $class -eq 'Button' -and (TextOf $handle) -eq '&Open' -and
+               [XdNativeOpen]::GetParent($handle) -eq $dialogHandle){$openButtons+=,$handle}
+          }
+          Write-Host "XD_NATIVE_OPEN_CONTROL_GATE filename_edit=$($edits.Count) open_button=$($openButtons.Count)"
+          if($edits.Count -ne 1 -or $openButtons.Count -ne 1){throw 'XD_NATIVE_OPEN_EXACT_CONTROLS_MISSING_NO_INPUT'}
+          $editHandle=[IntPtr]$edits[0]
+          $openHandle=[IntPtr]$openButtons[0]
+          $response=[UIntPtr]::Zero
+          $sent=[XdNativeOpen]::SendMessageTimeout($editHandle,[uint32]12,[UIntPtr]::Zero,$target,[uint32]2,[uint32]2500,[ref]$response)
+          if($sent -eq [IntPtr]::Zero -or $response.ToUInt64() -ne 1){throw 'XD_NATIVE_OPEN_FILENAME_SET_UNVERIFIED_NO_CLICK'}
+          $readback=New-Object System.Text.StringBuilder(1024)
+          $receipt=[UIntPtr]::Zero
+          $ok=[XdNativeOpen]::SendMessageTimeout($editHandle,[uint32]13,[UIntPtr]1024,$readback,[uint32]2,[uint32]2500,[ref]$receipt)
+          Write-Host "XD_NATIVE_OPEN_READBACK_EXACT=$($readback.ToString() -ceq $target)"
+          if($ok -eq [IntPtr]::Zero -or $readback.ToString() -cne $target){throw 'XD_NATIVE_OPEN_FILENAME_READBACK_NOT_EXACT_NO_CLICK'}
+          if((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $newSha -or
+             (Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash -ne $oldSha){throw 'XD_NATIVE_OPEN_SHA_CHANGED_NO_CLICK'}
+          if(-not[XdNativeOpen]::PostMessage($openHandle,[uint32]245,[IntPtr]::Zero,[IntPtr]::Zero)){
+            throw 'XD_NATIVE_OPEN_POSTMESSAGE_FAILED_UNKNOWN_NO_REPLAY'
+          }
+          Write-Host 'XD_NATIVE_OPEN_BUTTON_POSTMESSAGE=ONCE'
+          $deadline=(Get-Date).AddSeconds(42)
+          $seen=$false
+          do{
+            Start-Sleep -Seconds 2
+            $top=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+            $opened=@($top|Where-Object{[string]$_.Current.Name -match '^MCP_KFP4_Red_XD_38205166138.*Adobe XD$' -and
+                 [string]$_.Current.ClassName -eq 'ApplicationFrameWindow'})
+            $others=@($top|Where-Object{[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$|^Untitled.*Adobe XD$'})
+            $pick=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+            Write-Host "XD_NATIVE_OPEN_OBSERVATION target=$($opened.Count) otherDocs=$($others.Count) picker=$($pick.Count)"
+            if($opened.Count -eq 1 -and $others.Count -eq 0 -and $pick.Count -eq 0){$seen=$true;break}
+          }until((Get-Date) -ge $deadline)
+          if((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $newSha -or
+             (Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash -ne $oldSha){throw 'XD_NATIVE_OPEN_NATIVE_CHECKPOINTS_MUTATED'}
+          Write-Host 'XD_NATIVE_OPEN_TWO_NATIVE_HASHES_PRESERVED=PASS'
+          if(-not $seen){throw 'XD_NATIVE_OPEN_EDITOR_NOT_VERIFIED_NO_REPLAY'}
+          Write-Host 'XD_NATIVE_OPEN_VERIFIED_RED_DOCUMENT_FRAME=PASS'
