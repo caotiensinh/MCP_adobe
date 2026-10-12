@@ -1,0 +1,93 @@
+name: Panda XD post Ctrl-N UI state and native source read-only census
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-20261012-xd-post-hotkey-readonly-census.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  census:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Enumerate exact UIA windows, dialogs and native checksum after unknown new document command
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_POST_HOTKEY_WRONG_DESKTOP'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          Write-Host "XD_POST_HOTKEY_TOP_WINDOW_COUNT=$($top.Count)"
+          foreach($w in $top){
+            $title=[string]$w.Current.Name
+            if($title.Length -gt 220){$title=$title.Substring(0,220)}
+            $class=[string]$w.Current.ClassName
+            Write-Host "XD_POST_HOTKEY_WINDOW title=$title class=$class pid=$($w.Current.ProcessId) hwnd=$($w.Current.NativeWindowHandle)"
+            if(($title -match 'Adobe XD|Untitled|Create|New Document|Save As|Save|Panda|Design|Document') -or $class -eq 'ApplicationFrameWindow'){
+              $desc=$w.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+              $count=0
+              foreach($c in $desc){
+                if($count -ge 30){break}
+                $n=[string]$c.Current.Name
+                if($n -match 'Create|New|Untitled|Document|Save|Artboard|Custom|Size|Preset|Desktop|Phone|iPhone'){
+                  Write-Host "XD_POST_HOTKEY_CONTROL name=$($n.Substring(0,[Math]::Min($n.Length,100))) id=$($c.Current.AutomationId) type=$($c.Current.ControlType.ProgrammaticName)"
+                  $count++
+                }
+              }
+            }
+          }
+          foreach($name in @('ApplicationFrameHost','XD','PickerHost','CEPHtmlEngine')){
+            $procs=@(Get-Process -Name $name -ErrorAction SilentlyContinue)
+            foreach($p in $procs){Write-Host "XD_POST_HOTKEY_PROCESS name=$name pid=$($p.Id) session=$($p.SessionId) title=$($p.MainWindowTitle)"}
+          }
+          $base=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $old=Join-Path $base 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if(-not(Test-Path -LiteralPath $old -PathType Leaf)){throw 'XD_POST_HOTKEY_ORIGINAL_MISSING'}
+          $sha=(Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash
+          if($sha -ne $expected){throw 'XD_POST_HOTKEY_ORIGINAL_SHA_DIVERGED'}
+          Write-Host "XD_POST_HOTKEY_ORIGINAL=PASS sha256=$sha"
+          foreach($n in @('38203344236','38203523839')){
+            $f=Join-Path $base ("MCP_KFP4_Red_XD_"+$n+".xd")
+            if(Test-Path -LiteralPath $f -PathType Leaf){
+              Write-Host "XD_POST_HOTKEY_NEW_FILE name=$n bytes=$((Get-Item $f).Length) sha256=$((Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash)"
+            }else{Write-Host "XD_POST_HOTKEY_NEW_FILE name=$n status=ABSENT"}
+          }
+          $ws=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "XD_POST_HOTKEY_WS_ESTABLISHED=$($ws.Count)"
+          Write-Host 'XD_POST_HOTKEY_READ_ONLY_UI_CENSUS=PASS'
+      - name: Read exact XD gateway health and current active document without writing
+        shell: powershell
+        env:
+          UV_LINK_MODE: copy
+          PYTHONUTF8: '1'
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $py=Join-Path $env:RUNNER_TEMP 'xd_post_ctrl_n_readonly.py'
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  for cap in ("creative.health","creative.scenegraph.list"):
+                      try:
+                          r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=15)
+                          d=(r.structured_content or {}).get("result") or {}
+                          print("XD_POST_HOTKEY_MCP="+json.dumps({"capability":cap,"is_error":r.is_error,
+                            "ok":(r.structured_content or {}).get("ok"),
+                            "bridge":d.get("bridge"),"pending":d.get("pending_count"),
+                            "document_id":d.get("document_id"),
+                            "nodes":len(d.get("nodes") or [])},default=str),flush=True)
+                      except Exception as exc:
+                          print("XD_POST_HOTKEY_MCP_UNAVAILABLE="+cap+" "+type(exc).__name__,flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath $py -Encoding UTF8
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python "$py"
+          if($LASTEXITCODE -ne 0){throw 'XD_POST_HOTKEY_READ_DIAGNOSTIC_FAILED'}
