@@ -1,0 +1,62 @@
+name: Panda XD identify Home visible presets by exact UIAutomation FromPoint
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-home-point-uia-census.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  points:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Resolve Home GUI controls under screenshot coordinates, no clicks
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_POINT_WRONG_DESKTOP'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -AssemblyName WindowsBase
+          Add-Type @'
+          using System;using System.Runtime.InteropServices;
+          public class XdHomeGeometry {
+            [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left;public int Top;public int Right;public int Bottom; }
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out RECT r);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+          }
+          '@
+          $source=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $sha){throw 'XD_POINT_SOURCE_CHANGED'}
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $windows=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $homeView=@($windows|Where-Object{[string]$_.Current.Name -eq 'Adobe XD' -and [string]$_.Current.ClassName -eq 'ApplicationFrameWindow'})
+          if($homeView.Count -ne 1){throw 'XD_POINT_HOME_NOT_UNIQUE'}
+          $hwnd=[IntPtr]$homeView[0].Current.NativeWindowHandle
+          $rect=New-Object XdHomeGeometry+RECT
+          if(-not([XdHomeGeometry]::GetWindowRect($hwnd,[ref]$rect))){throw 'XD_POINT_NO_RECT'}
+          $foreground=[XdHomeGeometry]::GetForegroundWindow()
+          Write-Host "XD_POINT_WINDOW_RECT left=$($rect.Left) top=$($rect.Top) right=$($rect.Right) bottom=$($rect.Bottom) hwnd=$hwnd foreground=$foreground"
+          $points=@(@(140,365),@(150,415),@(155,448),@(300,450),@(400,340),@(140,240),@(280,280),@(420,480),@(50,380))
+          foreach($pair in $points){
+            $x=$rect.Left+$pair[0];$y=$rect.Top+$pair[1]
+            $p=New-Object System.Windows.Point([double]$x,[double]$y)
+            try{
+              $node=[System.Windows.Automation.AutomationElement]::FromPoint($p)
+              $level=0
+              while($node -and $level -lt 5){
+                $name=[string]$node.Current.Name
+                $id=[string]$node.Current.AutomationId
+                Write-Host "XD_POINT_NODE relX=$($pair[0]) relY=$($pair[1]) level=$level pid=$($node.Current.ProcessId) name=$($name.Substring(0,[Math]::Min($name.Length,100))) id=$id type=$($node.Current.ControlType.ProgrammaticName)"
+                $node=[System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($node)
+                $level++
+              }
+            }catch{Write-Host "XD_POINT_ERROR relX=$($pair[0]) relY=$($pair[1]) class=$($_.Exception.GetType().Name)"}
+          }
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $sha){throw 'XD_POINT_NATIVE_CHANGED'}
+          Write-Host 'XD_POINT_READONLY=PASS'
