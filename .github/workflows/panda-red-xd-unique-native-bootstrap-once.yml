@@ -125,19 +125,7 @@ jobs:
           $filename[0].GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue($target)
           $buttonType=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button)
           $buttons=$dlg.FindAll([System.Windows.Automation.TreeScope]::Descendants,$buttonType)
-          $save=@($buttons|Where-Object {[string]$_.Current.Name -match '^Save$|^Save As -or [string]$_.Current.AutomationId -eq '1'})
-          if($save.Count -ne 1){throw 'RED_XD_SAVE_BUTTON_AMBIGUOUS'}
-          $save[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-          Write-Host 'RED_XD_SAVE_CLICKED_ONCE=PASS'
-          $deadline=(Get-Date).AddSeconds(40)
-          do{Start-Sleep -Milliseconds 700}until((Test-Path -LiteralPath $target -PathType Leaf) -or (Get-Date)-ge $deadline)
-          if(-not(Test-Path -LiteralPath $target -PathType Leaf)){throw 'RED_XD_UNVERIFIED_NATIVE_NO_RETRY'}
-          $file=Get-Item -LiteralPath $target
-          if($file.Length -lt 1000){throw 'RED_XD_NATIVE_TOO_SMALL'}
-          $sha=(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
-          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $original){throw 'RED_XD_ORIGINAL_CHANGED'}
-          Write-Host "RED_XD_NEW_NATIVE_SAVED=PASS sha256=$sha bytes=$($file.Length) original_unchanged=1"
- -or [string]$_.Current.AutomationId -eq '1'})
+          $save=@($buttons|Where-Object {[string]$_.Current.Name -match '^Save$|^Save As$' -or [string]$_.Current.AutomationId -eq '1'})
           if($save.Count -ne 1){throw 'RED_XD_SAVE_BUTTON_AMBIGUOUS'}
           $save[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
           Write-Host 'RED_XD_SAVE_CLICKED_ONCE=PASS'
