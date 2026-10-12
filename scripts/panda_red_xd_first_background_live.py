@@ -84,6 +84,14 @@ async def queue() -> None:
         proof = validate_live_target(health, document, scene, expected_document_id=NEW_DOCUMENT_ID)
         if proof["artboard_id"] != NEW_ARTBOARD_ID:
             raise XdRedGuardError("XD_RED_BG_NATIVE_ARTBOARD_MISMATCH")
+        # The UXP rectangle_create implementation calls
+        # selection.insertionParent.addChild(node). RootNode is NOT the
+        # artboard and could create an unsaved/off-artboard object.
+        insertion = document.get("insertionParent")
+        if (not isinstance(insertion, Mapping)
+            or insertion.get("type") != "Artboard"
+            or insertion.get("guid") != NEW_ARTBOARD_ID):
+            raise XdRedGuardError("XD_RED_BG_INSERTION_PARENT_NOT_TARGET_ARTBOARD_NO_WRITE")
         # Durable write-ahead fence before sending the only creative_write.
         record = {
             "schema": "red-xd-first-bg/v1",
