@@ -51,7 +51,7 @@ jobs:
               return $true
             }
             [void][XdRpcDismiss]::EnumWindows($fn,[IntPtr]::Zero)
-            return ,@($list.ToArray())
+            return $list.ToArray()
           }
           $dir=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
           $source=Join-Path $dir 'MCP_Mode1_Panda_XD_38136531800.xd'
