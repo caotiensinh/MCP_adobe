@@ -18,11 +18,14 @@
   var connectedAt = 0;
   var busy = false;
   var activeRequestId = null;
+  // Retain immutable completion frames until the bridge acknowledges receipt.
+  // A transport reconnect must resend bytes, never execute the request again.
+  var completions = new Map();
 
   function heartbeat() {
     return JSON.stringify({
       type: "heartbeat",
-      busy: busy,
+      busy: busy || completions.size > 0,
       activeRequestId: activeRequestId,
       uptimeMs: connectedAt ? Date.now() - connectedAt : 0,
       capabilities: ["payload-v1"]
@@ -35,19 +38,40 @@
     return true;
   }
 
+  function submitCompletion(completion) {
+    var connection = socket;
+    var frames = completion.frames;
+    try {
+      for (var i = 0; i < frames.length; i++) {
+        if (socket !== connection || !send(frames[i])) break;
+      }
+    } catch (_) { /* Retained for the next connection. */ }
+  }
+
+  function complete(request, response, payloadFrames) {
+    response.requestToken = request.requestToken;
+    response.jobId = request.jobId;
+    response.connectionGeneration = request.connectionGeneration;
+    var completion = {frames: (payloadFrames || []).concat([response]).map(function (frame) {
+      return JSON.stringify(frame);
+    })};
+    if (request.requestToken) completions.set(request.requestToken, completion);
+    submitCompletion(completion);
+  }
+
   function evalHost(script, timeoutMs) {
     return new Promise(function (resolve, reject) {
       var settled = false;
-      var timer = window.setTimeout(function () {
+      var timer = timeoutMs ? window.setTimeout(function () {
         if (!settled) {
           settled = true;
           reject(new Error("Illustrator evalScript timeout"));
         }
-      }, timeoutMs || 15000);
+      }, timeoutMs) : null;
       cs.evalScript(script, function (raw) {
         if (settled) return;
         settled = true;
-        window.clearTimeout(timer);
+        if (timer !== null) window.clearTimeout(timer);
         resolve(raw);
       });
     });
@@ -107,7 +131,7 @@
 
   async function handleRequest(data) {
     if (!data || !data.script || !data.id) return;
-    if (busy) {
+    if (busy || completions.size > 0) {
       send({
         id: data.id,
         requestToken: data.requestToken,
@@ -121,15 +145,18 @@
     activeRequestId = data.id;
     send(heartbeat());
     var started = Date.now();
+    var payloadFrames = [];
     try {
-      var raw = await evalHost("mcp_handle_request(" + JSON.stringify(data) + ")", 30000);
+      // The Python waiter has its own deadline. Expiring it cannot cancel a
+      // native evalScript call. Keep this callback and the busy fence alive.
+      var raw = await evalHost("mcp_handle_request(" + JSON.stringify(data) + ")", 0);
       var parsed;
       try { parsed = JSON.parse(raw); }
       catch (_) { parsed = {result: raw}; }
 
       if (data.transport) {
         if (!parsed.payloadDescriptor) {
-          send({
+          complete(data, {
             id: data.id,
             type: "complete",
             command: (data.command && data.command.type) || "script",
@@ -138,15 +165,18 @@
             connectionGeneration: data.connectionGeneration,
             duration: Date.now() - started,
             payloadError: parsed.payloadError,
-            error: "Payload descriptor unavailable: " + (parsed.payloadError || "host upgrade required")
+            hostDiagnostic: String(parsed.payloadError || parsed.error || raw).slice(0, 512),
+            error: "Payload descriptor unavailable: " + String(parsed.payloadError || parsed.error || raw).slice(0, 512)
           });
           return;
         }
-        var frames = await collectPayload(data, parsed.payloadDescriptor);
-        for (var i = 0; i < frames.length; i++) send(frames[i]);
+        // Keep descriptor evidence even if immutable page delivery fails.
+        payloadFrames = [{type: "payload_descriptor", id: data.id,
+          requestToken: data.requestToken, descriptor: parsed.payloadDescriptor}];
+        payloadFrames = await collectPayload(data, parsed.payloadDescriptor);
       }
 
-      send({
+      complete(data, {
         id: data.id,
         type: "complete",
         command: (data.command && data.command.type) || "script",
@@ -156,9 +186,9 @@
         duration: Date.now() - started,
         result: data.transport ? undefined : (parsed.result !== undefined ? parsed.result : parsed),
         error: parsed.error
-      });
+      }, payloadFrames);
     } catch (error) {
-      send({
+      complete(data, {
         id: data.id,
         type: "complete",
         command: (data.command && data.command.type) || "script",
@@ -167,7 +197,7 @@
         connectionGeneration: data.connectionGeneration,
         duration: Date.now() - started,
         error: String(error)
-      });
+      }, payloadFrames);
     } finally {
       busy = false;
       activeRequestId = null;
@@ -187,6 +217,7 @@
     socket.onopen = function () {
       connectedAt = Date.now();
       send(heartbeat());
+      completions.forEach(submitCompletion);
       if (heartbeatTimer !== null) window.clearInterval(heartbeatTimer);
       heartbeatTimer = window.setInterval(function () { send(heartbeat()); }, 5000);
     };
@@ -194,7 +225,11 @@
     socket.onmessage = function (event) {
       try {
         var data = JSON.parse(event.data);
-        if (data.type === "completion_ack") return;
+        if (data.type === "completion_ack") {
+          completions.delete(data.requestToken);
+          send(heartbeat());
+          return;
+        }
         handleRequest(data);
       } catch (_) {}
     };

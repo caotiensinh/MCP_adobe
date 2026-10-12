@@ -1,0 +1,30 @@
+name: Illustrator CEP transport regression
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/illustrator_cep_fallback_transport.html
+      - tests/illustrator_cep_transport.test.cjs
+      - .github/workflows/illustrator-cep-transport-unit.yml
+  pull_request:
+    paths:
+      - scripts/illustrator_cep_fallback_transport.html
+      - tests/illustrator_cep_transport.test.cjs
+      - .github/workflows/illustrator-cep-transport-unit.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  transport-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Late callback, admission fence, and reconnect regressions
+        run: node --test tests/illustrator_cep_transport.test.cjs
