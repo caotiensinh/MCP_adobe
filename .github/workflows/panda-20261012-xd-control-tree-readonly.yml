@@ -1,0 +1,51 @@
+name: Panda XD real document menu and New controls UIA read only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-20261012-xd-control-tree-readonly.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  controls:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Enumerate UIA tree under exact original XD document without mouse keyboard or MCP calls
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_CONTROLS_WRONG_HOST'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $tops=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $matches=@($tops | Where-Object {[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+          if($matches.Count -ne 1){throw "XD_CONTROLS_DOCUMENT_NOT_UNIQUE count=$($matches.Count)"}
+          $doc=$matches[0]
+          Write-Host "XD_CONTROLS_ROOT=PASS title=$($doc.Current.Name) pid=$($doc.Current.ProcessId)"
+          foreach($scope in @([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.TreeScope]::Descendants)){
+            $nodes=$doc.FindAll($scope,[System.Windows.Automation.Condition]::TrueCondition)
+            Write-Host "XD_CONTROLS_SCOPE scope=$scope count=$($nodes.Count)"
+            $printed=0;$seen=0
+            foreach($n in $nodes){
+              $seen++
+              $name=[string]$n.Current.Name
+              $id=[string]$n.Current.AutomationId
+              $type=[string]$n.Current.ControlType.ProgrammaticName
+              if($seen -le 80 -or $name -match 'New|File|Save|Home|Artboard|Document|Menu|Create'){
+                $safeName=$name.Substring(0,[Math]::Min(95,$name.Length))
+                $safeId=$id.Substring(0,[Math]::Min(95,$id.Length))
+                Write-Host "XD_CONTROLS_NODE scope=$scope index=$seen type=$type name=$safeName id=$safeId enabled=$($n.Current.IsEnabled)"
+                $printed++
+              }
+              if($printed -ge 145){break}
+            }
+          }
+          $file=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          $hash=(Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+          if($hash -ne '3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'){throw 'XD_CONTROLS_ORIGINAL_CHANGED'}
+          Write-Host 'XD_CONTROLS_READONLY_COMPLETED=PASS source_unchanged=1'
