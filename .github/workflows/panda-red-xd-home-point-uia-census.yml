@@ -58,5 +58,28 @@ jobs:
               }
             }catch{Write-Host "XD_POINT_ERROR relX=$($pair[0]) relY=$($pair[1]) class=$($_.Exception.GetType().Name)"}
           }
+          Add-Type -AssemblyName System.Windows.Forms
+          foreach($screen in [System.Windows.Forms.Screen]::AllScreens){
+            $b=$screen.Bounds
+            Write-Host "XD_POINT_MONITOR device=$($screen.DeviceName) primary=$($screen.Primary) left=$($b.Left) top=$($b.Top) width=$($b.Width) height=$($b.Height)"
+          }
+          $sample=New-Object System.Windows.Point([double]($rect.Left+400),[double]($rect.Top+340))
+          $node=[System.Windows.Automation.AutomationElement]::FromPoint($sample)
+          $presets=$null
+          for($depth=0;$depth -lt 16 -and $node;$depth++){
+            if([string]$node.Current.AutomationId -eq 'components-presets'){$presets=$node;break}
+            $node=[System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($node)
+          }
+          if($presets){
+            $items=$presets.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+            Write-Host "XD_POINT_PRESETS_TREE_COUNT=$($items.Count)"
+            $n=0
+            foreach($item in $items){
+              if($n -ge 110){break}
+              $name=[string]$item.Current.Name;$id=[string]$item.Current.AutomationId
+              Write-Host "XD_POINT_PRESET_ITEM index=$n name=$($name.Substring(0,[Math]::Min(100,$name.Length))) id=$id type=$($item.Current.ControlType.ProgrammaticName) enabled=$($item.Current.IsEnabled)"
+              $n++
+            }
+          }else{Write-Host 'XD_POINT_PRESETS_TREE_NOT_FOUND=TRUE'}
           if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $sha){throw 'XD_POINT_NATIVE_CHANGED'}
           Write-Host 'XD_POINT_READONLY=PASS'
