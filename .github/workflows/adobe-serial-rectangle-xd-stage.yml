@@ -110,7 +110,12 @@ jobs:
             $otherScript=Join-Path $PWD 'scripts/panda_xd_save_menu_direct.ps1'
             $tokens2=$null;$errors2=$null
             [void][System.Management.Automation.Language.Parser]::ParseFile($otherScript,[ref]$tokens2,[ref]$errors2)
-            if(@($errors2).Count -gt 0){throw 'SERIAL_XD_MENU_SAVE_SCRIPT_SYNTAX_INVALID'}
+            if(@($errors2).Count -gt 0){
+              foreach($e in @($errors2)){
+                Write-Host "SERIAL_XD_MENU_SAVE_PARSER_ERROR line=$($e.Extent.StartLineNumber) column=$($e.Extent.StartColumnNumber) message=$($e.Message)"
+              }
+              throw 'SERIAL_XD_MENU_SAVE_SCRIPT_SYNTAX_INVALID'
+            }
             powershell -NoProfile -ExecutionPolicy Bypass -File $otherScript -RunId $env:GITHUB_RUN_ID
           }else{
             $xdHome=@(Get-Process -Name XD -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowTitle -eq 'Adobe XD'})
