@@ -177,15 +177,20 @@ def _task(
     params: Mapping[str, Any] | None = None,
     *,
     targets: Mapping[str, Any] | None = None,
+    suppress_auto_preview: bool = False,
 ) -> Mapping[str, Any]:
     operation: dict[str, Any] = {"task": task, "params": dict(params or {})}
     if targets is not None:
         operation["targets"] = dict(targets)
-    return _call(
-        raw,
-        "illustrator_execute_task",
-        {"batch": {"operations": [operation], "stopOnError": True}},
-    )
+    request: dict[str, Any] = {"batch": {"operations": [operation], "stopOnError": True}}
+    if suppress_auto_preview:
+        # The upstream evidence cadence can issue z_telemetry/preview_export
+        # AFTER a successfully committed shape and can timeout, misreporting the
+        # completed write as C014/unknown. Our caller verifies each individual
+        # vector with creative.document.fast_snapshot and a separate native save.
+        # Do not perform the hidden post-mutation host round trip here.
+        request["return_preview"] = False
+    return _call(raw, "illustrator_execute_task", request)
 
 
 def _query(raw: RawToolCaller, targets: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -247,7 +252,7 @@ def _create_element(raw: RawToolCaller, element_type: str, arguments: Mapping[st
     params = dict(arguments)
     params.pop("coordinate_system", None)
     params["type"] = element_type
-    return _task(raw, "element_create", params)
+    return _task(raw, "element_create", params, suppress_auto_preview=True)
 
 
 def _select_objects(raw: RawToolCaller, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -503,7 +508,7 @@ def call_legacy_tool(raw: RawToolCaller, name: str, arguments: Mapping[str, Any]
         params = dict(args)
         if "text" in params and "contents" not in params:
             params["contents"] = params.pop("text")
-        return _task(raw, "text_create", params)
+        return _task(raw, "text_create", params, suppress_auto_preview=True)
 
     if name == "modify_object":
         tokens = _tokens_from_arguments(args)
