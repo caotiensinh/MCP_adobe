@@ -1,0 +1,91 @@
+name: Panda AI diagnose postrestart fast snapshot unknown and Illustrator modal read only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-ai-rect2-postrestart-read-unknown-audit.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - name: Capture process, desktop window and callback trace without Illustrator host calls
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'RECT2_POSTRESTART_WRONG_HOST'}
+          foreach($name in @('Illustrator','XD','Photoshop','CEPHtmlEngine')){
+            $processes=@(Get-Process -Name $name -ErrorAction SilentlyContinue)
+            foreach($p in $processes){
+              Write-Host "RECT2_PROCESS name=$name pid=$($p.Id) session=$($p.SessionId) responding=$($p.Responding) title=$($p.MainWindowTitle)"
+            }
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $wins=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          foreach($w in $wins){
+            try{
+              if($w.Current.Name -notmatch 'Illustrator|Save|Open|Recovery'){continue}
+              $pt=$null
+              $modal=$false
+              if($w.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern,[ref]$pt)){
+                $modal=$pt.Current.IsModal
+              }
+              $name=[string]$w.Current.Name
+              if($name.Length -gt 160){$name=$name.Substring(0,160)}
+              Write-Host "RECT2_WINDOW title=$name pid=$($w.Current.ProcessId) enabled=$($w.Current.IsEnabled) modal=$modal"
+            }catch [System.Windows.Automation.ElementNotAvailableException]{}
+          }
+          $trace=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\callback_trace.log'
+          if(Test-Path $trace){
+            foreach($line in @(Get-Content $trace -Tail 35 -ErrorAction SilentlyContinue)){
+              $clean=([string]$line) -replace '(?i)(token|password|secret|authorization|api[_-]?key)\s*[:=]\s*[^\s,}]+','$1=[REDACTED]'
+              if($clean.Length -gt 440){$clean=$clean.Substring(0,440)}
+              Write-Host "RECT2_LAST_CALLBACK=$clean"
+            }
+          }
+      - name: Read exact unresolved coordinator job and phases without executing host operations
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def read(c,cap,args):
+              r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"illustrator","capability":cap,"arguments":args}),timeout=17)
+              p=r.structured_content or {}
+              if r.is_error or p.get("ok") is not True:raise RuntimeError("RECT2_INSPECTION_UNAVAILABLE:"+cap)
+              return p.get("result") or {}
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  h=await read(c,"creative.health",{"probe":False,"timeout":5})
+                  data=((h.get("connection") or {}).get("data") or {})
+                  q=data.get("execution") or {}
+                  print("RECT2_HEALTH="+json.dumps({"blockedAt":data.get("blockedAt"),"execution":q,
+                      "panel":(data.get("layers") or {}).get("panel")},default=str),flush=True)
+                  for jobId in q.get("unresolvedJobs") or []:
+                      s=await read(c,"creative.job.status",{"jobId":jobId,"detail":"full"})
+                      job=((s.get("data") or {}).get("job") or {})
+                      parts=[]
+                      for p in (job.get("journal") or {}).get("records") or []:
+                          parts.append({"command":p.get("command"),"execution":p.get("execution"),
+                              "integrity":(p.get("integrity") or {}).get("reason"),
+                              "effect":p.get("effects"),"readOnly":p.get("readOnly")})
+                      print("RECT2_UNKNOWN_RECORD="+json.dumps({"id":jobId,"label":job.get("label"),"status":job.get("status"),
+                           "error":job.get("error"),"outcomeSource":job.get("outcomeSource"),
+                           "records":parts},default=str),flush=True)
+                  print("RECT2_DIAGNOSTIC=PASS no new host request",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\inspect_rect2_post.py -Encoding UTF8
+          uv run --python 3.12 python .\inspect_rect2_post.py
+          if($LASTEXITCODE -ne 0){throw 'RECT2_DIAGNOSTIC_UNKNOWN_NO_REPLAY'}
