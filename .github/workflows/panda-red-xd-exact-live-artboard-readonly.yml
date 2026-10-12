@@ -1,0 +1,60 @@
+name: Panda red XD exact saved document and artboard live first write readback
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-exact-live-artboard-readonly.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - name: Verify protected XD SHA + dump bounded actual MCP document and artboard payload
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_LIVE_ARTBOARD_WRONG_HOST_SESSION'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          foreach($pair in @(
+            @('MCP_Mode1_Panda_XD_38136531800.xd','3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'),
+            @('MCP_KFP4_Red_XD_38205166138.xd','58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'))) {
+            if((Get-FileHash -LiteralPath (Join-Path $root $pair[0]) -Algorithm SHA256).Hash -ne $pair[1]){throw 'XD_LIVE_ARTBOARD_SHA_CHANGED'}
+          }
+          Write-Host 'XD_LIVE_ARTBOARD_NATIVE_GUARDS=PASS'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $py=Join-Path $env:RUNNER_TEMP 'panda_red_exact_artboard_read.py'
+          @'
+          import asyncio,json
+          from mcp import Client
+          TARGET="304d4d00-6fba-47c0-b67a-d0e8ecf30254"
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  values={}
+                  for cap in ("creative.health","creative.document.info","creative.scenegraph.list"):
+                      r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=10)
+                      p=r.structured_content or {}
+                      if r.is_error or p.get("ok") is not True:raise RuntimeError("XD_LIVE_READ_FAILED "+cap)
+                      values[cap]=p.get("result") or {}
+                  print("XD_LIVE_DOC_PAYLOAD="+json.dumps(values["creative.document.info"],ensure_ascii=False,default=str)[:9000],flush=True)
+                  print("XD_LIVE_HEALTH_PAYLOAD="+json.dumps(values["creative.health"],ensure_ascii=False,default=str)[:2500],flush=True)
+                  print("XD_LIVE_SCENEGRAPH_PAYLOAD="+json.dumps(values["creative.scenegraph.list"],ensure_ascii=False,default=str)[:15000],flush=True)
+                  health=values["creative.health"];scene=values["creative.scenegraph.list"]
+                  if health.get("bridge")!="connected" or health.get("pending_count")!=0:raise RuntimeError("XD_LIVE_NOT_IDLE")
+                  if scene.get("document_id")!=TARGET or scene.get("complete") is not True:raise RuntimeError("XD_LIVE_DOCUMENT_OWNERSHIP_MISMATCH")
+                  nodes=scene.get("nodes")
+                  if not isinstance(nodes,list) or len(nodes)!=1 or nodes[0].get("type")!="Artboard":
+                      raise RuntimeError("XD_LIVE_ARTBOARD_NOT_UNIQUE")
+                  if nodes[0].get("children")!=[]:raise RuntimeError("XD_LIVE_ARTBOARD_NOT_EMPTY")
+                  print("XD_LIVE_PINNED_EMPTY_880_ARTBOARD_NODES=PASS; NOT_YET_AUTHORIZED_FOR_WRITE",flush=True)
+          asyncio.run(asyncio.wait_for(main(),timeout=40))
+          '@|Set-Content -LiteralPath $py -Encoding UTF8
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python $py
+          if($LASTEXITCODE -ne 0){throw 'XD_LIVE_ARTBOARD_MCP_READ_FAILURE'}
