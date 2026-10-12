@@ -72,6 +72,19 @@ try {
     $root=[IO.Path]::GetFullPath($RunnerRoot)
     Expect (Test-Path -LiteralPath (Join-Path $root 'run.cmd') -PathType Leaf) 'RUN_CMD_MISSING'
     [void](Parse-RunnerRegistration $root)
+    $diag=Join-Path $root '_diag'
+    $recentLogs=@()
+    if(Test-Path -LiteralPath $diag -PathType Container){
+        $recentLogs=@(Get-ChildItem -LiteralPath $diag -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 3)
+    }
+    foreach($logFile in $recentLogs){
+        Write-Host "MRCAO_RUNNER_DIAG_FILE name=$($logFile.Name) utc=$($logFile.LastWriteTimeUtc.ToString('o')) bytes=$($logFile.Length)"
+    }
+    $report.last_log_utc=if($recentLogs.Count){$recentLogs[0].LastWriteTimeUtc.ToString('o')}else{$null}
+    # Check connectivity even when a listener exists: an unassigned job can
+    # result from a live-looking process with broken outbound GitHub traffic.
+    Test-RemoteConnectivity
     $listeners=@(Get-RootListener $root)
     $services=@(Get-RootService $root)
     Write-Host "MRCAO_RUNNER_LOCAL_STATE listeners=$($listeners.Count) services=$($services.Count)"
@@ -94,7 +107,6 @@ try {
         $report.result='SERVICE_PRESENT_REQUIRES_EXPLICIT_ADMIN_RECONCILIATION'
         Fail 'RUNNER_SERVICE_PRESENT_NO_AUTOMATIC_STOP_OR_DUPLICATE_LISTENER'
     }
-    Test-RemoteConnectivity
     if($DiagnoseOnly) {
         $report.result='READY_TO_START_NOT_EXECUTED'
         Write-Host 'MRCAO_RUNNER_DIAGNOSE_ONLY=PASS; no process started.'
