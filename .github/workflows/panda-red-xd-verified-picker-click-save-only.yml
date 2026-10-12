@@ -32,6 +32,7 @@ jobs:
             [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
             [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h,uint m,IntPtr w,StringBuilder buf);
             [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
+            [DllImport("user32.dll",SetLastError=true)] public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
           }
           '@
           function ClassOf([IntPtr]$h){
@@ -87,8 +88,10 @@ jobs:
           Write-Host "XD_FINAL_FILENAME_READBACK length=$length copied=$copied expectedMatch=$($actual -eq $target)"
           if($actual -ne $target -or $copied -ne $length){throw 'XD_FINAL_FILENAME_NOT_EXACT_NO_CLICK'}
           if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $original -or (Test-Path -LiteralPath $target)){throw 'XD_FINAL_GUARD_CHANGED_NO_CLICK'}
-          [void][XdFinalSave]::SendMessage($saveHwnd,[uint32]245,[IntPtr]::Zero,[IntPtr]::Zero)
-          Write-Host 'XD_FINAL_SAVE_BM_CLICK_ONCE=PASS'
+          $posted=[XdFinalSave]::PostMessage($saveHwnd,[uint32]245,[IntPtr]::Zero,[IntPtr]::Zero)
+          Write-Host "XD_FINAL_SAVE_ASYNC_POST_RESULT=$posted"
+          if(-not $posted){throw 'XD_FINAL_POST_BM_CLICK_FAILED_NO_RETRY'}
+          Write-Host 'XD_FINAL_SAVE_ASYNC_BM_CLICK_ONCE=PASS'
           $deadline=(Get-Date).AddSeconds(40)
           do{Start-Sleep -Milliseconds 600}until((Test-Path -LiteralPath $target -PathType Leaf) -or (Get-Date)-ge $deadline)
           if(-not(Test-Path -LiteralPath $target -PathType Leaf)){throw 'XD_FINAL_WRITE_UNKNOWN_DO_NOT_RECLICK'}
