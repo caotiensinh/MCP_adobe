@@ -115,7 +115,10 @@ async def main() -> None:
     async with Client(URL) as client:
         h = await call(client, "creative_read", "creative.health",
                        {"probe": False, "timeout": 5}, stage="health_before_ms")
-        require_host_idle(h, allow_no_doc=True)
+        # Probe=false health may report document.status="unknown" by design.
+        # Check only panel and unresolved queues first; require "none_open"
+        # only after the trusted host probe has actually inspected Illustrator.
+        require_host_idle(h, allow_no_doc=False)
         probed = await call(client, "creative_read", "creative.health",
                             {"probe": True, "timeout": 12}, stage="trusted_probe_ms")
         require_host_idle(probed, allow_no_doc=True)
