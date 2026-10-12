@@ -38,7 +38,21 @@ jobs:
           $original=@($windows | Where-Object {[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
           Write-Host "XD_SCREEN_PREFLIGHT home=$($homeView.Count) source_doc=$($original.Count)"
           if($homeView.Count -ne 1 -or $original.Count -ne 1){throw 'XD_SCREEN_NOT_EXACT_TWO_WINDOWS'}
+          Add-Type @'
+          using System;using System.Runtime.InteropServices;
+          public class XdForeground {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+          }
+          '@
           $hwnd=[IntPtr]$homeView[0].Current.NativeWindowHandle
+          $foregroundBefore=[XdForeground]::GetForegroundWindow()
+          Write-Host "XD_SCREEN_FOREGROUND_BEFORE=$foregroundBefore target=$hwnd"
+          $activated=[XdForeground]::SetForegroundWindow($hwnd)
+          Start-Sleep -Milliseconds 700
+          $foregroundAfter=[XdForeground]::GetForegroundWindow()
+          Write-Host "XD_SCREEN_FOREGROUND_AFTER=$foregroundAfter activated=$activated target=$hwnd"
+          if($foregroundAfter -ne $hwnd){throw 'XD_SCREEN_HOME_NOT_FOREGROUND_REFUSE_OCCLUDED_CAPTURE'}
           $rect=New-Object XdScreenRect+RECT
           if(-not([XdScreenRect]::GetWindowRect($hwnd,[ref]$rect))){throw 'XD_SCREEN_RECT_FAILED'}
           $width=$rect.Right-$rect.Left
