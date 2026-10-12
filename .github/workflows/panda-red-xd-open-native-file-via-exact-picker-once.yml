@@ -100,12 +100,27 @@ jobs:
           if($edits.Count -ne 1 -or $openButtons.Count -ne 1){throw 'XD_NATIVE_OPEN_EXACT_CONTROLS_MISSING_NO_INPUT'}
           $editHandle=[IntPtr]$edits[0]
           $openHandle=[IntPtr]$openButtons[0]
-          $response=[UIntPtr]::Zero
-          $sent=[XdNativeOpen]::SendMessageTimeout($editHandle,[uint32]12,[UIntPtr]::Zero,$target,[uint32]2,[uint32]2500,[ref]$response)
-          if($sent -eq [IntPtr]::Zero -or $response.ToUInt64() -ne 1){throw 'XD_NATIVE_OPEN_FILENAME_SET_UNVERIFIED_NO_CLICK'}
+          # The previous diagnostic returned after setting WM_SETTEXT but before
+          # WM_GETTEXT. Read the existing field FIRST to avoid blind replay.
+          $bufferLimit=[UIntPtr]::new([uint32]1024)
+          $currentField=New-Object System.Text.StringBuilder(1024)
+          $priorReceipt=[UIntPtr]::Zero
+          $priorRead=[XdNativeOpen]::SendMessageTimeout($editHandle,[uint32]13,$bufferLimit,$currentField,[uint32]2,[uint32]2500,[ref]$priorReceipt)
+          if($priorRead -eq [IntPtr]::Zero){throw 'XD_NATIVE_OPEN_EXISTING_FIELD_UNREADABLE_NO_REPLAY'}
+          $beforeText=$currentField.ToString()
+          Write-Host "XD_NATIVE_OPEN_PRIOR_FIELD_CLASSIFICATION=$(if($beforeText -ceq $target){'already-exact'}elseif($beforeText -ceq ''){'empty'}else{'foreign-nonempty'})"
+          if($beforeText -cne '' -and $beforeText -cne $target){throw 'XD_NATIVE_OPEN_FOREIGN_FIELD_REFUSE_REPLACE'}
+          if($beforeText -ceq ''){
+            $response=[UIntPtr]::Zero
+            $sent=[XdNativeOpen]::SendMessageTimeout($editHandle,[uint32]12,[UIntPtr]::Zero,$target,[uint32]2,[uint32]2500,[ref]$response)
+            if($sent -eq [IntPtr]::Zero -or $response.ToUInt64() -ne 1){throw 'XD_NATIVE_OPEN_FILENAME_SET_UNVERIFIED_NO_CLICK'}
+            Write-Host 'XD_NATIVE_OPEN_FILENAME_SET=ONCE_FROM_EMPTY'
+          }else{
+            Write-Host 'XD_NATIVE_OPEN_FILENAME_ALREADY_EXACT_NO_REPEAT'
+          }
           $readback=New-Object System.Text.StringBuilder(1024)
           $receipt=[UIntPtr]::Zero
-          $ok=[XdNativeOpen]::SendMessageTimeout($editHandle,[uint32]13,[UIntPtr]1024,$readback,[uint32]2,[uint32]2500,[ref]$receipt)
+          $ok=[XdNativeOpen]::SendMessageTimeout($editHandle,[uint32]13,$bufferLimit,$readback,[uint32]2,[uint32]2500,[ref]$receipt)
           Write-Host "XD_NATIVE_OPEN_READBACK_EXACT=$($readback.ToString() -ceq $target)"
           if($ok -eq [IntPtr]::Zero -or $readback.ToString() -cne $target){throw 'XD_NATIVE_OPEN_FILENAME_READBACK_NOT_EXACT_NO_CLICK'}
           if((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $newSha -or
