@@ -99,57 +99,13 @@ jobs:
           Write-Host 'SERIAL_XD_POWERSHELL_AST=PASS'
           $sw=[Diagnostics.Stopwatch]::StartNew()
           $unsaved=@(Get-Process -ErrorAction SilentlyContinue | Where-Object {
-            $_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -match '^Untitled.*Adobe XD
-          $sw.Stop()
-          if(-not(Test-Path -LiteralPath $target -PathType Leaf)){throw 'SERIAL_XD_NATIVE_MISSING'}
-          $file=Get-Item -LiteralPath $target
-          $stream=[IO.File]::OpenRead($target)
-          try{$a=$stream.ReadByte();$b=$stream.ReadByte()}finally{$stream.Dispose()}
-          if($file.Length -lt 1000 -or $a -ne 80 -or $b -ne 75){throw 'SERIAL_XD_NATIVE_FORMAT_INVALID'}
-          $hash=(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
-          New-Item -ItemType Directory -Force -Path serial_xd_artifact | Out-Null
-          Copy-Item -LiteralPath $target -Destination serial_xd_artifact -ErrorAction Stop
-          Write-Host "SERIAL_XD_NEW_BLANK_NATIVE_PASS=YES sha256=$hash bytes=$($file.Length) elapsed_ms=$($sw.ElapsedMilliseconds)"
-      - name: Read actual XD plugin and scenegraph without any rectangle replay
-        shell: powershell
-        run: |
-          $ErrorActionPreference='Stop'
-          if(@(Get-Process -Name Illustrator,Photoshop -ErrorAction SilentlyContinue).Count -gt 0){throw 'SERIAL_XD_ISOLATION_LOST'}
-          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
-          $py=Join-Path $env:RUNNER_TEMP 'serial_xd_health_once.py'
-          @'
-          import asyncio,json
-          from mcp import Client
-          async def main():
-              async with Client("http://127.0.0.1:8787/mcp") as c:
-                  for cap in ("creative.health","creative.document.info","creative.scenegraph.list"):
-                      r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=12)
-                      d=r.structured_content
-                      res=d.get("result") if isinstance(d,dict) else None
-                      print("SERIAL_XD_READ="+json.dumps({"cap":cap,"ok":isinstance(d,dict) and d.get("ok"),"error":r.is_error,"result":res},default=str)[:7000],flush=True)
-                      if r.is_error or not isinstance(d,dict) or d.get("ok") is not True:raise RuntimeError("SERIAL_XD_BRIDGE_UNAVAILABLE "+cap)
-                      if cap=="creative.health" and (res.get("bridge")!="connected" or res.get("pending_count")!=0):raise RuntimeError("SERIAL_XD_PLUGIN_OR_QUEUE_UNREADY")
-                      if cap=="creative.scenegraph.list" and res.get("complete") is not True:raise RuntimeError("SERIAL_XD_SCENEGRAPH_INCOMPLETE")
-              print("SERIAL_XD_READONLY_GATE=PASS",flush=True)
-          asyncio.run(main())
-          '@ | Set-Content -LiteralPath $py -Encoding UTF8
-          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python $py
-          if($LASTEXITCODE -ne 0){throw 'SERIAL_XD_READONLY_NOT_ACCEPTED'}
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: adobe-serial-xd-new-native-before-one-rectangle
-          path: serial_xd_artifact/*
-          if-no-files-found: warn
-          retention-days: 14
-
+            $_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -match '^Untitled.*Adobe XD$'
           })
           $dialogs=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})
           if($dialogs.Count -gt 0){throw 'SERIAL_XD_PREVIOUS_MODAL_OUTCOME_UNKNOWN_NO_REPLAY'}
           if($unsaved.Count -gt 1){throw 'SERIAL_XD_MULTIPLE_UNSAVED_DOCUMENTS'}
           if($unsaved.Count -eq 1){
-            # Run 38251355182 verified create=PASS, save hotkey -> no dialog
-            # after bounded observation. Reuse this exact unsaved document.
+            # Previous live create PASS; blank XD unsaved. Never repeat document create.
             Write-Host "SERIAL_XD_EXISTING_UNSAVED_DOCUMENT=PASS title=$($unsaved[0].MainWindowTitle)"
             $otherScript=Join-Path $PWD 'scripts/panda_xd_save_menu_direct.ps1'
             $tokens2=$null;$errors2=$null
@@ -157,7 +113,6 @@ jobs:
             if(@($errors2).Count -gt 0){throw 'SERIAL_XD_MENU_SAVE_SCRIPT_SYNTAX_INVALID'}
             powershell -NoProfile -ExecutionPolicy Bypass -File $otherScript -RunId $env:GITHUB_RUN_ID
           }else{
-            # Only a verified Home may create one new document, never retry an unknown.
             $xdHome=@(Get-Process -Name XD -ErrorAction SilentlyContinue | Where-Object {$_.MainWindowTitle -eq 'Adobe XD'})
             if($xdHome.Count -ne 1){throw 'SERIAL_XD_NOT_HOME_OR_UNSAVED_NO_MUTATION'}
             powershell -NoProfile -ExecutionPolicy Bypass -File scripts/panda_xd_bootstrap_native.ps1 -RunId $env:GITHUB_RUN_ID
