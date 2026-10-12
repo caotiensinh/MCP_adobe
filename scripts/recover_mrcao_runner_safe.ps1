@@ -105,6 +105,10 @@ try {
     }
     if($services.Count -gt 0) {
         $report.result='SERVICE_PRESENT_REQUIRES_EXPLICIT_ADMIN_RECONCILIATION'
+        if($DiagnoseOnly) {
+            Write-Host 'MRCAO_RUNNER_DIAGNOSE_SERVICE_PRESENT=PASS; no service change or duplicate listener.'
+            return
+        }
         Fail 'RUNNER_SERVICE_PRESENT_NO_AUTOMATIC_STOP_OR_DUPLICATE_LISTENER'
     }
     if($DiagnoseOnly) {
