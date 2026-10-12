@@ -16,7 +16,8 @@ cli = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(cli)
 from mcp_adobe.xd_red_poster_guard import XdRedGuardError
 
-NEW_DOC = "new-red-doc-pinned-id"
+from mcp_adobe.xd_red_poster_guard import NEW_DOCUMENT_ID, NEW_ARTBOARD_ID
+NEW_DOC = NEW_DOCUMENT_ID
 
 
 def sample():
@@ -26,7 +27,7 @@ def sample():
         "creative.scenegraph.list": {
             "document_id": NEW_DOC, "complete": True,
             "nodes": [{
-                "id": "native-red-artboard", "type": "Artboard",
+                "id": NEW_ARTBOARD_ID, "type": "Artboard",
                 "bounds": {"left": 0, "top": 0, "right": 880, "bottom": 700},
                 "children": [],
             }],
@@ -71,7 +72,7 @@ def test_exact_pinned_uuid_reaches_read_only_first_write_gate(monkeypatch, tmp_p
     proof = json.loads(report.read_text(encoding="utf-8"))
     assert proof["outcome"] == "READ_ONLY_PREFLIGHT_PASS"
     assert proof["ready_for_first_write"] is True
-    assert proof["binding"]["artboard_id"] == "native-red-artboard"
+    assert proof["binding"]["artboard_id"] == NEW_ARTBOARD_ID
     assert proof["new_native_writes"] == proof["bridge_gui_actions"] == 0
 
 
@@ -110,3 +111,24 @@ def test_native_checksum_change_blocks_even_read_only_discovery(monkeypatch, tmp
     with pytest.raises(XdRedGuardError, match="NATIVE_CHANGED_DURING_PREFLIGHT"):
         asyncio.run(cli.inspect(expected_document_id=None, report=report))
     assert json.loads(report.read_text(encoding="utf-8"))["outcome"] == "BLOCKED"
+
+
+def test_real_adobe_v57_discovery_and_bind_with_nested_identity(monkeypatch, tmp_path):
+    payload = sample()
+    payload["creative.document.info"] = {
+        "rootChildren": 1,
+        "insertionParent": {"guid": NEW_DOC, "type": "RootNode",
+            "bounds": {"x": 0, "y": 0, "width": 880, "height": 700}},
+        "insertionParentChildren": [{
+            "guid": NEW_ARTBOARD_ID, "type": "Artboard",
+            "bounds": {"x": 0, "y": 0, "width": 880, "height": 700}}],
+    }
+    report = setup(monkeypatch, tmp_path, payload)
+    asyncio.run(cli.inspect(expected_document_id=None, report=report))
+    discovery = json.loads(report.read_text(encoding="utf-8"))
+    assert discovery["observed_document_id"] == NEW_DOC
+    assert discovery["ready_for_first_write"] is False
+    asyncio.run(cli.inspect(expected_document_id=NEW_DOC, report=report))
+    bound = json.loads(report.read_text(encoding="utf-8"))
+    assert bound["ready_for_first_write"] is True
+    assert bound["binding"]["artboard_id"] == NEW_ARTBOARD_ID
