@@ -1,0 +1,156 @@
+name: Panda AI deploy single-phase shape adapter and retire exact stale telemetry fence
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-ai-rect2-activate-single-phase-adapter.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  activate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact Illustrator unknown telemetry fence, idle panel and XD with no mutations
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RECT2_ACTIVATE_NOT_MRCAO_INTERACTIVE'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json
+          from mcp import Client
+          ID="job_3a2e6b7b4e61"
+          async def read(c,app,cap,args=None):
+              r=await asyncio.wait_for(c.call_tool("creative_read",{"application":app,"capability":cap,"arguments":args or {}}),timeout=18)
+              p=r.structured_content or {}
+              if r.is_error or p.get("ok") is not True:
+                  raise RuntimeError("RECT2_PRECHECK_TOOL_UNAVAILABLE:"+app+":"+cap)
+              return p.get("result") or {}
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  h=await read(c,"illustrator","creative.health",{"probe":False,"timeout":5})
+                  d=(h.get("connection") or {}).get("data") or {}
+                  q=d.get("execution") or {}
+                  panel=(d.get("layers") or {}).get("panel") or {}
+                  ids=q.get("unresolvedJobs")
+                  if ids not in ([],[ID]) or q.get("activeJob") is not None or q.get("waiting")!=0 or panel.get("status")!="ok" or panel.get("busy") is not False or panel.get("activeRequestId") is not None or panel.get("heartbeatStale") is True:
+                      raise RuntimeError("RECT2_PRECHECK_FOREIGN_OR_ACTIVE_ADOBE_JOB")
+                  if ids==[ID]:
+                      status=await read(c,"illustrator","creative.job.status",{"jobId":ID,"detail":"full"})
+                      job=((status.get("data") or {}).get("job") or {})
+                      j=(job.get("journal") or {}).get("records") or []
+                      created=[x for x in j if x.get("command")=="task:structured_pilot_v1" and (x.get("integrity") or {}).get("status")=="verified" and (x.get("effects") or {}).get("created")]
+                      fail=[x for x in j if x.get("command")=="z_telemetry" and x.get("execution")=="unknown"]
+                      if job.get("status")!="unknown" or len(created)!=1 or len(fail)!=1 or job.get("outcomeSource")!="python_timeout":
+                          raise RuntimeError("RECT2_PRECHECK_EXACT_JOB_RECORDS_CHANGED")
+                  xd=await read(c,"xd","creative.health")
+                  if xd.get("pending_count")!=0 or xd.get("bridge")!="connected":
+                      raise RuntimeError("RECT2_PRECHECK_XD_NOT_IDLE")
+                  print("RECT2_PRECHECK=PASS "+json.dumps({"fence":ids,"panel":"idle","xd_pending":xd.get("pending_count"),
+                      "created_host_record":True}),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\rect2_preflight.py -Encoding UTF8
+          uv run --python 3.12 python .\rect2_preflight.py
+          if($LASTEXITCODE -ne 0){throw 'RECT2_PRECHECK_FAILED_NO_INSTALL'}
+      - name: Backup native source and single old adapter; compile, activate and restart only owned gateway
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway'
+          $installed=Join-Path $root 'venv\Lib\site-packages\mcp_adobe\illustrator_cep.py'
+          $source=Join-Path $PWD 'src\mcp_adobe\illustrator_cep.py'
+          $py=Join-Path $root 'venv\Scripts\python.exe'
+          $old='E2AC497A4C2E31F85D2A98A051DCA618584E95292FAC9A006566ADD8D7CD3C82'
+          if(-not(Test-Path $py) -or -not(Test-Path $installed) -or -not(Test-Path $source)){throw 'RECT2_ACTIVATE_MODULE_PATH_MISSING'}
+          if((Get-FileHash $installed -Algorithm SHA256).Hash -ne $old){throw 'RECT2_ACTIVATE_INSTALLED_SHA_CHANGED_NO_COPY'}
+          $new=(Get-FileHash $source -Algorithm SHA256).Hash
+          & $py -m py_compile $source
+          if($LASTEXITCODE -ne 0){throw 'RECT2_ACTIVATE_SOURCE_COMPILE_FAILED'}
+          $stage=Join-Path $root ("updates\panda_rect2_"+$env:GITHUB_RUN_ID)
+          if(Test-Path $stage){throw 'RECT2_ACTIVATE_STAGE_ALREADY_EXISTS_NO_REPLAY'}
+          New-Item $stage -ItemType Directory -Force|Out-Null
+          $backup=Join-Path $stage 'illustrator_cep.before.py'
+          Copy-Item $installed $backup
+          if((Get-FileHash $backup -Algorithm SHA256).Hash -ne $old){throw 'RECT2_ACTIVATE_BACKUP_BAD_HASH'}
+          $ai=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'"|Where-Object{$_.SessionId -eq 1})
+          if($ai.Count -ne 1){throw 'RECT2_ACTIVATE_AI_PROCESS_AMBIGUOUS'}
+          $aiPid=$ai[0].ProcessId
+          $aiGUI=Get-Process -Id $aiPid
+          if($aiGUI.MainWindowTitle -notmatch 'MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai' -or $aiGUI.MainWindowHandle -eq 0){throw 'RECT2_ACTIVATE_FOREIGN_DOCUMENT'}
+          $native=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai'
+          $nativeHash='25D46AAACC766759D11C920872D9EE1CC26861A145826143161698E97CA14B77'
+          if((Get-FileHash $native -Algorithm SHA256).Hash -ne $nativeHash){throw 'RECT2_ACTIVATE_NATIVE_CHANGED'}
+          Copy-Item $native (Join-Path $stage 'native_before.ai')
+          if((Get-FileHash (Join-Path $stage 'native_before.ai') -Algorithm SHA256).Hash -ne $nativeHash){throw 'RECT2_ACTIVATE_NATIVE_BACKUP_BAD'}
+          $pidfile=Join-Path $root 'host-wrapper.pid'
+          $superId=0
+          if(-not(Test-Path $pidfile) -or -not [int]::TryParse((Get-Content $pidfile -Raw).Trim(),[ref]$superId)){throw 'RECT2_ACTIVATE_SUPERVISOR_PID_INVALID'}
+          $super=Get-CimInstance Win32_Process -Filter "ProcessId=$superId" -ErrorAction SilentlyContinue
+          if(-not $super -or $super.CommandLine -notmatch 'run-host.ps1'){throw 'RECT2_ACTIVATE_SUPERVISOR_UNVERIFIED'}
+          $listen=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+          if($listen.Count -ne 1){throw 'RECT2_ACTIVATE_MULTIPLE_GATEWAY_LISTENERS'}
+          $oldPid=$listen[0].OwningProcess
+          $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$oldPid" -ErrorAction SilentlyContinue
+          if(-not $owner -or $owner.CommandLine -notmatch 'mcp-adobe.exe.*--transport streamable-http.*--host 127.0.0.1.*--port 8787'){throw 'RECT2_ACTIVATE_GATEWAY_OWNER_MISMATCH'}
+          if(@(Get-NetTCPConnection -LocalPort 8787 -State Established -ErrorAction SilentlyContinue).Count -ne 0){throw 'RECT2_ACTIVATE_MCP_CLIENT_ACTIVE_NO_RESTART'}
+          $copied=$false
+          try{
+            Copy-Item $source $installed -Force -ErrorAction Stop
+            $copied=$true
+            if((Get-FileHash $installed -Algorithm SHA256).Hash -ne $new){throw 'RECT2_ACTIVATE_NEW_SHA_MISMATCH'}
+            & $py -m py_compile $installed
+            if($LASTEXITCODE -ne 0){throw 'RECT2_ACTIVATE_INSTALLED_COMPILE_FAILED'}
+            Write-Host "RECT2_ACTIVATE_FILE=PASS previous=$old updated=$new"
+            Stop-Process -Id $oldPid -ErrorAction Stop
+            $deadline=(Get-Date).AddSeconds(110);$newPid=0
+            do{
+              Start-Sleep -Seconds 2
+              $now=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+              if($now.Count -eq 1 -and $now[0].OwningProcess -ne $oldPid){$newPid=$now[0].OwningProcess;break}
+            }until((Get-Date)-ge $deadline)
+            if($newPid -eq 0){throw 'RECT2_ACTIVATE_SUPERVISOR_RESTART_UNCONFIRMED'}
+            if(-not(Get-Process -Id $aiPid -ErrorAction SilentlyContinue)){throw 'RECT2_ACTIVATE_ILLUSTRATOR_PROCESS_LOST'}
+            if((Get-FileHash $native -Algorithm SHA256).Hash -ne $nativeHash){throw 'RECT2_ACTIVATE_NATIVE_CHANGED_AFTER_RESTART'}
+            Write-Host "RECT2_ACTIVATE_GATEWAY=PASS previousPid=$oldPid newPid=$newPid aiPid=$aiPid source_unchanged=1"
+          }catch{
+            Write-Host "RECT2_ACTIVATE_FAILURE=$($_.Exception.Message)"
+            if($copied){
+              Copy-Item $backup $installed -Force -ErrorAction Stop
+              if((Get-FileHash $installed -Algorithm SHA256).Hash -ne $old){throw 'RECT2_ACTIVATE_ROLLBACK_HASH_FAILED'}
+              Write-Host 'RECT2_ACTIVATE_ROLLBACK_MODULE=PASS'
+            }
+            throw
+          }
+      - name: Verify active installed adapter has preview suppression and no old fence
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":False,"timeout":5}})
+                  p=r.structured_content or {}
+                  if r.is_error or p.get("ok") is not True:raise RuntimeError("RECT2_POST_GATEWAY_UNAVAILABLE")
+                  d=((p.get("result") or {}).get("connection") or {}).get("data") or {}
+                  e=d.get("execution") or {};panel=(d.get("layers") or {}).get("panel") or {}
+                  result={"unresolved":e.get("unresolvedJobs"),"active":e.get("activeJob"),"waiting":e.get("waiting"),
+                      "panel":panel.get("status"),"busy":panel.get("busy")}
+                  print("RECT2_ACTIVATE_POST_READ="+json.dumps(result),flush=True)
+                  if result!={"unresolved":[],"active":None,"waiting":0,"panel":"ok","busy":False}:
+                      raise RuntimeError("RECT2_POST_NOT_IDLE_NO_MUTATION")
+                  print("RECT2_ACTIVATE_RUNTIME=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\rect2_post.py -Encoding UTF8
+          uv run --python 3.12 python .\rect2_post.py
+          if($LASTEXITCODE -ne 0){throw 'RECT2_ACTIVATE_POST_FAILED'}
