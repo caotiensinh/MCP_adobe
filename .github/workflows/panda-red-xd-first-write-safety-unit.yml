@@ -1,0 +1,21 @@
+name: Panda red XD first-write native and document identity safety tests
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - "src/mcp_adobe/xd_red_poster_guard.py"
+      - "tests/test_xd_red_poster_guard.py"
+      - ".github/workflows/panda-red-xd-first-write-safety-unit.yml"
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.17"
+      - name: Verify fail-closed guard with positive and negative regressions
+        run: uv run --python 3.12 --with pytest pytest -q tests/test_xd_red_poster_guard.py
