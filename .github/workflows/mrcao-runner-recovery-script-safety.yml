@@ -1,0 +1,54 @@
+name: MRCAO Adobe interactive runner recovery script safety
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - "scripts/recover_mrcao_runner_safe.ps1"
+      - ".github/workflows/mrcao-runner-recovery-script-safety.yml"
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell and verify strictly scoped recovery policy
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $file=Join-Path $env:GITHUB_WORKSPACE 'scripts/recover_mrcao_runner_safe.ps1'
+          $tokens=$null
+          $errors=$null
+          $ast=[System.Management.Automation.Language.Parser]::ParseFile($file,[ref]$tokens,[ref]$errors)
+          if($errors.Count -ne 0){
+            $errors | ForEach-Object { Write-Host $_.ToString() }
+            throw 'MRCAO_SCRIPT_POWERSHELL_PARSER_FAILED'
+          }
+          $source=Get-Content -LiteralPath $file -Raw
+          foreach($required in @(
+            "CANNOT_RUN_INSIDE_GITHUB_ACTIONS",
+            "WRONG_HOST",
+            "NOT_ADOBE_SESSION_1",
+            "REGISTERED_AGENT_NOT_WINDOWS",
+            "REGISTERED_REPOSITORY_MISMATCH",
+            "RUNNER_SERVICE_PRESENT_NO_AUTOMATIC_STOP_OR_DUPLICATE_LISTENER",
+            "MULTIPLE_LISTENERS_NO_AUTOMATIC_MUTATION",
+            "LOCAL_LISTENER_RESTORED",
+            "GITHUB_ONLINE_NOT_YET_PROVEN"
+          )){
+            if(-not $source.Contains($required)){throw "MRCAO_POLICY_REQUIRED_MISSING $required"}
+          }
+          $calls=$ast.FindAll({param($node)
+            $node -is [System.Management.Automation.Language.CommandAst]},$true)
+          $names=@($calls | ForEach-Object {$_.GetCommandName()})
+          foreach($danger in @('Stop-Process','Stop-Service','Set-Service','Restart-Service','Remove-Item','Invoke-Expression','Invoke-WebRequest','Set-ContentAccessControl')){
+            if($names -contains $danger){throw "MRCAO_POLICY_UNSAFE_COMMAND_FOUND $danger"}
+          }
+          $vars=$ast.FindAll({param($node)
+            $node -is [System.Management.Automation.Language.VariableExpressionAst]},$true)
+          foreach($name in @('PID','Host','HOME','Matches','Error')){
+            $bad=@($vars|Where-Object {$_.VariablePath.IsDriveQualified -eq $false -and $_.VariablePath.UserPath -ieq $name})
+            if($bad.Count -gt 0){throw "MRCAO_RESERVED_VARIABLE_USED $name"}
+          }
+          Write-Host 'MRCAO_RUNNER_RECOVERY_PARSE_AND_SAFETY=PASS noAdobeKill=1 noRunnerServiceMutation=1'
