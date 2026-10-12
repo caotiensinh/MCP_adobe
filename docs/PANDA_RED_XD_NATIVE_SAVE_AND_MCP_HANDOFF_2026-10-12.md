@@ -56,3 +56,16 @@ First inspect run **38208213719** and any newer concurrent commits/jobs. Confirm
 - Deployment caution: the existing `illustrator-upstream-trace-activation.yml` installer prints `TRACE_ALREADY_INSTALLED` without replacing a previously installed `_mcp_adobe_trace.py`. Do not claim new trace is active merely because the repo's version passed CI. A controlled, version-checked deployment/readback requires available MRCAO and safe reconciliation of the current unknown Illustrator host job, with no restart over an unresolved fence.
 
 **Next executable gate**: first claim/complete staged read-only XD MCP diagnostics on MRCAO and verify the new document ID, queue zero and 880x700 bounds. Only then issue one background rectangle with full operation ID -> Apply -> receipt -> scenegraph -> native save/hash. In parallel, only read/reconcile C014 diagnostics; avoid restart and writes while `job_625f841b04cb` remains UNKNOWN.
+
+## Native XD manifest independent verification and first-write gate (2026-10-12)
+
+The original unmodified GitHub Actions artifact [11728340116](https://github.com/caotiensinh/MCP_adobe/actions/runs/38207905699/artifacts/11728340116) was downloaded and its inner XD ZIP structure inspected locally. The 41,279-byte document has SHA-256 `58966788cf369885c2395ce217d6e0443ed57bcd7f40bd550b2f3a24c2b5b831` and 12 ZIP entries. These are real native bytes, not a screenshot or a mock.
+
+- Native manifest root `id` = `e8436f81-612b-4017-ab07-f50420ef4824`; `META-INF/metadata.xml` xmpMM DocumentID is the same.
+- Native manifest `uxdesign#id` = `304d4d00-6fba-47c0-b67a-d0e8ecf30254`. This second ID demonstrates that different identity fields coexist; do NOT assume either is the active MCP `document_id` without live readback.
+- Native artboard AGC ID = `b195fab0-c97f-46be-8139-5d30a6149e37`. Both the manifest bounds and embedded artboard resource assert 880 by 700 at x=0/y=0. The native AGC `artboard.children` array is **empty**.
+- Standalone first-write gate saved in `src/mcp_adobe/xd_red_poster_guard.py` plus read-only executable `scripts/panda_red_xd_verify_target_readonly.py`. Discovery mode records an observed UUID but is **never write-authorizing**. A distinct invocation must pin the actual new live UUID and verify source/draft SHA, bridge connected, queue count exactly zero, complete scenegraph with a single empty 880x700 Artboard, and matching document identities.
+- Test run [38212085390](https://github.com/caotiensinh/MCP_adobe/actions/runs/38212085390) = **PASS, 26 tests** after fixing the standalone `scripts` import path; normal adapter CI [38212085405](https://github.com/caotiensinh/MCP_adobe/actions/runs/38212085405) = PASS. This is code behavior and native archive proof only, **not live Adobe first-write acceptance**.
+- MRCAO diagnostic run [38208213719](https://github.com/caotiensinh/MCP_adobe/actions/runs/38208213719) was still queued without any job claim at the latest read. No live first-write was attempted and no duplicate self-hosted workflow was enqueued.
+
+Continue only with fresh live UUID + receipt, first one background rectangle queued, UXP Apply once, queue receipt readback, scenegraph bounds readback, then distinct native save/checksum. Never substitute the native manifest UUID for the live UUID without matching evidence.
