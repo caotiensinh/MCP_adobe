@@ -82,7 +82,9 @@ async def inspect(*, expected_document_id: str | None, report: Path) -> None:
         document = observations["creative.document.info"]
         scene = observations["creative.scenegraph.list"]
         health = observations["creative.health"]
-        proof["observed_document_id"] = document.get("id") or document.get("document_id")
+        root_node = document.get("insertionParent")
+        native_root_guid = root_node.get("guid") if isinstance(root_node, Mapping) else None
+        proof["observed_document_id"] = document.get("id") or document.get("document_id") or native_root_guid
         proof["scene_document_id"] = scene.get("document_id")
         proof["scene_complete"] = scene.get("complete") is True
         proof["artboard_count"] = len(scene.get("nodes") or [])
