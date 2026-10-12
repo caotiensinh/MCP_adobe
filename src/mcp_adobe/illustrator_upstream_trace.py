@@ -21,7 +21,8 @@ def _verified_payload_completion(envelope: dict[str, Any], pending: Any) -> bool
     """
     if envelope.get("type", "complete") != "complete" or envelope.get("payloadError"):
         return False
-    if pending is None or pending.request_token != envelope.get("requestToken"):
+    token = envelope.get("requestToken")
+    if not isinstance(token, str) or not token or pending is None or pending.request_token != token:
         return False
     receiver = getattr(pending, "payload", None)
     return bool(receiver is not None
@@ -94,8 +95,7 @@ def install_trace(bridge_class: type) -> None:
                 if tracked_fence is not None and upstream_coordinator.probe_fence is tracked_fence:
                     same_generation = tracked_fence["connectionGeneration"] == upstream_coordinator.connection_generation
                     verified = same_generation and _verified_payload_completion(envelope, pending)
-                    if verified:
-                        tracked_fence["priorCompletionObserved"] = True
+                    if verified and tracked_fence.get("priorCompletionObserved") is True:
                         log.warning("CEP_VERIFIED_FENCE_COMPLETION requestId=%s generation=%s",
                                     str(request_id)[:48], tracked_fence["connectionGeneration"])
                     else:
