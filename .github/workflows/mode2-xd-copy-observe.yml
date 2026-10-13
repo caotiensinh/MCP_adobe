@@ -1,0 +1,38 @@
+name: Mode 2 XD copy opening observation only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-copy-observe.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  observe:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Observe XD after one-shot copy open without replay
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $titles=@($windows | Where-Object {[string]$_.Current.Name -match 'Adobe XD$'} | ForEach-Object {[string]$_.Current.Name})
+          $origin=@($titles | Where-Object {$_ -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+          $copy=@($titles | Where-Object {$_ -match '^Panda_Mode2_Editable_Experiment.*Adobe XD$'})
+          Write-Host "MODE2_OBSERVE_ORIGINAL=$($origin.Count) COPY=$($copy.Count) TOTAL=$($titles.Count)"
+          foreach($title in $titles){Write-Host "MODE2_OBSERVE_TITLE=$title"}
+          $source=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          $test=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\mode2-isolated\Panda_Mode2_Editable_Experiment.xd'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($file in @($source,$test)){
+            if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_NATIVE_HASH_CHANGED'}
+          }
+          Write-Host 'MODE2_NO_REOPEN_NO_CLOSE_NO_MUTATION=True'
+          Write-Host 'MODE2_HOST_NATIVE_PATH_ATTESTED=False'
+          Write-Host 'MODE2_OBSERVATION_READONLY=PASS'
