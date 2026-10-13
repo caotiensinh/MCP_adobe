@@ -1,5 +1,5 @@
 name: XD reconnect open native saved document via UIA without gateway restart
-# 2026-10-13 verify UXP v4 health and 32 shapes after native reopened in run 38407914909.
+# 2026-10-13 Mode 2 preflight XD UXP connection after native reopen 38418110447.
 on:
   push:
     branches: [feat/canvas-region-targeting]
