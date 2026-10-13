@@ -126,6 +126,7 @@ jobs:
                   graph_b=await read("creative.scenegraph.list")
                   if json.dumps(graph_a,sort_keys=True,default=str)!=json.dumps(graph_b,sort_keys=True,default=str):
                       raise RuntimeError("MODE2_GRAPH_CHANGED_DURING_CAPTURE")
+                  print("MODE2_FRAME_SCHEMA="+json.dumps({"graph_keys":sorted(graph_b.keys()) if isinstance(graph_b,dict) else [],"frame_keys":sorted(frame.keys()) if isinstance(frame,dict) else [],"graph_doc":str(graph_b.get("document_id"))[:80] if isinstance(graph_b,dict) else "", "frame_doc":str(frame.get("document_id"))[:80] if isinstance(frame,dict) else "","graph_nested_keys":sorted(graph_b.get("result",{}).keys()) if isinstance(graph_b,dict) and isinstance(graph_b.get("result"),dict) else [],"frame_nested_keys":sorted(frame.get("result",{}).keys()) if isinstance(frame,dict) and isinstance(frame.get("result"),dict) else []}),flush=True)
                   metadata=normalize_xd_canvas_snapshot(graph_b,frame)
                   layers=metadata["layers"]
                   matched=[layer for layer in layers if layer.get("bounds") and not layer.get("background")]
