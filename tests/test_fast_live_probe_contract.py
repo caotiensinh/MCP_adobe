@@ -18,6 +18,14 @@ class LiveProbeContractTests(unittest.TestCase):
         self.assertIn('snapshot.get("document_id")',source)
         self.assertIn('session.trusted_observe',source)
 
+    def test_each_warm_sample_validates_host_not_just_transport(self):
+        source=SCRIPT.read_text(encoding="utf8")
+        self.assertIn('answer.get("bridge")!="connected"',source)
+        self.assertIn('answer.get("pending_count")!=0',source)
+        self.assertIn('answer.get("document_id")!=doc_generation',source)
+        self.assertIn('session.coordinator.invalidate("document_changed")',source)
+        self.assertIn('session.coordinator.invalidate("bridge_disconnect")',source)
+
     def test_workflow_guard_is_read_only_exclusive(self):
         content=WORKFLOW.read_text(encoding="utf8")
         self.assertIn("workflow_dispatch:",content)
