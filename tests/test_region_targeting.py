@@ -1,7 +1,7 @@
 from __future__ import annotations
 import unittest
 from mcp_adobe.region_targeting import (
-    Rect, candidates_in_region, document_rect_from_viewport, resolve_annotation,
+    Rect, candidates_in_region, document_rect_from_viewport, resolve_annotation, resolve_bound_annotation,
 )
 
 
@@ -53,6 +53,27 @@ class RegionTargetingTests(unittest.TestCase):
                   {"id": 3, "bounds": bounds, "background": True}, {"id": 4, "name": "Good", "bounds": bounds}]
         found = candidates_in_region(Rect(100, 50, 150, 100), layers)
         self.assertEqual([x["layer_id"] for x in found], [4])
+
+    def test_mode2_bound_preview_identity_and_generation(self):
+        layers = [{"id": "shape-1", "name": "Rectangle", "bounds": {
+            "left": 100, "top": 50, "right": 150, "bottom": 100}}]
+        binding = {"application": "xd", "document_identity": "doc-A",
+                   "generation": 7, "preview_sha256": "a" * 64}
+        args = dict(stroke=self.stroke, viewport=self.viewport, document=self.document,
+                    layers=layers, preview_binding=binding, live_binding=dict(binding))
+        result = resolve_bound_annotation(**args)
+        self.assertEqual(result["status"], "single_candidate")
+        self.assertEqual(result["candidates"][0]["layer_id"], "shape-1")
+        self.assertFalse(result["execute_automatically"])
+        for key, changed in (("generation", 8), ("document_identity", "doc-B"),
+                             ("preview_sha256", "b" * 64)):
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "stale or unbound"):
+                resolve_bound_annotation(**{**args, "live_binding": {**binding, key: changed}})
+        with self.assertRaisesRegex(ValueError, "duplicate layer"):
+            resolve_bound_annotation(**{**args, "layers": layers + layers})
+        with self.assertRaisesRegex(ValueError, "invalid preview digest"):
+            invalid = {**binding, "preview_sha256": "not-sha"}
+            resolve_bound_annotation(**{**args, "preview_binding": invalid, "live_binding": invalid})
 
     def test_no_candidate_is_not_a_write(self):
         result = resolve_annotation(
