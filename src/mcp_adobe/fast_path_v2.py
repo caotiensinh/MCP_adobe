@@ -43,9 +43,14 @@ class IntentCompiler:
 
 class Coordinator:
     """Persistent-dispatch compatible, event-driven, single-writer coordinator."""
-    def __init__(self, ttl=2.0, read_timeout=8.0, write_timeout=35.0):
+    def __init__(self, ttl=2.0, read_timeout=8.0, write_timeout=35.0, cache_allowlist=()):
         if min(ttl,read_timeout,write_timeout)<=0: raise ValueError("timeouts must be positive")
         self.ttl,self.read_timeout,self.write_timeout=ttl,read_timeout,write_timeout
+        # Default is no caching; health/document/scenegraph are always live.
+        forbidden={"creative.health", "creative.document.info", "creative.scenegraph.list"}
+        if set(cache_allowlist) & forbidden:
+            raise ValueError("mutable host state cannot be cached")
+        self.cache_allowlist=frozenset(cache_allowlist)
         self.phase=Phase.COLD
         self.identity=None
         self.verified_at=0.0
@@ -89,7 +94,8 @@ class Coordinator:
             if command.mutation and (not command.operation_id or verify is None):
                 raise UnsafeFastPath("write requires op ID and host readback")
             key=(self.identity,command.capability,repr(sorted(command.arguments.items())))
-            if not command.mutation and key in self.cache:
+            cacheable=not command.mutation and command.capability in self.cache_allowlist
+            if cacheable and key in self.cache:
                 ts,value=self.cache[key]
                 if time.monotonic()-ts<self.ttl: return value
             started=time.monotonic()
@@ -103,7 +109,7 @@ class Coordinator:
                     self.pending=None
                     self.cache.clear()
                     self.phase=Phase.COLD
-                else:
+                elif cacheable:
                     self.cache[key]=(time.monotonic(),result)
                 return result
             except BaseException:
