@@ -35,13 +35,13 @@ jobs:
           $scope=[System.Windows.Automation.TreeScope]::Children
           $all=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,[System.Windows.Automation.Condition]::TrueCondition)
           $xd=@($all | Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
-          $home=@($xd | Where-Object {[string]$_.Current.Name -eq 'Adobe XD'})
+          $xdHome=@($xd | Where-Object {[string]$_.Current.Name -eq 'Adobe XD'})
           $originalDoc=@($xd | Where-Object {[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
           $copyDoc=@($xd | Where-Object {[string]$_.Current.Name -match '^Panda_Mode2_Editable_Experiment.*Adobe XD$'})
-          Write-Host "MODE2_ACTIVE_ORIGINAL=$($originalDoc.Count) COPY=$($copyDoc.Count) HOME=$($home.Count)"
+          Write-Host "MODE2_ACTIVE_ORIGINAL=$($originalDoc.Count) COPY=$($copyDoc.Count) HOME=$($xdHome.Count)"
           if($copyDoc.Count -eq 1 -and $originalDoc.Count -eq 0 -and $xd.Count -eq 1){
             Write-Host 'MODE2_COPY_WINDOW_PRESENT=PASS_NON_ATTESTED'
-          }elseif($originalDoc.Count -gt 0 -or $xd.Count -ne 1 -or $home.Count -ne 1){
+          }elseif($originalDoc.Count -gt 0 -or $xd.Count -ne 1 -or $xdHome.Count -ne 1){
             Write-Host 'MODE2_COPY_ACTIVATION_BLOCKED=ORIGINAL_OR_UNCERTAIN_GUI'
           }else{
             $picker=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})
