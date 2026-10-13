@@ -1,4 +1,5 @@
 name: Panda 2026-10-12 MRCAO live read-only host census
+# 2026-10-13 verify exclusive desktop before serial AI -> PS -> Mode 2 handoff.
 on:
   push:
     branches: [feat/canvas-region-targeting]
