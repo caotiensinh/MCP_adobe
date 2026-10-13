@@ -34,6 +34,8 @@ class LiveProbeContractTests(unittest.TestCase):
         self.assertIn("OTHER_ADOBE_ACTIVE",content)
         self.assertIn("WRONG_HOST_SESSION",content)
         self.assertIn("GATEWAY_NOT_UNIQUE",content)
+        self.assertIn("ADOBE_PROCESS_CENSUS",content)
+        self.assertIn("TARGET_WRONG_SESSION",content)
         self.assertNotIn("workflow_dispatch: {}",content)
         self.assertNotIn("creative_write",content)
         self.assertNotIn("force-kill",content)
