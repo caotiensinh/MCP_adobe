@@ -1,4 +1,5 @@
 name: Red Panda Illustrator safe desktop launch and CEP readiness
+# 2026-10-13 serial AI gate after MRCAO no-Adobe census run 38411191715.
 on:
   push:
     branches: [feat/canvas-region-targeting]
@@ -24,6 +25,7 @@ jobs:
           $ErrorActionPreference='Stop'
           if($env:COMPUTERNAME -ne 'MRCAO'){throw 'RED_AI_WRONG_HOST'}
           if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RED_AI_WRONG_SESSION'}
+          foreach($other in @('XD','Photoshop')) { if(@(Get-Process -Name $other -ErrorAction SilentlyContinue).Count -gt 0){throw "RED_AI_OTHER_APP_RUNNING_$other"} }
           $running=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
           if($running.Count -gt 0 -and @($running|Where-Object{$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0}).Count -eq 0){
             throw 'RED_AI_PROCESS_HEADLESS_STOP_NO_DUPLICATE_LAUNCH'
