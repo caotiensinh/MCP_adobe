@@ -11,6 +11,9 @@ class MockXD:
         self.node={"id":"node-1","bounds":{"left":10,"top":10,"right":30,"bottom":30},"visible":True,"locked":False,"fill":"#000000"}
         self.original=copy.deepcopy(self.node)
         self.edits=0
+    def verify_copy_provenance(self, copy):
+        return copy.get("path") == "copy.xd" and copy.get("native_sha256") == "b"*64
+    def verify_undo_capability(self): return True
     def read_document(self):
         return {"document_identity":"doc","generation":3,"preview_sha256":"a"*64,
                 "isolated_copy":True,"native_path":"copy.xd"}
@@ -54,6 +57,16 @@ class XDTransactionTests(unittest.TestCase):
         self.assertEqual(mock.edits,0)
         with self.assertRaisesRegex(ValueError,"lacks verified"):
             execute_guarded_xd_edit(proposal=self.proposal,gateway=object(),isolated_copy=self.copy,allow_live_mutation=True)
+    def test_provenance_and_undo_preflight_must_pass(self):
+        class UnverifiedCopy(MockXD):
+            def verify_copy_provenance(self, copy): return False
+        class NoUndo(MockXD):
+            def verify_undo_capability(self): return False
+        for gateway in (UnverifiedCopy(), NoUndo()):
+            with self.assertRaises(ValueError):
+                self.run_it(gateway, allow_live_mutation=True)
+            self.assertEqual(gateway.edits, 0)
+
     def test_unknown_mutation_is_never_replayed(self):
         class Broken(MockXD):
             def undo(self): pass
