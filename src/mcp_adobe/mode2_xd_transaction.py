@@ -31,9 +31,16 @@ def execute_guarded_xd_edit(
         raise ValueError("isolated test copy and read-only origin required")
     if isolated_copy.get("native_sha256") != proposal.get("baseline_native_sha256"):
         raise ValueError("isolated copy baseline SHA mismatch")
-    required = ("read_document", "read_layer", "edit_layer", "undo", "save_native", "read_native_sha256")
+    required = ("read_document", "read_layer", "edit_layer", "undo", "save_native",
+                "read_native_sha256", "verify_copy_provenance", "verify_undo_capability")
     if any(not callable(getattr(gateway, method, None)) for method in required):
         raise ValueError("gateway lacks verified reversible edit API")
+    # A caller-supplied is_copy flag or native path string alone is insufficient.
+    # Require independent host-backed path/provenance and undo capability proofs.
+    if gateway.verify_copy_provenance(isolated_copy) is not True:
+        raise ValueError("host could not verify isolated native copy provenance")
+    if gateway.verify_undo_capability() is not True:
+        raise ValueError("host undo capability unverified")
     document = gateway.read_document()
     for field in ("document_identity", "generation", "preview_sha256"):
         if document.get(field) != proposal.get(field):
