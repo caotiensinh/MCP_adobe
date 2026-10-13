@@ -1,5 +1,5 @@
 name: Mode 2 XD live region node read-only acceptance
-# 2026-10-13 rerun after guarded XD reopen and v4 readback run 38418192238.
+# 2026-10-14 verify scenegraph on recovered isolated-copy host; read-only only.
 on:
   push:
     branches: [feat/canvas-region-targeting]
@@ -29,6 +29,11 @@ jobs:
           }
           $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
           Write-Host "MODE2_XD_INTERACTIVE_COUNT=$($xd.Count)"
+          $source=Join-Path $env:USERPROFILE "Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd"
+          $copy=Join-Path $env:USERPROFILE "Documents\MCPAdobe\mode2-isolated\Panda_Mode2_Editable_Experiment.xd"
+          $expected="3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1"
+          foreach($file in @($source,$copy)){if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $expected){throw "MODE2_BASELINE_CHANGED"}}
+          Write-Host "MODE2_NATIVE_BASELINE_HASH=PASS"
           if($xd.Count -ne 1){throw 'MODE2_XD_NOT_READY_NO_AUTO_LAUNCH'}
           $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
           @'
