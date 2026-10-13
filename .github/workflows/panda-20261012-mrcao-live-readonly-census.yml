@@ -21,6 +21,7 @@ jobs:
           if($env:COMPUTERNAME -ne 'MRCAO') { throw 'CENSUS_WRONG_HOST' }
           $session = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
           Write-Host "CENSUS_HOST=MRCAO runner_session=$session"
+          Write-Host "CENSUS_CHECKPOINT_UTC=$([DateTime]::UtcNow.ToString('o')) run_id=$env:GITHUB_RUN_ID commit=$env:GITHUB_SHA"
           if($session -ne 1) { throw 'CENSUS_WRONG_SESSION_NO_GUI_ACTION' }
           $names = @('XD','Illustrator','Photoshop','CEPHtmlEngine','ApplicationFrameHost','PickerHost')
           foreach($name in $names) {
