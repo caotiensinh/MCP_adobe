@@ -36,7 +36,15 @@ async def benchmark(app):
             "arguments":{"probe":False,"timeout":5} if app=="illustrator" else {}})
         body=first.structured_content
         if first.is_error or not isinstance(body,dict) or body.get("ok") is not True:
-            raise RuntimeError("initial health read failed")
+            diagnostic={"is_error":bool(first.is_error),
+                "structured_type":type(body).__name__,
+                "structured_keys":sorted(str(k) for k in body.keys())[:20] if isinstance(body,dict) else [],
+                "ok":body.get("ok") if isinstance(body,dict) else None,
+                "error_code":str(body.get("error_code") or body.get("code") or "")[:100] if isinstance(body,dict) else "",
+                "result_type":type(body.get("result")).__name__ if isinstance(body,dict) else "",
+                "content_types":[type(x).__name__ for x in (first.content or [])][:5]}
+            print("XD_INITIAL_HEALTH_DIAGNOSTIC="+json.dumps(diagnostic),flush=True)
+            raise RuntimeError("initial health read failed: "+json.dumps(diagnostic))
         health=body.get("result") or {}
         if app=="illustrator":
             data=((health.get("connection") or {}).get("data") or {})
