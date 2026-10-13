@@ -1,4 +1,5 @@
 name: Panda red XD launch exact registered UWP app once if fully closed
+# 2026-10-13 guarded launch after MRCAO census confirmed XD=0; never replay UNKNOWN launch.
 on:
   push:
     branches: [feat/canvas-region-targeting]
