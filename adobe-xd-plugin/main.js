@@ -187,6 +187,34 @@ function requireSelection(selection) {
   }
 }
 
+// Mode 2 guarded node ownership. Reads only; never changes the active selection.
+function mode2InspectSelectedNode(params) {
+  const root = scenegraph.root;
+  if (!root || !root.guid || String(root.guid) !== String(params.document_id || "")) {
+    throw new Error("MODE2_DOCUMENT_ID_MISMATCH");
+  }
+  const items = scenegraph.selection && scenegraph.selection.items;
+  if (!items || items.length !== 1) throw new Error("MODE2_SELECTION_NOT_UNIQUE");
+  const node = items.at(0);
+  if (!node || !node.guid || String(node.guid) !== String(params.node_id || "")) {
+    throw new Error("MODE2_NODE_ID_MISMATCH");
+  }
+  if (node.visible === false || node.locked === true || !("fill" in node)) {
+    throw new Error("MODE2_NODE_NOT_EDITABLE");
+  }
+  const b = node.globalBounds, expected = params.bounds;
+  if (!b || !expected || ![b.x,b.y,b.width,b.height].every(Number.isFinite) ||
+      ![expected.left,expected.top,expected.right,expected.bottom].every(Number.isFinite) ||
+      Math.abs(b.x-expected.left)>0.01 || Math.abs(b.y-expected.top)>0.01 ||
+      Math.abs(b.x+b.width-expected.right)>0.01 ||
+      Math.abs(b.y+b.height-expected.bottom)>0.01) {
+    throw new Error("MODE2_NODE_BOUNDS_CHANGED");
+  }
+  return {document_id:String(root.guid),node_id:String(node.guid),
+    bounds:{left:b.x,top:b.y,right:b.x+b.width,bottom:b.y+b.height},
+    locked:false,visible:true,selection_count:1};
+}
+
 function applyMutation(item, selection) {
   const params = item.params || {};
 
@@ -421,7 +449,7 @@ function applyMutation(item, selection) {
     return { changed };
   }
 
-  if (item.method === "xd.queue.selection_fill") {
+  if (item.method === "xd.queue.mode2_fill") {\n    const inspected=mode2InspectSelectedNode(params);\n    if (params.isolated_test_copy !== true || params.user_confirmed !== true ||\n        !/^#[0-9a-fA-F]{6}$/.test(params.fill || "")) {\n      throw new Error("MODE2_COPY_CONFIRMATION_OR_COLOR_MISSING");\n    }\n    const target=selection.items.at(0);\n    target.fill=new Color(params.fill);\n    return {node_id:inspected.node_id,document_id:inspected.document_id,bounds:inspected.bounds};\n  }\n\n  if (item.method === "xd.queue.selection_fill") {
     requireSelection(selection);
     const color = new Color(params.fill || "#000000");
     const changed = [];
@@ -541,7 +569,7 @@ function dispatch(method, params) {
     return xdScenegraphSnapshot();
   }
 
-  if (method === "xd.selection.get") {
+  if (method === "xd.mode2.node.inspect") return mode2InspectSelectedNode(params || {});\n\n  if (method === "xd.selection.get") {
     try { snapshot(scenegraph.selection, scenegraph.root); } catch (_) {}
     return { items: latestSnapshot.selection || [] };
   }
@@ -566,7 +594,7 @@ function dispatch(method, params) {
     method === "xd.queue.ellipse_geometry_repair" ||
     method === "xd.queue.text_create" ||
     method === "xd.queue.selection_resize" ||
-    method === "xd.queue.selection_fill"
+    method === "xd.queue.selection_fill" ||\n    method === "xd.queue.mode2_fill"
   ) {
     return queueMutation(method, params || {});
   }
