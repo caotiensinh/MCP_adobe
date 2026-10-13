@@ -1,4 +1,5 @@
 name: Panda red XD staged live MCP ownership diagnostics with durable logs
+# 2026-10-13 after websocket ready but scenegraph.list failed; stage-specific bounded evidence.
 on:
   push:
     branches: [feat/canvas-region-targeting]
