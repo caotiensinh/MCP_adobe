@@ -49,6 +49,25 @@ jobs:
           foreach($process in $xdProcesses){
             Write-Host "MODE2_XD_PROCESS PID=$($process.Id) SESSION=$($process.SessionId) RESPONDING=$($process.Responding)"
           }
+          # Socket ownership alone does not establish a live UXP client.
+          # Collect executable evidence without terminating or launching anything.
+          $candidateProcesses=@(Get-CimInstance Win32_Process | Where-Object {
+            $_.Name -match 'XD|Adobe|UXP|PickerHost|Creative' -or
+            $_.CommandLine -match 'Adobe.XD|AdobeXD|MCPAdobe'
+          })
+          foreach($candidate in $candidateProcesses){
+            $session=try {(Get-Process -Id $candidate.ProcessId -ErrorAction Stop).SessionId} catch {-1}
+            Write-Host "MODE2_PROCESS_CANDIDATE NAME=$($candidate.Name) PID=$($candidate.ProcessId) PARENT=$($candidate.ParentProcessId) SESSION=$session"
+          }
+          $net=@(Get-NetTCPConnection -LocalPort 8765 -ErrorAction SilentlyContinue)
+          foreach($connection in $net){
+            $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$($connection.OwningProcess)" -ErrorAction SilentlyContinue
+            Write-Host "MODE2_PORT_8765 STATE=$($connection.State) OWNER_PID=$($connection.OwningProcess) OWNER_NAME=$($owner.Name) REMOTE=$($connection.RemoteAddress):$($connection.RemotePort)"
+          }
+          $listeners=@($net | Where-Object {$_.State -eq 'Listen'})
+          $established=@($net | Where-Object {$_.State -eq 'Established'})
+          Write-Host "MODE2_PORT_8765_LISTENERS=$($listeners.Count) ESTABLISHED=$($established.Count)"
+          Write-Host 'MODE2_PORT_SOCKET_NOT_DOCUMENT_OWNERSHIP=True'
           $uxpConnections=@(Get-NetTCPConnection -LocalPort 8765 -ErrorAction SilentlyContinue)
           Write-Host "MODE2_XD_PROCESS_COUNT=$($xdProcesses.Count) UXP_CONNECTION_COUNT=$($uxpConnections.Count)"
           $roots=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
