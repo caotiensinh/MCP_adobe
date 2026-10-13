@@ -119,7 +119,11 @@ jobs:
               async with Client("http://127.0.0.1:8787/mcp") as client:
                   async def read(cap):
                       response=await asyncio.wait_for(client.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=12)
-                      return payload(response)
+                      value=payload(response)
+                      if cap=="creative.scenegraph.list" and isinstance(value,dict) and isinstance(value.get("result"),dict):
+                          if value.get("ok") is not True: raise RuntimeError("MODE2_SCENEGRAPH_ENVELOPE_NOT_OK")
+                          value=value["result"]
+                      return value
                   health=await read("creative.health")
                   graph_a=await read("creative.scenegraph.list")
                   frame=await read("creative.canvas.frame")
