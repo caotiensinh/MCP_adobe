@@ -1,4 +1,5 @@
 name: MRCAO close idle Illustrator before serial Photoshop
+# 2026-10-13 AI CEP preflight run 38411324323 passed; only close verified empty Illustrator.
 on:
   push:
     branches: [feat/canvas-region-targeting]
