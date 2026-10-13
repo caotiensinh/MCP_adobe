@@ -10,6 +10,8 @@ on:
       - 'tests/test_mode2_edit_simulation.py'
       - 'src/mcp_adobe/mode2_xd_transaction.py'
       - 'tests/test_mode2_xd_transaction.py'
+      - 'tests/xd_mode2_guarded_plugin_contract.cjs'
+      - 'adobe-xd-plugin/main.js'
   workflow_dispatch:
 permissions:
   contents: read
@@ -26,4 +28,6 @@ jobs:
           python3 -m unittest discover -s tests -p 'test_mode2_edit_guard.py' -v
           python3 -m unittest discover -s tests -p 'test_mode2_edit_simulation.py' -v
           python3 -m unittest discover -s tests -p 'test_mode2_xd_transaction.py' -v
+          node --check adobe-xd-plugin/main.js
+          node tests/xd_mode2_guarded_plugin_contract.cjs
           python3 -m compileall -q src/mcp_adobe/mode2_edit_guard.py src/mcp_adobe/mode2_edit_simulation.py src/mcp_adobe/mode2_xd_transaction.py
