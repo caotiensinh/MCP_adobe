@@ -1,0 +1,34 @@
+name: MRCAO close idle Illustrator before serial Photoshop
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/adobe-serial-close-idle-ai.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  close:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Request graceful exit only for unique idle Illustrator no-document window
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'AI_CLOSE_WRONG_SESSION'}
+          foreach($other in @('XD','Photoshop')){if(@(Get-Process -Name $other -ErrorAction SilentlyContinue).Count -gt 0){throw 'AI_CLOSE_OTHER_APP_ACTIVE'}}
+          $a=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          if($a.Count -eq 0){Write-Host 'AI_CLOSE_ALREADY_EXITED=PASS';exit 0}
+          if($a.Count -ne 1 -or $a[0].SessionId -ne 1 -or $a[0].MainWindowHandle -eq 0){throw 'AI_CLOSE_AMBIGUOUS_PROCESS'}
+          $title=[string]$a[0].MainWindowTitle
+          Write-Host "AI_CLOSE_WINDOW_TITLE=$title"
+          if($title -ne 'Adobe Illustrator 2023'){throw 'AI_CLOSE_DOCUMENT_POSSIBLY_OPEN_REFUSE'}
+          $pidToClose=$a[0].Id
+          if(-not $a[0].CloseMainWindow()){throw 'AI_CLOSE_MAIN_WINDOW_REFUSED'}
+          $deadline=(Get-Date).AddSeconds(45)
+          do {Start-Sleep -Seconds 2;$left=@(Get-Process -Id $pidToClose -ErrorAction SilentlyContinue)} until($left.Count -eq 0 -or (Get-Date)-gt $deadline)
+          if($left.Count -gt 0){throw 'AI_CLOSE_STILL_RUNNING_NO_FORCE_KILL'}
+          Write-Host 'AI_CLOSE_GRACEFUL_NO_DOCUMENT=PASS'
