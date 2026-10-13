@@ -1,0 +1,75 @@
+name: XD v4 guarded offline plugin install (no app termination)
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/xd-v4-guarded-offline-install.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  install:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Gate clean desktop and deploy v4 with durable rollback copy
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_UPGRADE_WRONG_HOST_OR_SESSION'}
+          $names=@('XD','Illustrator','Photoshop','PickerHost')
+          foreach($name in $names){
+            $p=@(Get-Process -Name $name -ErrorAction SilentlyContinue)
+            Write-Host "XD_UPGRADE_PROCESS name=$name count=$($p.Count)"
+            if($p.Count -gt 0){throw "XD_UPGRADE_BLOCKED_APP_RUNNING:$name"}
+          }
+          $connections=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          if($connections.Count -gt 0){throw 'XD_UPGRADE_BLOCKED_BRIDGE_CONNECTED'}
+          Add-Type -AssemblyName UIAutomationClient
+          $tops=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          foreach($w in $tops){
+            if([string]$w.Current.Name -match 'Adobe XD|\.xd.*Adobe XD|Save As'){
+              throw "XD_UPGRADE_BLOCKED_GUI_WINDOW:$($w.Current.Name)"
+            }
+          }
+          $native=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          if((Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash -ne '3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'){throw 'XD_UPGRADE_NATIVE_HASH_CHANGED'}
+          $pkgs=@(Get-AppxPackage | Where-Object {$_.Name -eq 'Adobe.XD'})
+          if($pkgs.Count -ne 1){throw 'XD_UPGRADE_PACKAGE_NOT_UNIQUE'}
+          $src=Join-Path $PWD 'adobe-xd-plugin'
+          $target=Join-Path $env:LOCALAPPDATA "Packages\$($pkgs[0].PackageFamilyName)\LocalState\develop\MCPAdobeBridge"
+          $sourceMain=Join-Path $src 'main.js'
+          $installedMain=Join-Path $target 'main.js'
+          if(-not(Test-Path -LiteralPath $installedMain -PathType Leaf)){throw 'XD_UPGRADE_PLUGIN_MISSING'}
+          $expected=(Get-FileHash -LiteralPath $sourceMain -Algorithm SHA256).Hash
+          $old=(Get-FileHash -LiteralPath $installedMain -Algorithm SHA256).Hash
+          if($old -eq $expected){Write-Host 'XD_UPGRADE_ALREADY_CURRENT=PASS';exit 0}
+          $manifest=Get-Content -LiteralPath (Join-Path $src 'manifest.json') -Raw|ConvertFrom-Json
+          if($manifest.host.app -ne 'XD' -or $manifest.manifestVersion -ne 4){throw 'XD_UPGRADE_MANIFEST_INVALID'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\uxp_upgrade_backups'
+          New-Item -ItemType Directory -Path $root -Force|Out-Null
+          $stamp=[DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')
+          $backup=Join-Path $root "MCPAdobeBridge_$stamp"
+          $temp=Join-Path (Split-Path -Parent $target) ("MCPAdobeBridge.staging."+$env:GITHUB_RUN_ID)
+          if(Test-Path -LiteralPath $temp){throw 'XD_UPGRADE_STAGING_COLLISION'}
+          Copy-Item -LiteralPath $target -Destination $backup -Recurse -ErrorAction Stop
+          Copy-Item -LiteralPath $src -Destination $temp -Recurse -ErrorAction Stop
+          if((Get-FileHash -LiteralPath (Join-Path $temp 'main.js') -Algorithm SHA256).Hash -ne $expected){throw 'XD_UPGRADE_STAGED_HASH_MISMATCH'}
+          $park=Join-Path (Split-Path -Parent $target) ("MCPAdobeBridge.previous."+$env:GITHUB_RUN_ID)
+          if(Test-Path -LiteralPath $park){throw 'XD_UPGRADE_PARK_COLLISION'}
+          Move-Item -LiteralPath $target -Destination $park -ErrorAction Stop
+          try{
+            Move-Item -LiteralPath $temp -Destination $target -ErrorAction Stop
+            if((Get-FileHash -LiteralPath (Join-Path $target 'main.js') -Algorithm SHA256).Hash -ne $expected){throw 'XD_UPGRADE_FINAL_HASH_MISMATCH'}
+          }catch{
+            if(Test-Path -LiteralPath $target){Remove-Item -LiteralPath $target -Recurse -Force}
+            Move-Item -LiteralPath $park -Destination $target -ErrorAction Stop
+            throw
+          }
+          Write-Host "XD_UPGRADE_V4_INSTALLED=PASS old=$old new=$expected"
+          Write-Host "XD_UPGRADE_BACKUP=PASS path=$backup"
+          Write-Host "XD_UPGRADE_PREVIOUS_COPY=PASS path=$park"
+          Write-Host 'XD_UPGRADE_NO_APP_LAUNCH_OR_RELOAD=PASS'
