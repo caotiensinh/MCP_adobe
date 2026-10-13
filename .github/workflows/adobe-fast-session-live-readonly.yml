@@ -6,7 +6,7 @@ on:
         type: choice
         required: true
         default: xd
-        options: [xd, illustrator]
+        options: [xd]
 permissions:
   contents: read
 concurrency:
