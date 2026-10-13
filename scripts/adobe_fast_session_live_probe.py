@@ -70,6 +70,14 @@ async def benchmark(app):
                 answer=await session.read(capability,{"probe":False,"timeout":5} if app=="illustrator" else {})
                 elapsed=(time.perf_counter()-start)*1000
                 if not isinstance(answer,dict): raise RuntimeError("invalid readback")
+                if capability=="creative.health":
+                    if answer.get("bridge")!="connected" or answer.get("pending_count")!=0:
+                        session.coordinator.invalidate("bridge_disconnect")
+                        raise RuntimeError("XD health changed during benchmark")
+                if capability=="creative.scenegraph.list":
+                    if answer.get("complete") is not True or answer.get("document_id")!=doc_generation:
+                        session.coordinator.invalidate("document_changed")
+                        raise RuntimeError("XD document generation changed during benchmark")
                 rows.append({"capability":capability,"n":i+1,"ms":round(elapsed,3)})
         stats={cap:{"samples":len(v),"p50_ms":percentile(v,.5),"p95_ms":percentile(v,.95)}
                for cap in capabilities for v in [[r["ms"] for r in rows if r["capability"]==cap]]}
