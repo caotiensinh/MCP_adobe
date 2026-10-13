@@ -1,4 +1,5 @@
 name: XD reconnect open native saved document via UIA without gateway restart
+# 2026-10-13 one-shot Connect after pinned native window verified in run 38404596224.
 on:
   push:
     branches: [feat/canvas-region-targeting]
