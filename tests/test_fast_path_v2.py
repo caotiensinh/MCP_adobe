@@ -7,7 +7,7 @@ I=Identity("illustrator",123,"bridge-1","doc-1")
 
 class FastPathTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.co=Coordinator(ttl=10)
+        self.co=Coordinator(ttl=10, cache_allowlist=('creative.capabilities.static',))
         self.co.observe(I,True,True)
 
     async def test_rectangle_compiler(self):
@@ -22,7 +22,7 @@ class FastPathTests(unittest.IsolatedAsyncioTestCase):
             nonlocal calls
             calls+=1
             return calls
-        c=Command("creative.health",{})
+        c=Command("creative.capabilities.static",{})
         self.assertEqual(await self.co.execute(c,send),1)
         self.assertEqual(await self.co.execute(c,send),1)
         self.assertEqual(calls,1)
@@ -30,6 +30,33 @@ class FastPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.co.next_event(),"document_changed")
         with self.assertRaises(UnsafeFastPath):
             await self.co.execute(c,send)
+
+    async def test_health_never_cached_even_in_warm_session(self):
+        calls=0
+        async def send(c):
+            nonlocal calls
+            calls+=1
+            return {"sequence":calls}
+        first=await self.co.execute(Command("creative.health",{}),send)
+        second=await self.co.execute(Command("creative.health",{}),send)
+        self.assertNotEqual(first,second)
+        with self.assertRaises(ValueError):
+            Coordinator(cache_allowlist=("creative.health",))
+        with self.assertRaises(ValueError):
+            Coordinator(cache_allowlist=("creative.document.info",))
+
+    async def test_cache_disabled_by_default(self):
+        co=Coordinator(ttl=10)
+        co.observe(I,True,True)
+        calls=0
+        async def send(c):
+            nonlocal calls
+            calls+=1
+            return calls
+        cmd=Command("creative.capabilities.static",{})
+        await co.execute(cmd,send)
+        await co.execute(cmd,send)
+        self.assertEqual(calls,2)
 
     async def test_single_writer(self):
         active=peak=0
