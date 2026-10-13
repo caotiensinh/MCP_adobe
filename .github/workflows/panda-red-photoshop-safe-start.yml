@@ -1,4 +1,5 @@
 name: Red Panda Photoshop safe start and live MCP readiness
+# 2026-10-13 serial PS stage after AI graceful-close PASS in run 38411835460.
 on:
   push:
     branches: [feat/canvas-region-targeting]
@@ -24,6 +25,7 @@ jobs:
           $ErrorActionPreference='Stop'
           if($env:COMPUTERNAME -ne 'MRCAO'){throw 'RED_PS_WRONG_HOST'}
           if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RED_PS_WRONG_DESKTOP'}
+          foreach($other in @('XD','Illustrator')){if(@(Get-Process -Name $other -ErrorAction SilentlyContinue).Count -gt 0){throw "RED_PS_OTHER_APP_RUNNING_$other"}}
           $existing=@(Get-Process -Name Photoshop -ErrorAction SilentlyContinue)
           if($existing.Count -gt 0 -and -not(@($existing|Where-Object {$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0}).Count)){
             throw 'RED_PS_PROCESS_PRESENT_BUT_NO_INTERACTIVE_WINDOW_NO_DUPLICATE_LAUNCH'
