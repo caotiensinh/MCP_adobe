@@ -21,12 +21,36 @@ jobs:
           if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
           Add-Type -AssemblyName UIAutomationClient
           Add-Type -AssemblyName UIAutomationTypes
-          $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
-          $titles=@($windows | Where-Object {[string]$_.Current.Name -match 'Adobe XD$'} | ForEach-Object {[string]$_.Current.Name})
-          $origin=@($titles | Where-Object {$_ -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
-          $copy=@($titles | Where-Object {$_ -match '^Panda_Mode2_Editable_Experiment.*Adobe XD$'})
-          Write-Host "MODE2_OBSERVE_ORIGINAL=$($origin.Count) COPY=$($copy.Count) TOTAL=$($titles.Count)"
-          foreach($title in $titles){Write-Host "MODE2_OBSERVE_TITLE=$title"}
+          # Four bounded samples distinguish asynchronous opening from a failed request.
+          # No focus changes, shell opens, keyboard input, or document edits.
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Mode2Foreground {
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+          }
+'@
+          $observations=@()
+          for($sample=1;$sample -le 4;$sample++){
+            $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+            $xd=@($windows | Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+            $original=@($xd | Where-Object {[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+            $copy=@($xd | Where-Object {[string]$_.Current.Name -match '^Panda_Mode2_Editable_Experiment.*Adobe XD$'})
+            $handle=[Mode2Foreground]::GetForegroundWindow()
+            $foregroundPid=[uint32]0
+            [void][Mode2Foreground]::GetWindowThreadProcessId($handle,[ref]$foregroundPid)
+            Write-Host "MODE2_OBSERVE_SAMPLE=$sample ORIGINAL=$($original.Count) COPY=$($copy.Count) TOTAL=$($xd.Count) FOREGROUND_PID=$foregroundPid"
+            foreach($win in $xd){
+              $foreground=($win.Current.NativeWindowHandle -eq $handle.ToInt32() -and $handle -ne [IntPtr]::Zero)
+              Write-Host "MODE2_OBSERVE_WINDOW_SAMPLE=$sample TITLE=$([string]$win.Current.Name) PID=$($win.Current.ProcessId) HANDLE=$($win.Current.NativeWindowHandle) FOREGROUND=$foreground"
+            }
+            $observations+=@{original=$original.Count;copy=$copy.Count;total=$xd.Count}
+            if($sample -lt 4){Start-Sleep -Seconds 3}
+          }
+          $stableCopy=@($observations | Where-Object {$_.copy -eq 1 -and $_.original -eq 1 -and $_.total -eq 2}).Count -eq 4
+          Write-Host "MODE2_COPY_AND_ORIGINAL_STABLE_FOUR_SAMPLES=$stableCopy"
+          Write-Host 'MODE2_UIA_FOREGROUND_IS_NOT_HOST_NATIVE_PATH_ATTESTATION=True'
           $source=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
           $test=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\mode2-isolated\Panda_Mode2_Editable_Experiment.xd'
           $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
