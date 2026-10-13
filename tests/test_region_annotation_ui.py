@@ -59,6 +59,16 @@ class CanvasUiTests(unittest.TestCase):
         self.assertIn("Preview không khớp tỉ lệ", js)
         self.assertIn("requires_preview_revision_check:true", js)
 
+    def test_selected_layer_highlight_and_ambiguity_safety(self):
+        js = "".join(self.view.scripts)
+        self.assertIn("target-highlight", self.view.ids)
+        self.assertIn("function highlightLayer(layer)", js)
+        self.assertIn("function validCandidateIds(items)", js)
+        self.assertIn("requires_disambiguation:candidates.length>1", js)
+        self.assertIn("Layer đã thay đổi", js)
+        self.assertIn("Layer ID bị thiếu hoặc trùng", js)
+        self.assertIn("$('target-highlight').style.display='none'", js)
+
     def test_metadata_edit_invalidates_selection(self):
         js = "".join(self.view.scripts)
         self.assertIn("$('meta').addEventListener('input',reset)", js)
