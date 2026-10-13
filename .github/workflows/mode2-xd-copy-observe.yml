@@ -44,6 +44,22 @@ jobs:
           $stableCopy=@($observations | Where-Object {$_.copy -eq 1 -and $_.original -eq 1 -and $_.total -eq 2}).Count -eq 4
           Write-Host "MODE2_COPY_AND_ORIGINAL_STABLE_FOUR_SAMPLES=$stableCopy"
           Write-Host 'MODE2_UIA_FOREGROUND_IS_NOT_HOST_NATIVE_PATH_ATTESTATION=True'
+          # Diagnose zero visible windows without reopening or touching the host.
+          $xdProcesses=@(Get-Process -Name XD -ErrorAction SilentlyContinue)
+          foreach($process in $xdProcesses){
+            Write-Host "MODE2_XD_PROCESS PID=$($process.Id) SESSION=$($process.SessionId) RESPONDING=$($process.Responding)"
+          }
+          $uxpConnections=@(Get-NetTCPConnection -LocalPort 8765 -ErrorAction SilentlyContinue)
+          Write-Host "MODE2_XD_PROCESS_COUNT=$($xdProcesses.Count) UXP_CONNECTION_COUNT=$($uxpConnections.Count)"
+          $roots=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $sessionTitles=@($roots | Where-Object {[string]$_.Current.Name -match 'XD|Adobe|Picker|Open|保存'})
+          foreach($window in $sessionTitles){
+            Write-Host "MODE2_SESSION_CANDIDATE TITLE=$([string]$window.Current.Name) PID=$($window.Current.ProcessId)"
+          }
+          if($xdProcesses.Count -eq 0){Write-Host 'MODE2_DIAGNOSIS=NO_XD_PROCESS'}
+          elseif($sessionTitles.Count -eq 0){Write-Host 'MODE2_DIAGNOSIS=XD_PROCESS_WITHOUT_VISIBLE_ADOBE_WINDOW'}
+          else{Write-Host 'MODE2_DIAGNOSIS=INSPECT_CANDIDATE_WINDOWS'}
+
           $source=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
           $test=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\mode2-isolated\Panda_Mode2_Editable_Experiment.xd'
           $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
