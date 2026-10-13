@@ -1,4 +1,5 @@
 name: Red Panda Illustrator installed gateway runtime versus branch hashes read only
+# 2026-10-13 preflight AI and PS installed adapter parity before guarded update.
 on:
   push:
     branches: [feat/canvas-region-targeting]
