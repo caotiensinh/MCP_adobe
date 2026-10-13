@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from math import isfinite
 from typing import Any, Mapping
 from mcp_adobe.mode2_edit_guard import fingerprint
 
@@ -42,9 +43,9 @@ def simulate_reversible_edit(
     kind, params = operation.get("kind"), operation["parameters"]
     if kind == "set_fill" and set(params) == {"color"} and isinstance(params["color"], str) and len(params["color"]) == 7 and params["color"][0] == "#" and all(x in "0123456789abcdefABCDEF" for x in params["color"][1:]):
         changed["fill"] = params["color"]
-    elif kind == "set_opacity" and set(params) == {"opacity"} and type(params["opacity"]) in (int, float) and 0 <= params["opacity"] <= 1:
+    elif kind == "set_opacity" and set(params) == {"opacity"} and type(params["opacity"]) in (int, float) and isfinite(params["opacity"]) and 0 <= params["opacity"] <= 1:
         changed["opacity"] = params["opacity"]
-    elif kind == "translate" and set(params) == {"dx", "dy"} and all(type(params[k]) in (int, float) and -1000 <= params[k] <= 1000 for k in ("dx", "dy")):
+    elif kind == "translate" and set(params) == {"dx", "dy"} and all(type(params[k]) in (int, float) and isfinite(params[k]) and -1000 <= params[k] <= 1000 for k in ("dx", "dy")):
         changed["bounds"] = {k: original["bounds"][k] + params["dx" if k in ("left", "right") else "dy"] for k in ("left", "top", "right", "bottom")}
     else:
         raise ValueError("invalid simulated operation")
