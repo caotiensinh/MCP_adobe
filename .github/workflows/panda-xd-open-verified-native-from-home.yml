@@ -1,5 +1,5 @@
 name: Panda XD open verified native document once from already active home
-# 2026-10-13 native reopen after v4 install and guarded XD launch run 38407776795.
+# 2026-10-13 Mode 2 read-only verified document reopen after launch 38417985887.
 on:
   push:
     branches: [feat/canvas-region-targeting]
