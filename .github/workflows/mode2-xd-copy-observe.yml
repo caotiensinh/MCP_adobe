@@ -23,14 +23,7 @@ jobs:
           Add-Type -AssemblyName UIAutomationTypes
           # Four bounded samples distinguish asynchronous opening from a failed request.
           # No focus changes, shell opens, keyboard input, or document edits.
-          Add-Type -TypeDefinition @'
-          using System;
-          using System.Runtime.InteropServices;
-          public static class Mode2Foreground {
-            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
-          }
-'@
+          Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class Mode2Foreground { [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId); }'
           $observations=@()
           for($sample=1;$sample -le 4;$sample++){
             $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
