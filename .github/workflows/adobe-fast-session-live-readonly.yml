@@ -1,5 +1,5 @@
 name: Adobe fast session live read-only (opt-in)
-# 2026-10-13 one guarded recheck with initial MCP health response schema diagnostics, read-only only.
+# 2026-10-13 single guarded diagnostic of MCP error TextContent (read-only).
 on:
   push:
     branches: [feat/canvas-region-targeting]
