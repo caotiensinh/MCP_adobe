@@ -27,7 +27,17 @@ jobs:
           Write-Host 'MODE2_SINGLE_JOB_PREFLIGHT=PASS'
           Add-Type -AssemblyName UIAutomationClient
           $tops=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
-          $doc=@($tops | Where-Object {[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD
+          $doc=@($tops | Where-Object {[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+          $other=@($tops | Where-Object {[string]$_.Current.Name -match 'Adobe XD$' -and [string]$_.Current.Name -ne 'Adobe XD' -and [string]$_.Current.Name -notmatch '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+          $ws=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          if($other.Count -gt 0 -or $doc.Count -gt 1){throw 'MODE2_UNEXPECTED_ADOBE_DOCUMENT'}
+          if($doc.Count -eq 1){
+            Write-Host "MODE2_REUSE_VERIFIED_DOCUMENT=PASS websocket=$($ws.Count)"
+          }else{
+            if($ws.Count -gt 0){throw 'MODE2_CONNECTED_BUT_NO_KNOWN_DOCUMENT'}
+            & .\scripts\panda_xd_recover_headless_uwp.ps1
+            if(-not $?){throw 'MODE2_RECOVERY_FAILED'}
+          }
           $ErrorActionPreference='Stop'
           if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'PANDA_XD_OPEN_WRONG_DESKTOP'}
           $source=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
