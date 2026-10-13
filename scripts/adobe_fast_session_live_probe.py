@@ -22,6 +22,7 @@ def percentile(a,q):
     return round(s[j]+(s[min(j+1,len(s)-1)]-s[j])*(k-j),3)
 
 async def benchmark(app):
+    if app!="xd": raise RuntimeError("only XD host scenegraph can certify warm read-only state")
     if os.getenv("COMPUTERNAME")!="MRCAO" or os.getenv("ADOBE_SESSION")!="1":
         raise RuntimeError("MRCAO session 1 required")
     pid=int(os.environ["ADOBE_APP_PID"])
@@ -77,7 +78,7 @@ async def benchmark(app):
             "writes":0,"native_save":False,"full_e2e":False,"passed":True}
 
 def main():
-    if len(sys.argv)!=2: raise SystemExit("usage: fast_session_live_probe.py illustrator|xd")
+    if len(sys.argv)!=2: raise SystemExit("usage: fast_session_live_probe.py xd")
     output=Path(os.environ["ADOBE_FAST_REPORT"])
     try:
         record=asyncio.run(benchmark(sys.argv[1]))
