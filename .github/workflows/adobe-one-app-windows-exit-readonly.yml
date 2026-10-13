@@ -1,5 +1,5 @@
 name: Adobe lost application process Windows crash and runner ownership read-only
-# 2026-10-13 examine Photoshop host disappearance after health timeout and PS census.
+# 2026-10-13 read-only process diagnostics after PS health timeout run 38413368042.
 on:
   push:
     branches: [feat/canvas-region-targeting]
