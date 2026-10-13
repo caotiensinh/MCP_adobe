@@ -1,5 +1,5 @@
 name: Adobe fast session live read-only (opt-in)
-# 2026-10-13 diagnostic rerun: nested TaskGroup failure logging added, read-only only.
+# 2026-10-13 one guarded recheck with initial MCP health response schema diagnostics, read-only only.
 on:
   push:
     branches: [feat/canvas-region-targeting]
