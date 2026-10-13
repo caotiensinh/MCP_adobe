@@ -1,0 +1,76 @@
+name: Mode 2 XD bounded isolated-copy recovery
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-bounded-recovery.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  guard-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify fail-closed transaction and experimental UXP contract
+        env:
+          PYTHONPATH: src
+        run: |
+          python3 -m unittest discover -s tests -p 'test_mode2_xd_transaction.py' -v
+          python3 -m unittest discover -s tests -p 'test_mode2_native_provenance.py' -v
+          node --check experimental/mode2-xd-uxp/main.js
+          node tests/xd_mode2_guarded_plugin_contract.cjs
+  mrcao-recover-readonly:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    concurrency:
+      group: adobe-panda-desktop-exclusive
+      cancel-in-progress: false
+    steps:
+      - name: Recover one isolated XD copy only if host is fully idle
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $original=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $copy=Join-Path $root 'mode2-isolated\Panda_Mode2_Editable_Experiment.xd'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($file in @($original,$copy)){
+            if(!(Test-Path -LiteralPath $file -PathType Leaf)){throw 'MODE2_NATIVE_FILE_MISSING'}
+            if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_BASELINE_HASH_MISMATCH'}
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          $scope=[System.Windows.Automation.TreeScope]::Children
+          $condition=[System.Windows.Automation.Condition]::TrueCondition
+          $all=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,$condition)
+          $windows=@($all | Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $processes=@(Get-CimInstance Win32_Process | Where-Object {$_.Name -match '^(XD|Adobe XD|AdobeXD|PickerHost|Illustrator|Photoshop)\.exe$' -or $_.ExecutablePath -match 'Adobe.XD'})
+          $sockets=@(Get-NetTCPConnection -LocalPort 8765 -ErrorAction SilentlyContinue)
+          $established=@($sockets | Where-Object {$_.State -eq 'Established'})
+          Write-Host "MODE2_PRECHECK XD_WINDOWS=$($windows.Count) ADOBE_PROCESSES=$($processes.Count) BRIDGE_ESTABLISHED=$($established.Count)"
+          foreach($proc in $processes){Write-Host "MODE2_ADOBE_PROCESS NAME=$($proc.Name) PID=$($proc.ProcessId)"}
+          if($windows.Count -ne 0 -or $processes.Count -ne 0 -or $established.Count -ne 0){
+            Write-Host 'MODE2_RECOVERY=SKIPPED_HOST_NOT_IDLE'
+          }else{
+            $tracking=$env:RUNNER_TRACKING_ID
+            try{
+              $env:RUNNER_TRACKING_ID=''
+              Start-Process -FilePath $copy -ErrorAction Stop
+            }finally{$env:RUNNER_TRACKING_ID=$tracking}
+            Write-Host 'MODE2_COPY_OPEN_REQUESTED_ONCE'
+          }
+          for($i=1;$i -le 5;$i++){
+            Start-Sleep -Seconds 3
+            $all=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,$condition)
+            $xd=@($all | Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+            $originalWindows=@($xd | Where-Object {[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+            $copyWindows=@($xd | Where-Object {[string]$_.Current.Name -match '^Panda_Mode2_Editable_Experiment.*Adobe XD$'})
+            $established=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+            Write-Host "MODE2_POLL=$i WINDOWS=$($xd.Count) ORIGINAL=$($originalWindows.Count) COPY=$($copyWindows.Count) BRIDGE_ESTABLISHED=$($established.Count)"
+          }
+          if((Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_ORIGINAL_CHANGED'}
+          Write-Host 'MODE2_HOST_NATIVE_PATH_ATTESTED=False'
+          Write-Host 'MODE2_UNDO_ATTESTED=False'
+          Write-Host 'MODE2_MUTATION_AUTHORIZED=False'
+          Write-Host 'MODE2_RECOVERY_OBSERVATION_COMPLETE=PASS'
