@@ -1,0 +1,25 @@
+name: Adobe MCP fast path safety regression
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - 'src/mcp_adobe/fast_path_v2.py'
+      - 'tests/test_fast_path_v2.py'
+      - '.github/workflows/adobe-fast-path-safety.yml'
+  pull_request:
+    paths:
+      - 'src/mcp_adobe/fast_path_v2.py'
+      - 'tests/test_fast_path_v2.py'
+      - '.github/workflows/adobe-fast-path-safety.yml'
+permissions:
+  contents: read
+jobs:
+  fast-path-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fast path fail-closed regression
+        env:
+          PYTHONPATH: src
+        run: python3 -m unittest discover -s tests -p 'test_fast_path_v2.py' -v
