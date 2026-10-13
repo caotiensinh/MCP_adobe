@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from math import isfinite
 from collections.abc import Mapping
 from typing import Any
 
@@ -42,8 +43,9 @@ def authorize_edit_plan(
         expected = selection.get(key)
         if expected is None or expected == "" or live_document.get(key) != expected:
             raise ValueError(f"stale document snapshot: {key}")
-    if live_document.get("saved_native_sha256") in (None, ""):
-        raise ValueError("native baseline SHA-256 is required")
+    baseline = live_document.get("saved_native_sha256")
+    if not isinstance(baseline, str) or len(baseline) != 64 or any(c not in "0123456789abcdefABCDEF" for c in baseline):
+        raise ValueError("valid native baseline SHA-256 is required")
     candidates = selection.get("candidates")
     if not isinstance(candidates, list) or not candidates:
         raise ValueError("missing candidates")
@@ -70,10 +72,10 @@ def authorize_edit_plan(
             raise ValueError("invalid fill color")
     elif op_kind == "set_opacity":
         value = parameters.get("opacity")
-        if set(parameters) != {"opacity"} or type(value) not in (int, float) or not 0 <= value <= 1:
+        if set(parameters) != {"opacity"} or type(value) not in (int, float) or not isfinite(value) or not 0 <= value <= 1:
             raise ValueError("invalid opacity")
     else:
-        if set(parameters) != {"dx", "dy"} or any(type(parameters[k]) not in (int, float) or not -1000 <= parameters[k] <= 1000 for k in ("dx", "dy")):
+        if set(parameters) != {"dx", "dy"} or any(type(parameters[k]) not in (int, float) or not isfinite(parameters[k]) or not -1000 <= parameters[k] <= 1000 for k in ("dx", "dy")):
             raise ValueError("invalid translation")
     proposal = {
         "schema": "mcp-adobe-mode2-guarded-edit/v1",
