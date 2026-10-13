@@ -449,7 +449,18 @@ function applyMutation(item, selection) {
     return { changed };
   }
 
-  if (item.method === "xd.queue.mode2_fill") {\n    const inspected=mode2InspectSelectedNode(params);\n    if (params.isolated_test_copy !== true || params.user_confirmed !== true ||\n        !/^#[0-9a-fA-F]{6}$/.test(params.fill || "")) {\n      throw new Error("MODE2_COPY_CONFIRMATION_OR_COLOR_MISSING");\n    }\n    const target=selection.items.at(0);\n    target.fill=new Color(params.fill);\n    return {node_id:inspected.node_id,document_id:inspected.document_id,bounds:inspected.bounds};\n  }\n\n  if (item.method === "xd.queue.selection_fill") {
+  if (item.method === "xd.queue.mode2_fill") {
+    const inspected=mode2InspectSelectedNode(params);
+    if (params.isolated_test_copy !== true || params.user_confirmed !== true ||
+        !/^#[0-9a-fA-F]{6}$/.test(params.fill || "")) {
+      throw new Error("MODE2_COPY_CONFIRMATION_OR_COLOR_MISSING");
+    }
+    const target=selection.items.at(0);
+    target.fill=new Color(params.fill);
+    return {node_id:inspected.node_id,document_id:inspected.document_id,bounds:inspected.bounds};
+  }
+
+  if (item.method === "xd.queue.selection_fill") {
     requireSelection(selection);
     const color = new Color(params.fill || "#000000");
     const changed = [];
@@ -569,7 +580,9 @@ function dispatch(method, params) {
     return xdScenegraphSnapshot();
   }
 
-  if (method === "xd.mode2.node.inspect") return mode2InspectSelectedNode(params || {});\n\n  if (method === "xd.selection.get") {
+  if (method === "xd.mode2.node.inspect") return mode2InspectSelectedNode(params || {});
+
+  if (method === "xd.selection.get") {
     try { snapshot(scenegraph.selection, scenegraph.root); } catch (_) {}
     return { items: latestSnapshot.selection || [] };
   }
@@ -594,7 +607,8 @@ function dispatch(method, params) {
     method === "xd.queue.ellipse_geometry_repair" ||
     method === "xd.queue.text_create" ||
     method === "xd.queue.selection_resize" ||
-    method === "xd.queue.selection_fill" ||\n    method === "xd.queue.mode2_fill"
+    method === "xd.queue.selection_fill" ||
+    method === "xd.queue.mode2_fill"
   ) {
     return queueMutation(method, params || {});
   }
