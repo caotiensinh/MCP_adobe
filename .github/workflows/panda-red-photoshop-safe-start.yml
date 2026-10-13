@@ -1,4 +1,5 @@
 name: Red Panda Photoshop safe start and live MCP readiness
+# 2026-10-13 isolate upstream cold startup from 15s outer health timeout; one guarded diagnostic.
 # 2026-10-13 PS serial lane after idle AI absence verified run 38413249692.
 # 2026-10-13 serial PS stage after AI graceful-close PASS in run 38411835460.
 on:
@@ -72,7 +73,7 @@ jobs:
                       t=time.perf_counter()
                       try:
                           r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"photoshop",
-                            "capability":capability,"arguments":{}}),timeout=15)
+                            "capability":capability,"arguments":{}}),timeout=(90 if capability=="creative.health" else 20))
                       except Exception as e:
                           print("RED_PS_LIVE_PROBE="+json.dumps({"cap":capability,"error":type(e).__name__+":"+str(e)[:200]}),flush=True)
                           raise RuntimeError("RED_PS_MCP_NOT_READY_NO_CANVAS_WRITES") from e
