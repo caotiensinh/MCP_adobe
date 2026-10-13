@@ -1,8 +1,5 @@
 name: Mode 2 XD single-job guarded host readback
 on:
-  push:
-    branches: [feat/canvas-region-targeting]
-    paths: ['.github/workflows/mode2-xd-single-job-readonly.yml']
   workflow_dispatch:
 permissions:
   contents: read
