@@ -31,6 +31,7 @@ jobs:
             if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_SHA256_CHANGED'}
           }
           Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
           $scope=[System.Windows.Automation.TreeScope]::Children
           $all=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,[System.Windows.Automation.Condition]::TrueCondition)
           $xd=@($all | Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
