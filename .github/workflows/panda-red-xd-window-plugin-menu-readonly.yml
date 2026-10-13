@@ -1,4 +1,5 @@
 name: Panda red XD window and plugin menu read-only ownership census
+# 2026-10-13 inspect missing unique XD Home after guarded native open refused.
 on:
   push:
     branches: [feat/canvas-region-targeting]
