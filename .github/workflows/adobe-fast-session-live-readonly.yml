@@ -1,8 +1,5 @@
 name: Adobe fast session live read-only (opt-in)
 on:
-  push:
-    branches: [feat/canvas-region-targeting]
-    paths: ['.github/workflows/adobe-fast-session-live-readonly.yml']
   workflow_dispatch:
     inputs:
       application:
