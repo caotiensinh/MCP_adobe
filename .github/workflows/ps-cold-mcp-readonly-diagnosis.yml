@@ -1,0 +1,50 @@
+name: Photoshop cold MCP startup bounded readonly diagnosis
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/ps-cold-mcp-readonly-diagnosis.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect isolated PS host and measure one bounded health request
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'PS_COLD_WRONG_DESKTOP'}
+          foreach($other in @('Illustrator','XD')){if(@(Get-Process -Name $other -ErrorAction SilentlyContinue).Count -gt 0){throw 'PS_COLD_OTHER_ADOBE_RUNNING'}}
+          $ps=@(Get-Process -Name Photoshop -ErrorAction SilentlyContinue)
+          if($ps.Count -ne 1 -or $ps[0].MainWindowHandle -eq 0){throw 'PS_COLD_NO_UNIQUE_GUI'}
+          Write-Host "PS_COLD_PROCESS pid=$($ps[0].Id) title=$($ps[0].MainWindowTitle)"
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json,time,traceback
+          from mcp import Client
+          async def main():
+            t=time.perf_counter()
+            async with asyncio.timeout(112):
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                print("PS_COLD_CONNECT_MCP_MS="+str(round((time.perf_counter()-t)*1000,1)),flush=True)
+                a=time.perf_counter()
+                try:
+                  r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"photoshop","capability":"creative.health","arguments":{}}),timeout=95)
+                  print("PS_COLD_HEALTH="+json.dumps({"elapsed_ms":round((time.perf_counter()-a)*1000,1),"is_error":r.is_error,"ok":(r.structured_content or {}).get("ok"),"content":[str(getattr(x,"text",""))[:250] for x in (r.content or [])[:2]]}),flush=True)
+                  if r.is_error or (r.structured_content or {}).get("ok") is not True:raise RuntimeError("PS_COLD_HEALTH_NOT_VALID")
+                except Exception as e:
+                  print("PS_COLD_HEALTH_FAILURE="+type(e).__name__+":"+str(e)[:280]+" elapsed_ms="+str(round((time.perf_counter()-a)*1000,1)),flush=True)
+                  raise
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath ps_cold_health_once.py -Encoding UTF8
+          uv run --python 3.12 python ps_cold_health_once.py
+          if($LASTEXITCODE -ne 0){throw 'PS_COLD_READONLY_FAILED_NO_REPLAY'}
