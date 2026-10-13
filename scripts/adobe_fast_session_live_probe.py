@@ -42,7 +42,8 @@ async def benchmark(app):
                 "ok":body.get("ok") if isinstance(body,dict) else None,
                 "error_code":str(body.get("error_code") or body.get("code") or "")[:100] if isinstance(body,dict) else "",
                 "result_type":type(body.get("result")).__name__ if isinstance(body,dict) else "",
-                "content_types":[type(x).__name__ for x in (first.content or [])][:5]}
+                "content_types":[type(x).__name__ for x in (first.content or [])][:5],
+                "error_text":[str(getattr(x,"text",""))[:700] for x in (first.content or [])[:2]]}
             print("XD_INITIAL_HEALTH_DIAGNOSTIC="+json.dumps(diagnostic),flush=True)
             raise RuntimeError("initial health read failed: "+json.dumps(diagnostic))
         health=body.get("result") or {}
