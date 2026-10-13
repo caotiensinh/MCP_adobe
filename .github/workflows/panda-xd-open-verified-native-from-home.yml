@@ -1,5 +1,5 @@
 name: Panda XD open verified native document once from already active home
-# 2026-10-13 prerequisite to safe UXP reconnect after read-only confirmation that XD transport is disconnected.
+# 2026-10-13 guarded attempt following XD_RECOVERY_HOME_WINDOW=PASS run 38404376122.
 on:
   push:
     branches: [feat/canvas-region-targeting]
