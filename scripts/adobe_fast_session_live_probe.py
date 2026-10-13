@@ -9,6 +9,7 @@ import os
 import statistics
 import sys
 import time
+import traceback
 from pathlib import Path
 from mcp import Client
 from mcp_adobe.fast_session import AdobeFastSession
@@ -91,7 +92,16 @@ def main():
     try:
         record=asyncio.run(benchmark(sys.argv[1]))
     except Exception as exc:
-        record={"passed":False,"error":str(exc)[:250],"application":sys.argv[1]}
+        def flatten(error, depth=0):
+            record={"type":type(error).__name__,"message":str(error)[:500],"depth":depth}
+            children=getattr(error,"exceptions",())
+            if children and depth<5:
+                record["causes"]=[flatten(child,depth+1) for child in children[:8]]
+            return record
+        details=flatten(exc)
+        print("ADOBE_FAST_EXCEPTION_TREE="+json.dumps(details),flush=True)
+        traceback.print_exception(exc)
+        record={"passed":False,"error":str(exc)[:250],"exception_tree":details,"application":sys.argv[1]}
     output.parent.mkdir(parents=True,exist_ok=True)
     temp=output.with_suffix(".tmp")
     temp.write_text(json.dumps(record,indent=2),encoding="utf-8")
