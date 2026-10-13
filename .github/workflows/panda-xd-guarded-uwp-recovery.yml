@@ -1,4 +1,5 @@
 name: PANDA XD guarded recovery of windowless UWP host
+# 2026-10-13 evidence: windowless XD and no established UXP socket; invoke guarded single recovery.
 on:
   push:
     branches: [feat/canvas-region-targeting]
