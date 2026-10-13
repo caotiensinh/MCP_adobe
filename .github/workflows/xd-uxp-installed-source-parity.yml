@@ -1,0 +1,45 @@
+name: XD UXP installed source parity and live host read-only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/xd-uxp-installed-source-parity.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare plugin sources and live XD process without edits
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_PLUGIN_PARITY_WRONG_DESKTOP'}
+          $tracked=Join-Path $PWD 'adobe-xd-plugin/main.js'
+          $expected=(Get-FileHash -LiteralPath $tracked -Algorithm SHA256).Hash
+          Write-Host "XD_PLUGIN_REPO_SHA256=$expected"
+          $packages=@(Get-AppxPackage | Where-Object {$_.Name -match 'Adobe.*XD|XD.*Adobe'})
+          $found=0
+          foreach($pkg in $packages){
+            $plugin=Join-Path $env:LOCALAPPDATA "Packages\$($pkg.PackageFamilyName)\LocalState\develop\MCPAdobeBridge\main.js"
+            if(Test-Path -LiteralPath $plugin -PathType Leaf){
+              $found++
+              $actual=(Get-FileHash -LiteralPath $plugin -Algorithm SHA256).Hash
+              Write-Host "XD_PLUGIN_INSTALLED_SHA256=$actual equal=$($actual -eq $expected) package=$($pkg.Name)"
+              $head=Get-Content -LiteralPath $plugin -TotalCount 30
+              foreach($line in $head){if($line -match 'BRIDGE_BUILD'){Write-Host "XD_PLUGIN_BUILD_LINE=$($line.Trim())"}}
+            }
+          }
+          Write-Host "XD_PLUGIN_INSTALLED_MATCH_COUNT=$found"
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})
+          Write-Host "XD_PLUGIN_PROCESS_COUNT=$($xd.Count)"
+          foreach($p in $xd){Write-Host "XD_PLUGIN_PROCESS pid=$($p.Id) hwnd=$($p.MainWindowHandle)"}
+          $ws=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "XD_PLUGIN_WEBSOCKET_ESTABLISHED=$($ws.Count)"
+          if($found -ne 1){throw 'XD_PLUGIN_INSTALLATION_NOT_UNIQUE'}
+          Write-Host 'XD_PLUGIN_SOURCE_PARITY_READONLY_DONE=PASS'
