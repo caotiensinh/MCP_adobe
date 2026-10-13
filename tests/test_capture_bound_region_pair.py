@@ -1,6 +1,7 @@
 from __future__ import annotations
 import unittest
-from scripts.capture_bound_region_pair import compare_snapshots,stable_fingerprint
+import struct
+from scripts.capture_bound_region_pair import compare_snapshots,stable_fingerprint,preview_dimensions,assert_preview_frame
 
 
 def snapshot():
@@ -9,6 +10,20 @@ def snapshot():
 
 
 class PreviewPairTests(unittest.TestCase):
+
+    def test_png_dimensions_and_frame_gate(self):
+        header = bytes.fromhex("89504e470d0a1a0a") + b"\\x00\\x00\\x00\\x0dIHDR" + struct.pack(">II", 900, 600) + b"\\x08\\x02\\x00\\x00\\x00"
+        self.assertEqual(preview_dimensions(header, ".png"), (900, 600))
+        self.assertEqual(assert_preview_frame(header, ".png", snapshot()), (900, 600))
+        with self.assertRaisesRegex(ValueError, "aspect ratio"):
+            assert_preview_frame(header, ".png", {**snapshot(), "height": 500})
+        with self.assertRaisesRegex(ValueError, "PNG"):
+            preview_dimensions(b"bad", ".png")
+
+    def test_unsupported_type_fail_closed(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported"):
+            preview_dimensions(b"data", ".webp")
+
     def test_identical_metadata_stable(self):
         a=snapshot()
         self.assertEqual(compare_snapshots(a,dict(a)),stable_fingerprint(a))
