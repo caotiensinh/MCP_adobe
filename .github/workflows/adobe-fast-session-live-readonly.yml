@@ -1,0 +1,54 @@
+name: Adobe fast session live read-only (opt-in)
+on:
+  workflow_dispatch:
+    inputs:
+      application:
+        type: choice
+        required: true
+        default: xd
+        options: [xd, illustrator]
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  measure:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    env:
+      PYTHONUTF8: '1'
+      ADOBE_SESSION: '1'
+      ADOBE_APP: ${{ inputs.application }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify MRCAO single active Adobe app and capture PID
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'WRONG_HOST_SESSION'}
+          $names=@{illustrator='Illustrator';xd='XD';photoshop='Photoshop'}
+          foreach($key in $names.Keys){
+            $processes=@(Get-Process -Name $names[$key] -ErrorAction SilentlyContinue)
+            if($key -eq $env:ADOBE_APP){
+              if($processes.Count -ne 1 -or $processes[0].SessionId -ne 1){throw 'TARGET_PROCESS_NOT_UNIQUE'}
+              "ADOBE_APP_PID=$($processes[0].Id)" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            }elseif($processes.Count -gt 0){throw 'OTHER_ADOBE_ACTIVE'}
+          }
+          $listeners=@(Get-NetTCPConnection -State Listen -LocalPort 8787 -ErrorAction SilentlyContinue)
+          if($listeners.Count -ne 1){throw 'GATEWAY_NOT_UNIQUE'}
+      - name: Measure opt-in fast session without mutation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:ADOBE_FAST_REPORT=Join-Path $env:RUNNER_TEMP 'adobe_fast_live.json'
+          $env:PYTHONPATH=(Join-Path $PWD 'src')
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python scripts/adobe_fast_session_live_probe.py $env:ADOBE_APP
+          if($LASTEXITCODE -ne 0){throw 'FAST_LIVE_READONLY_FAILED'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: adobe-fast-session-live-readonly
+          path: ${{ runner.temp }}/adobe_fast_live.json
+          if-no-files-found: warn
+          retention-days: 14
