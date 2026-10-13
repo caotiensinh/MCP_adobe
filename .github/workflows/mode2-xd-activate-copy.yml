@@ -1,0 +1,65 @@
+name: Mode 2 XD guarded copy activation preflight
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-activate-copy.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  guarded-open:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Activate isolated XD copy only from idle XD home, never force-close native
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          foreach($app in @('Illustrator','Photoshop')){
+            if(@(Get-Process -Name $app -ErrorAction SilentlyContinue).Count -gt 0){throw "MODE2_OTHER_APP_ACTIVE_$app"}
+          }
+          $folder=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $original=Join-Path $folder 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $copy=Join-Path $folder 'mode2-isolated\Panda_Mode2_Editable_Experiment.xd'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($path in @($original,$copy)){
+            if(!(Test-Path -LiteralPath $path -PathType Leaf)){throw 'MODE2_MISSING_NATIVE'}
+            if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_SHA256_CHANGED'}
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          $scope=[System.Windows.Automation.TreeScope]::Children
+          $all=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,[System.Windows.Automation.Condition]::TrueCondition)
+          $xd=@($all | Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $home=@($xd | Where-Object {[string]$_.Current.Name -eq 'Adobe XD'})
+          $originalDoc=@($xd | Where-Object {[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+          $copyDoc=@($xd | Where-Object {[string]$_.Current.Name -match '^Panda_Mode2_Editable_Experiment.*Adobe XD$'})
+          Write-Host "MODE2_ACTIVE_ORIGINAL=$($originalDoc.Count) COPY=$($copyDoc.Count) HOME=$($home.Count)"
+          if($copyDoc.Count -eq 1 -and $originalDoc.Count -eq 0 -and $xd.Count -eq 1){
+            Write-Host 'MODE2_COPY_WINDOW_PRESENT=PASS_NON_ATTESTED'
+          }elseif($originalDoc.Count -gt 0 -or $xd.Count -ne 1 -or $home.Count -ne 1){
+            Write-Host 'MODE2_COPY_ACTIVATION_BLOCKED=ORIGINAL_OR_UNCERTAIN_GUI'
+          }else{
+            $picker=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})
+            $bridge=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+            if($picker.Count -ne 0 -or $bridge.Count -ne 0){
+              Write-Host 'MODE2_COPY_ACTIVATION_BLOCKED=ACTIVE_PICKER_OR_BRIDGE'
+            }else{
+              $tracking=$env:RUNNER_TRACKING_ID
+              try{
+                $env:RUNNER_TRACKING_ID=''
+                Start-Process -FilePath $copy -ErrorAction Stop
+              }finally{$env:RUNNER_TRACKING_ID=$tracking}
+              Write-Host 'MODE2_COPY_OPEN_REQUESTED_ONCE=PASS'
+              Start-Sleep -Seconds 3
+              $after=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,[System.Windows.Automation.Condition]::TrueCondition)
+              $copies=@($after | Where-Object {[string]$_.Current.Name -match '^Panda_Mode2_Editable_Experiment.*Adobe XD$'})
+              if($copies.Count -ne 1){throw 'MODE2_COPY_WINDOW_NOT_VERIFIED_DO_NOT_REPLAY'}
+              Write-Host 'MODE2_COPY_WINDOW_VISIBLE=PASS_NOT_HOST_ATTESTED'
+            }
+          }
+          if((Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_ORIGINAL_CHANGED'}
+          Write-Host 'MODE2_COPY_ACTIVATION_PREFLIGHT_COMPLETE=PASS_READ_ONLY_OR_ONE_SHOT'
