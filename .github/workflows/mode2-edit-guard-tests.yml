@@ -1,0 +1,23 @@
+name: Mode 2 guarded edit authorization tests
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - '.github/workflows/mode2-edit-guard-tests.yml'
+      - 'src/mcp_adobe/mode2_edit_guard.py'
+      - 'tests/test_mode2_edit_guard.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  read-only-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate edit plan gates; never call Adobe or MCP
+        env:
+          PYTHONPATH: src
+        run: |
+          python3 -m unittest discover -s tests -p 'test_mode2_edit_guard.py' -v
+          python3 -m compileall -q src/mcp_adobe/mode2_edit_guard.py
