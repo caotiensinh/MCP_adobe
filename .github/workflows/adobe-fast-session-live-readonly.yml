@@ -1,9 +1,6 @@
 name: Adobe fast session live read-only (opt-in)
 # 2026-10-13 guarded latency measurement after XD v4 32-shape host readback passed run 38408023833.
 on:
-  push:
-    branches: [feat/canvas-region-targeting]
-    paths: ['.github/workflows/adobe-fast-session-live-readonly.yml']
   workflow_dispatch:
     inputs:
       application:
