@@ -1,0 +1,53 @@
+name: XD staged plugin update evidence (no install or reload)
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/xd-plugin-stage-parity.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage candidate and preserve installed plugin without changing Adobe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_STAGE_WRONG_HOST'}
+          $src=Join-Path $PWD 'adobe-xd-plugin'
+          $expected=(Get-FileHash -LiteralPath (Join-Path $src 'main.js') -Algorithm SHA256).Hash
+          $pkgs=@(Get-AppxPackage | Where-Object {$_.Name -eq 'Adobe.XD'})
+          if($pkgs.Count -ne 1){throw 'XD_STAGE_PACKAGE_AMBIGUOUS'}
+          $installed=Join-Path $env:LOCALAPPDATA "Packages\$($pkgs[0].PackageFamilyName)\LocalState\develop\MCPAdobeBridge"
+          if(-not(Test-Path -LiteralPath (Join-Path $installed 'main.js'))){throw 'XD_STAGE_INSTALLED_PLUGIN_MISSING'}
+          $out=Join-Path $env:RUNNER_TEMP 'xd_uxp_staged'
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          $candidate=Join-Path $out 'candidate'
+          $backup=Join-Path $out 'installed_backup'
+          if(Test-Path $candidate){Remove-Item $candidate -Recurse -Force}
+          if(Test-Path $backup){Remove-Item $backup -Recurse -Force}
+          Copy-Item -LiteralPath $src -Destination $candidate -Recurse
+          Copy-Item -LiteralPath $installed -Destination $backup -Recurse
+          $candidateSha=(Get-FileHash -LiteralPath (Join-Path $candidate 'main.js') -Algorithm SHA256).Hash
+          $installedSha=(Get-FileHash -LiteralPath (Join-Path $backup 'main.js') -Algorithm SHA256).Hash
+          if($candidateSha -ne $expected){throw 'XD_STAGE_CANDIDATE_HASH_MISMATCH'}
+          $manifest=Get-Content -LiteralPath (Join-Path $candidate 'manifest.json') -Raw | ConvertFrom-Json
+          if($manifest.host.app -ne 'XD' -or $manifest.manifestVersion -ne 4){throw 'XD_STAGE_MANIFEST_INVALID'}
+          Write-Host "XD_STAGE_SOURCE_SHA=$candidateSha"
+          Write-Host "XD_STAGE_INSTALLED_SHA=$installedSha"
+          Write-Host "XD_STAGE_DIFFERENT=$($candidateSha -ne $installedSha)"
+          Write-Host "XD_STAGE_BACKUP_CREATED=PASS"
+          Write-Host 'XD_STAGE_NO_ACTIVE_PLUGIN_REPLACE_OR_RELOAD=PASS'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xd-uxp-staged-candidate-and-backup
+          path: ${{ runner.temp }}/xd_uxp_staged/
+          retention-days: 7
+          if-no-files-found: warn
