@@ -1,4 +1,5 @@
 name: Panda red XD WebSocket MCP rootcause read-only
+# 2026-10-13 diagnose confirmed creative_read error response after XD launch.
 on:
   push:
     branches: [feat/canvas-region-targeting]
