@@ -22,7 +22,7 @@ jobs:
     env:
       PYTHONUTF8: '1'
       ADOBE_SESSION: '1'
-      ADOBE_APP: ${{ inputs.application }}
+      ADOBE_APP: ${{ inputs.application || 'xd' }}
     steps:
       - uses: actions/checkout@v4
       - name: Verify MRCAO single active Adobe app and capture PID
