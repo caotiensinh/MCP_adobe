@@ -120,3 +120,42 @@ def resolve_annotation(
         "candidates": found,
         "requires_confirmation": len(found) != 1,
     }
+
+
+def resolve_bound_annotation(
+    *,
+    stroke: Mapping[str, float],
+    viewport: Mapping[str, float],
+    document: Mapping[str, float],
+    layers: Sequence[Mapping[str, Any]],
+    preview_binding: Mapping[str, Any],
+    live_binding: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Mode 2 read-only gate: bind a region to the same actual host snapshot.
+
+    Rejects unbound screenshots, stale generation, ambiguous/missing layer IDs
+    and missing preview image hash. It does not authorize or perform an edit.
+    """
+    fields = ("application", "document_identity", "generation", "preview_sha256")
+    for field in fields:
+        observed = preview_binding.get(field)
+        if observed is None or observed == "" or observed != live_binding.get(field):
+            raise ValueError(f"Mode 2 stale or unbound preview: {field}")
+    if preview_binding["application"] not in ("xd", "illustrator", "photoshop"):
+        raise ValueError("Mode 2 unsupported application")
+    sha = preview_binding["preview_sha256"]
+    if not isinstance(sha, str) or len(sha) != 64 or any(c not in "0123456789abcdefABCDEF" for c in sha):
+        raise ValueError("Mode 2 invalid preview digest")
+    ids = [str(layer.get("id")) for layer in layers]
+    if any(layer.get("id") is None for layer in layers) or len(ids) != len(set(ids)):
+        raise ValueError("Mode 2 missing or duplicate layer identity")
+    result = resolve_annotation(
+        stroke=stroke, viewport=viewport, document=document, layers=layers,
+        document_identity=str(live_binding["document_identity"]),
+        expected_document_identity=str(preview_binding["document_identity"]),
+    )
+    result["application"] = preview_binding["application"]
+    result["generation"] = preview_binding["generation"]
+    result["preview_sha256"] = sha
+    result["execute_automatically"] = False
+    return result
