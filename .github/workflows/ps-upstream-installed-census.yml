@@ -1,4 +1,5 @@
 name: Photoshop upstream installed extension and node census readonly
+# 2026-10-13 diagnose actual upstream after health timeout run 38413368042.
 on:
   push:
     branches: [feat/canvas-region-targeting]
