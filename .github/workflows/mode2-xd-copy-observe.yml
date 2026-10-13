@@ -52,7 +52,7 @@ jobs:
           $uxpConnections=@(Get-NetTCPConnection -LocalPort 8765 -ErrorAction SilentlyContinue)
           Write-Host "MODE2_XD_PROCESS_COUNT=$($xdProcesses.Count) UXP_CONNECTION_COUNT=$($uxpConnections.Count)"
           $roots=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
-          $sessionTitles=@($roots | Where-Object {[string]$_.Current.Name -match 'XD|Adobe|Picker|Open|保存'})
+          $sessionTitles=@($roots | Where-Object {[string]$_.Current.Name -match 'XD|Adobe|Picker|Open|Save'})
           foreach($window in $sessionTitles){
             Write-Host "MODE2_SESSION_CANDIDATE TITLE=$([string]$window.Current.Name) PID=$($window.Current.ProcessId)"
           }
