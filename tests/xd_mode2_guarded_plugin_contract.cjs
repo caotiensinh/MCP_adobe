@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const js = fs.readFileSync("adobe-xd-plugin/main.js", "utf8");
+const js = fs.readFileSync("experimental/mode2-xd-uxp/main.js", "utf8");
 assert.match(js, /function mode2InspectSelectedNode\(params\)/);
 assert.match(js, /MODE2_DOCUMENT_ID_MISMATCH/);
 assert.match(js, /MODE2_SELECTION_NOT_UNIQUE/);
