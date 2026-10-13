@@ -6,6 +6,8 @@ on:
       - '.github/workflows/mode2-edit-guard-tests.yml'
       - 'src/mcp_adobe/mode2_edit_guard.py'
       - 'tests/test_mode2_edit_guard.py'
+      - 'src/mcp_adobe/mode2_edit_simulation.py'
+      - 'tests/test_mode2_edit_simulation.py'
   workflow_dispatch:
 permissions:
   contents: read
@@ -20,4 +22,5 @@ jobs:
           PYTHONPATH: src
         run: |
           python3 -m unittest discover -s tests -p 'test_mode2_edit_guard.py' -v
-          python3 -m compileall -q src/mcp_adobe/mode2_edit_guard.py
+          python3 -m unittest discover -s tests -p 'test_mode2_edit_simulation.py' -v
+          python3 -m compileall -q src/mcp_adobe/mode2_edit_guard.py src/mcp_adobe/mode2_edit_simulation.py
