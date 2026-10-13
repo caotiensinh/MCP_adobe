@@ -1,4 +1,5 @@
 name: Mode 2 XD live region node read-only acceptance
+# 2026-10-13 rerun after guarded XD reopen and v4 readback run 38418192238.
 on:
   push:
     branches: [feat/canvas-region-targeting]
