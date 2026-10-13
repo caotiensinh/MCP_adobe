@@ -1,0 +1,68 @@
+name: Mode 2 XD safe ownership attestation
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-ownership-attestation.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ownership-readonly:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    concurrency:
+      group: adobe-panda-desktop-exclusive
+      cancel-in-progress: false
+    steps:
+      - name: Examine live XD window and file provenance without switching documents
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_HOST_SESSION_MISMATCH'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $original=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $copy=Join-Path $root 'mode2-isolated\Panda_Mode2_Editable_Experiment.xd'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ed1'
+          foreach($path in @($original,$copy)){
+            if(!(Test-Path -LiteralPath $path -PathType Leaf)){throw 'MODE2_NATIVE_MISSING'}
+            if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_NATIVE_HASH_MISMATCH'}
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $scope=[System.Windows.Automation.TreeScope]::Children
+          $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,[System.Windows.Automation.Condition]::TrueCondition)
+          $originals=@($windows | Where-Object {[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+          $copies=@($windows | Where-Object {[string]$_.Current.Name -match '^Panda_Mode2_Editable_Experiment.*Adobe XD$'})
+          $other=@($windows | Where-Object {[string]$_.Current.Name -match 'Adobe XD$' -and [string]$_.Current.Name -notmatch '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$' -and [string]$_.Current.Name -notmatch '^Panda_Mode2_Editable_Experiment.*Adobe XD$'})
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})
+          $sockets=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "MODE2_HOST_XD_PROCESSES=$($xd.Count) ORIGINAL_WINDOWS=$($originals.Count) COPY_WINDOWS=$($copies.Count) OTHER_WINDOWS=$($other.Count) UXP_SOCKETS=$($sockets.Count)"
+          Write-Host 'MODE2_HOST_FILE_SHA256=PASS_ORIGINAL_AND_COPY'
+          if($copies.Count -eq 1 -and $originals.Count -eq 0 -and $other.Count -eq 0){
+            Write-Host 'MODE2_COPY_TITLE_OBSERVED=True'
+          }else{
+            Write-Host 'MODE2_COPY_TITLE_OBSERVED=False'
+          }
+          Write-Host 'MODE2_HOST_ACTIVE_PATH_ATTESTED=False'
+          Write-Host 'MODE2_HOST_UNDO_CAPABILITY_ATTESTED=False'
+          Write-Host 'MODE2_HOST_MUTATION_AUTHORIZED=False'
+          Write-Host 'MODE2_HOST_READONLY_ATTESTATION=PASS'
+  guard-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mode2 authorization and filesystem path gates
+        env:
+          PYTHONPATH: src
+        run: |
+          python3 -m unittest discover -s tests -p 'test_mode2_xd_transaction.py' -v
+          python3 -m unittest discover -s tests -p 'test_mode2_native_provenance.py' -v
+  candidate-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          node --check experimental/mode2-xd-uxp/main.js
+          node tests/xd_mode2_guarded_plugin_contract.cjs
