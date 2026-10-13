@@ -39,7 +39,7 @@ class XDTransactionTests(unittest.TestCase):
         mock=mock or MockXD()
         return execute_guarded_xd_edit(proposal=self.proposal,gateway=mock,isolated_copy=self.copy,**kw)
     def test_dry_run_never_calls_gateway(self):
-        result=self.run_it(gateway=None) if False else execute_guarded_xd_edit(proposal=self.proposal,gateway=object(),isolated_copy=self.copy)
+        result=execute_guarded_xd_edit(proposal=self.proposal,gateway=object(),isolated_copy=self.copy)
         self.assertEqual(result["status"],"dry_run")
     def test_verified_round_trip_with_mock_host(self):
         mock=MockXD()
