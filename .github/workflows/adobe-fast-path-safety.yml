@@ -5,6 +5,8 @@ on:
     paths:
       - 'src/mcp_adobe/fast_path_v2.py'
       - 'tests/test_fast_path_v2.py'
+      - 'src/mcp_adobe/fast_session.py'
+      - 'tests/test_fast_session.py'
       - '.github/workflows/adobe-fast-path-safety.yml'
   pull_request:
     paths:
@@ -22,4 +24,6 @@ jobs:
       - name: Fast path fail-closed regression
         env:
           PYTHONPATH: src
-        run: python3 -m unittest discover -s tests -p 'test_fast_path_v2.py' -v
+        run: |
+          python3 -m unittest discover -s tests -p 'test_fast_path_v2.py' -v
+          python3 -m unittest discover -s tests -p 'test_fast_session.py' -v
