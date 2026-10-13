@@ -62,4 +62,17 @@ jobs:
           foreach($app in $other){$procs=@(Get-Process -Name $app -ErrorAction SilentlyContinue);Write-Host "MODE2_BATCH_OTHER_APP name=$app count=$($procs.Count)"}
           $socket=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
           Write-Host "MODE2_BATCH_XD_CONNECTED_SOCKETS=$($socket.Count)"
+          $originalWindows=@($titles | Where-Object {$_ -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD
+})
+          $copyWindows=@($titles | Where-Object {$_ -match '^Panda_Mode2_Editable_Experiment.*Adobe XD
+})
+          Write-Host "MODE2_BATCH_ORIGINAL_OPEN=$($originalWindows.Count) ISOLATED_COPY_OPEN=$($copyWindows.Count)"
+          if($copyWindows.Count -eq 1 -and $originalWindows.Count -eq 0){
+            Write-Host 'MODE2_ACTIVE_COPY_WINDOW=OBSERVED_NOT_HOST_ATTESTED'
+          }elseif($originalWindows.Count -eq 1 -and $copyWindows.Count -eq 0){
+            Write-Host 'MODE2_MUTATION_GATE=BLOCKED_ACTIVE_ORIGINAL'
+          }else{
+            Write-Host 'MODE2_MUTATION_GATE=BLOCKED_UNCERTAIN_DOCUMENT_OWNERSHIP'
+          }
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_ORIGINAL_CHANGED_DURING_INSPECTION'}
           Write-Host 'MODE2_BATCH_HOST_READONLY_PASS'
