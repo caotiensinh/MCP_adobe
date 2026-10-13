@@ -31,9 +31,9 @@ jobs:
               $manifest=Join-Path $_.FullName 'manifest.json'
               if(Test-Path -LiteralPath $manifest){
                 try{$m=Get-Content -LiteralPath $manifest -Raw|ConvertFrom-Json}catch{continue}
-                $host=($m.host | ConvertTo-Json -Compress -Depth 5)
-                if($host -match 'PHSP|photoshop|PS' -or $_.Name -match 'photoshop|mcp'){
-                  Write-Host "PS_DIAG_UXP_PLUGIN id=$($m.id) version=$($m.version) path=$($_.Name) host=$($host.Substring(0,[Math]::Min(300,$host.Length)))"
+                $pluginHost=($m.host | ConvertTo-Json -Compress -Depth 5)
+                if($pluginHost -match 'PHSP|photoshop|PS' -or $_.Name -match 'photoshop|mcp'){
+                  Write-Host "PS_DIAG_UXP_PLUGIN id=$($m.id) version=$($m.version) path=$($_.Name) host=$($pluginHost.Substring(0,[Math]::Min(300,$pluginHost.Length)))"
                 }
               }
             }
