@@ -50,7 +50,7 @@ jobs:
           if($editPattern.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$editPattern.Expand()}
           Start-Sleep -Milliseconds 300
           $children=$target[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
-          $undo=@($children|Where-Object {[string]$_.Current.Name -match '^(Undo|元に戻す)( |$)'})
+          $undo=@($children|Where-Object {[string]$_.Current.Name -match '^Undo( |$)'})
           Write-Host "MODE2_EXPANDED_UNDO_COUNT=$($undo.Count)"
           foreach($item in $undo){Write-Host "MODE2_UNDO_EXPANDED name=$([string]$item.Current.Name) enabled=$($item.Current.IsEnabled)"}
           $editPattern.Collapse()
