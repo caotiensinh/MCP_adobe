@@ -1,0 +1,65 @@
+name: Mode 2 XD disposable native Save after verified Undo
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-disposable-native-save.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  save:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Verify sole disposable and invoke exact File Save once
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $original=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $panda=Join-Path $root 'mode2-isolated\Panda_Mode2_Editable_Experiment.xd'
+          $test=Join-Path $root 'mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd'
+          $marker=Join-Path $root 'mode2-disposable-native\Mode2_Undo_E2E_38584984023.saved.checkpoint'
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if(Test-Path -LiteralPath $marker){throw 'MODE2_SAVE_ALREADY_ATTEMPTED_NO_REPLAY'}
+          foreach($p in @($original,$panda)){if((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash -ne $sha){throw 'MODE2_PROTECTED_CHANGED'}}
+          if(!(Test-Path -LiteralPath $test -PathType Leaf)){throw 'MODE2_TEST_MISSING'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $xd=@($windows|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $active=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          if($xd.Count -ne 1 -or $active.Count -ne 1){throw 'MODE2_SAVE_WRONG_WINDOW'}
+          if(@(Get-Process -Name PickerHost,Illustrator,Photoshop -ErrorAction SilentlyContinue).Count -gt 0){throw 'MODE2_SAVE_MODAL_OR_FOREIGN_HOST'}
+          $id=[System.Windows.Automation.AutomationElement]::AutomationIdProperty
+          $menu=$active[0].FindFirst([System.Windows.Automation.TreeScope]::Descendants,(New-Object System.Windows.Automation.PropertyCondition($id,'AppMenu_File')))
+          if(-not $menu){throw 'MODE2_FILE_MENU_MISSING'}
+          $expanded=$menu.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+          if($expanded.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$expanded.Expand()}
+          Start-Sleep -Milliseconds 250
+          $nodes=$active[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $saves=@($nodes|Where-Object {[string]$_.Current.Name -eq 'Save' -and [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and $_.Current.IsEnabled})
+          Write-Host "MODE2_NATIVE_SAVE_CONTROLS=$($saves.Count)"
+          foreach($item in $saves){Write-Host "MODE2_NATIVE_SAVE_ID=$([string]$item.Current.AutomationId)"}
+          if($saves.Count -ne 1){throw 'MODE2_SAVE_MENU_NOT_UNIQUE_NO_WRITE'}
+          $before=Get-FileHash -LiteralPath $test -Algorithm SHA256
+          # Marker is written before a potentially uncertain UI invocation; never repeat blindly.
+          "save-requested run=$env:GITHUB_RUN_ID before=$($before.Hash)" | Set-Content -LiteralPath $marker -Encoding ASCII -NoNewline
+          $invoke=$saves[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+          $invoke.Invoke()
+          Write-Host 'MODE2_DISPOSABLE_NATIVE_SAVE_INVOKED_ONCE'
+          Start-Sleep -Seconds 3
+          foreach($p in @($original,$panda)){if((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash -ne $sha){throw 'MODE2_PROTECTED_CHANGED_AFTER_SAVE'}}
+          $after=Get-FileHash -LiteralPath $test -Algorithm SHA256
+          $f=Get-Item -LiteralPath $test
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip=[System.IO.Compression.ZipFile]::OpenRead($test)
+          try{$entries=$zip.Entries.Count}finally{$zip.Dispose()}
+          if($f.Length -lt 1000 -or $entries -lt 1){throw 'MODE2_SAVED_NATIVE_INVALID'}
+          Write-Host "MODE2_DISPOSABLE_NATIVE_SAVED_HASH=$($after.Hash) BYTES=$($f.Length) ENTRIES=$entries"
+          Write-Host 'MODE2_ORIGINAL_AND_PANDA_SHA256=PASS'
+          Write-Host 'MODE2_DISPOSABLE_NATIVE_SAVE_ARCHIVE=PASS'
