@@ -38,6 +38,18 @@ jobs:
           $sockets=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
           Write-Host "MODE2_HOST_XD_PROCESSES=$($xd.Count) ORIGINAL_WINDOWS=$($originals.Count) COPY_WINDOWS=$($copies.Count) OTHER_WINDOWS=$($other.Count) UXP_SOCKETS=$($sockets.Count)"
           Write-Host 'MODE2_HOST_FILE_SHA256=PASS_ORIGINAL_AND_COPY'
+          # Read-only host evidence; Windows title/socket are hints, not native ownership proofs.
+          $owners=@(Get-NetTCPConnection -LocalPort 8765 -ErrorAction SilentlyContinue)
+          foreach($conn in $owners){
+            $proc=Get-CimInstance Win32_Process -Filter "ProcessId=$($conn.OwningProcess)" -ErrorAction SilentlyContinue
+            Write-Host "MODE2_SOCKET_OWNER state=$($conn.State) pid=$($conn.OwningProcess) name=$($proc.Name)"
+          }
+          $copyCanonical=[IO.Path]::GetFullPath($copy)
+          $originalCanonical=[IO.Path]::GetFullPath($original)
+          Write-Host "MODE2_NATIVE_PATHS_DIFFER=$($copyCanonical -ine $originalCanonical)"
+          # Obtain no file handles and change no Adobe UI state.
+          Write-Host 'MODE2_UNDO_HOST_API_PROOF=UNAVAILABLE_READONLY'
+
           if($copies.Count -eq 1 -and $originals.Count -eq 0 -and $other.Count -eq 0){
             Write-Host 'MODE2_COPY_TITLE_OBSERVED=True'
           }else{
