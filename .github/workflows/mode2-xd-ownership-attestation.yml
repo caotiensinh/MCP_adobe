@@ -58,7 +58,10 @@ jobs:
           Write-Host 'MODE2_HOST_ACTIVE_PATH_ATTESTED=False'
           Write-Host 'MODE2_HOST_UNDO_CAPABILITY_ATTESTED=False'
           Write-Host 'MODE2_HOST_MUTATION_AUTHORIZED=False'
-          Write-Host 'MODE2_HOST_READONLY_ATTESTATION=PASS'
+          if($originals.Count -ne 0 -or $copies.Count -ne 1 -or $other.Count -ne 0 -or $sockets.Count -lt 1){
+            throw 'MODE2_READONLY_PRECONDITIONS_FAILED'
+          }
+          Write-Host 'MODE2_HOST_READONLY_ATTESTATION=PASS_NOT_NATIVE_OWNERSHIP'
   guard-regression:
     runs-on: ubuntu-latest
     timeout-minutes: 4
