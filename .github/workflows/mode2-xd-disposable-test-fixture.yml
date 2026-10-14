@@ -1,0 +1,50 @@
+name: Mode 2 XD disposable native fixture real Windows test
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-disposable-test-fixture.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  provision:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Create and verify independent never-before-used XD native experiment
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_RUNNER'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $original=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $isolated=Join-Path $root 'mode2-isolated\Panda_Mode2_Editable_Experiment.xd'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($file in @($original,$isolated)){
+            if(!(Test-Path -LiteralPath $file -PathType Leaf)){throw 'MODE2_FIXTURE_PARENT_MISSING'}
+            if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_FIXTURE_PARENT_HASH_MISMATCH'}
+          }
+          $directory=Join-Path $root 'mode2-disposable-native'
+          New-Item -Path $directory -ItemType Directory -Force | Out-Null
+          $target=Join-Path $directory ('Mode2_Undo_E2E_'+$env:GITHUB_RUN_ID+'.xd')
+          if(Test-Path -LiteralPath $target){throw 'MODE2_FIXTURE_COLLISION_NO_OVERWRITE'}
+          $temp=$target+'.partial'
+          try {
+            Copy-Item -LiteralPath $original -Destination $temp -ErrorAction Stop
+            if((Get-FileHash -LiteralPath $temp -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_FIXTURE_COPY_CORRUPT'}
+            Move-Item -LiteralPath $temp -Destination $target -ErrorAction Stop
+          }finally{
+            if(Test-Path -LiteralPath $temp){Remove-Item -LiteralPath $temp -Force}
+          }
+          if((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_FIXTURE_FINAL_HASH_MISMATCH'}
+          if((Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_FIXTURE_ORIGINAL_CHANGED'}
+          if((Get-FileHash -LiteralPath $isolated -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_FIXTURE_ACTIVE_COPY_CHANGED'}
+          Write-Host "MODE2_DISPOSABLE_FIXTURE=$target"
+          Write-Host "MODE2_DISPOSABLE_FIXTURE_SHA256=$expected"
+          Write-Host 'MODE2_FIXTURE_DISTINCT_PATH=PASS'
+          Write-Host 'MODE2_ORIGINAL_AND_ACTIVE_COPY_PRESERVED=PASS'
+          Write-Host 'MODE2_FIXTURE_HOST_OPENED=False'
+          Write-Host 'MODE2_FIXTURE_MUTATION_TESTED=False'
