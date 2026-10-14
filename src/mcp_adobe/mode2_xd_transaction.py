@@ -31,6 +31,17 @@ def execute_guarded_xd_edit(
         raise ValueError("isolated test copy and read-only origin required")
     if isolated_copy.get("native_sha256") != proposal.get("baseline_native_sha256"):
         raise ValueError("isolated copy baseline SHA mismatch")
+    # Never enter a real host mutation for a proposal with unclear or
+    # unsupported semantics, even if a gateway advertises a valid copy.
+    operation = proposal.get("operation")
+    if (not isinstance(operation, Mapping)
+            or operation.get("kind") != "set_fill"
+            or not isinstance(operation.get("parameters"), Mapping)
+            or not isinstance(operation["parameters"].get("color"), str)
+            or len(operation["parameters"]["color"]) != 7
+            or not operation["parameters"]["color"].startswith("#")
+            or any(c not in "0123456789abcdefABCDEF" for c in operation["parameters"]["color"][1:])):
+        raise ValueError("unsupported XD operation before host mutation")
     required = ("read_document", "read_layer", "edit_layer", "undo", "save_native",
                 "read_native_sha256", "verify_copy_provenance", "verify_undo_capability")
     if any(not callable(getattr(gateway, method, None)) for method in required):
