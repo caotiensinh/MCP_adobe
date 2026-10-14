@@ -1,5 +1,5 @@
 name: Mode 2 XD live region node read-only acceptance
-# 2026-10-14 verify recovered copy after 38574548027; read-only only.
+# 2026-10-14 verify nested XD bridge scenegraph envelope after normalization fix.
 on:
   push:
     branches: [feat/canvas-region-targeting]
