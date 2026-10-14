@@ -98,6 +98,29 @@ class LiveMetadataNormalizationTests(unittest.TestCase):
         self.assertEqual(value["layers"][0]["bounds"],
                          {"left": 20.0, "top": 20.0, "right": 120.0, "bottom": 70.0})
 
+    def test_xd_nested_bridge_result_unwraps_and_matches_frame(self):
+        graph = {"ok": True, "application": "xd", "result": {
+            "document_id": "xd-copy", "complete": True, "nodes": [
+                {"id": "rect-1", "name": "Safe", "bounds": {
+                    "left": 5, "top": 8, "right": 25, "bottom": 18
+                }}
+            ]
+        }, "verification": {"source": "bridge"}}
+        frame = {"document_id": "xd-copy", "left": 0, "top": 0,
+                 "width": 100, "height": 100}
+        result = normalize_xd_canvas_snapshot(graph, frame)
+        self.assertEqual(result["document_identity"], "xd-copy")
+        self.assertEqual(result["layers"][0]["id"], "rect-1")
+
+    def test_xd_nested_bridge_result_mismatch_rejected(self):
+        graph = {"ok": True, "result": {
+            "document_id": "original", "complete": True, "nodes": []
+        }}
+        frame = {"document_id": "copy", "left": 0, "top": 0,
+                 "width": 100, "height": 100}
+        with self.assertRaisesRegex(ValueError, "mismatch"):
+            normalize_xd_canvas_snapshot(graph, frame)
+
     def test_xd_frame_document_mismatch_blocks(self):
         with self.assertRaisesRegex(ValueError, "mismatch"):
             normalize_xd_canvas_snapshot(
