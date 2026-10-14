@@ -2,7 +2,10 @@ name: Mode 2 XD disposable native rectangle one-shot E2E
 on:
   push:
     branches: [feat/canvas-region-targeting]
-    paths: ['.github/workflows/mode2-xd-disposable-rectangle-apply.yml']
+    paths:
+      - '.github/workflows/mode2-xd-disposable-rectangle-apply.yml'
+      - 'scripts/mode2_disposable_rectangle_undo_e2e.py'
+      - 'scripts/mode2_disposable_apply_once.ps1'
   workflow_dispatch:
 permissions:
   contents: read
