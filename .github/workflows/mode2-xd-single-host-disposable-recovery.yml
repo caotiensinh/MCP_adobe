@@ -69,6 +69,23 @@ jobs:
                   selection=await read("creative.selection.get")
                   frame=await read("creative.canvas.frame")
                   if graph.get("complete") is not True or graph.get("document_id")!=frame.get("document_id"):raise RuntimeError("MODE2_GRAPH_MISMATCH")
+                  items=selection.get("items",[])
+                  if not isinstance(items,list) or len(items)!=1:
+                      raise RuntimeError("MODE2_TARGET_SELECTION_NOT_UNIQUE")
+                  selected=items[0]
+                  node_id=str(selected.get("guid") or selected.get("id") or "")
+                  if not node_id: raise RuntimeError("MODE2_TARGET_ID_MISSING")
+                  def find(nodes):
+                      for node in nodes:
+                          if str(node.get("id"))==node_id:return node
+                          result=find(node.get("children",[]))
+                          if result is not None:return result
+                      return None
+                  match=find(graph.get("nodes",[]))
+                  if not match:raise RuntimeError("MODE2_SELECTION_NOT_IN_SCENEGRAPH")
+                  if match.get("locked") is True or match.get("visible") is False or not match.get("bounds"):
+                      raise RuntimeError("MODE2_SELECTED_NODE_NOT_EDITABLE")
+                  print("MODE2_SELECTED_NODE_REAL="+json.dumps({"id":node_id,"name":match.get("name"),"type":match.get("type"),"bounds":match.get("bounds"),"document_id":graph.get("document_id")},sort_keys=True),flush=True)
                   print("MODE2_SINGLE_HOST_READBACK="+json.dumps({"document_id":graph.get("document_id"),"nodes":graph.get("node_count"),"selection":len(selection.get("items",[])) if isinstance(selection.get("items"),list) else None,"native_title_verified":True,"other_xd_windows":0},sort_keys=True),flush=True)
           asyncio.run(main())
           '@|Set-Content -LiteralPath .\mode2_disposable_readback.py -Encoding UTF8
