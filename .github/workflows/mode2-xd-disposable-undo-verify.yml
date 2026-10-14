@@ -1,0 +1,127 @@
+name: Mode 2 XD disposable real Undo and save readback
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-disposable-undo-verify.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  undo-native:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate exact disposable receipt, scenegraph, and original native
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $original=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $panda=Join-Path $root 'mode2-isolated\Panda_Mode2_Editable_Experiment.xd'
+          $test=Join-Path $root 'mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd'
+          $receipt=Join-Path $root 'mode2-disposable-native\Mode2_Undo_E2E_38584984023.mode2-receipt.json'
+          $hash='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($file in @($original,$panda)){if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $hash){throw 'MODE2_PROTECTED_SHA_CHANGED'}}
+          if(!(Test-Path -LiteralPath $test -PathType Leaf) -or !(Test-Path -LiteralPath $receipt -PathType Leaf)){throw 'MODE2_DISPOSABLE_RECEIPT_MISSING'}
+          $r=Get-Content -LiteralPath $receipt -Raw -Encoding UTF8 | ConvertFrom-Json
+          if($r.operation_id -ne 'xd-1791992883402-1' -or $r.state -ne 'applied' -or $r.guid -ne '29e85d07-75aa-4f8f-9a04-60de4d09477d' -or $r.target_name -ne 'MODE2_DISPOSABLE_UNDO_RECT_ONE_SHOT'){
+            throw 'MODE2_RECEIPT_NOT_EXACT_STOP'
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $top=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $xd=@($top|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $testWindows=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          if($xd.Count -ne 1 -or $testWindows.Count -ne 1){throw 'MODE2_UNDO_WINDOW_NOT_SOLE_DISPOSABLE'}
+          if(@(Get-Process -Name Illustrator,Photoshop,PickerHost -ErrorAction SilentlyContinue).Count -gt 0){throw 'MODE2_FOREIGN_APP'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json
+          from mcp import Client
+          from scripts.export_region_metadata import unwrap,payload
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":"creative.scenegraph.list","arguments":{}}),timeout=15)
+                  g=unwrap(payload(r))
+                  if isinstance(g,dict) and isinstance(g.get("result"),dict):g=unwrap(g["result"])
+                  def visit(nodes):
+                      for n in nodes:
+                          if n.get("id")=="29e85d07-75aa-4f8f-9a04-60de4d09477d":return n
+                          k=visit(n.get("children",[]))
+                          if k is not None:return k
+                      return None
+                  found=visit(g.get("nodes",[]))
+                  if g.get("complete") is not True or g.get("node_count")!=34 or g.get("document_id")!="98d6635b-3767-4254-b200-ec8442b69ad2" or not found or found.get("name")!="MODE2_DISPOSABLE_UNDO_RECT_ONE_SHOT":
+                      raise RuntimeError("MODE2_PREUNDO_EXACT_NODE_MISSING")
+                  print("MODE2_PREUNDO_EXACT_GUID_PRESENT=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\mode2_preundo.py -Encoding UTF8
+          uv run --python 3.12 python .\mode2_preundo.py
+          if($LASTEXITCODE -ne 0){throw 'MODE2_PREUNDO_MCP_FAILED'}
+      - name: Invoke real XD Edit Undo once for exact verified disposable
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $top=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $xd=@($top|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          if($xd.Count -ne 1 -or $test.Count -ne 1){throw 'MODE2_UNDO_WRONG_WINDOW'}
+          $win=$test[0]
+          $id=[System.Windows.Automation.AutomationElement]::AutomationIdProperty
+          $menu=$win.FindFirst([System.Windows.Automation.TreeScope]::Descendants,(New-Object System.Windows.Automation.PropertyCondition($id,'AppMenu_Edit')))
+          if(-not $menu){throw 'MODE2_UNDO_EDIT_MENU_MISSING'}
+          $expand=$menu.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+          if($expand.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$expand.Expand()}
+          Start-Sleep -Milliseconds 260
+          $all=$win.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $undo=@($all|Where-Object {[string]$_.Current.AutomationId -eq 'edit.undo' -and [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and $_.Current.IsEnabled})
+          if($undo.Count -ne 1){throw "MODE2_UNDO_NOT_UNIQUE_OR_DISABLED count=$($undo.Count)"}
+          $inv=$undo[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+          $inv.Invoke()
+          Write-Host 'MODE2_NATIVE_UNDO_INVOKED_ONCE'
+      - name: Verify exact node removed and original protected after native Undo
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio
+          from mcp import Client
+          from scripts.export_region_metadata import payload,unwrap
+          def find(nodes):
+              for n in nodes:
+                  if n.get("name")=="MODE2_DISPOSABLE_UNDO_RECT_ONE_SHOT" or n.get("id")=="29e85d07-75aa-4f8f-9a04-60de4d09477d":return True
+                  if find(n.get("children",[])):return True
+              return False
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":"creative.scenegraph.list","arguments":{}}),timeout=15)
+                  g=unwrap(payload(r))
+                  if isinstance(g,dict) and isinstance(g.get("result"),dict):g=unwrap(g["result"])
+                  if g.get("complete") is not True or g.get("node_count")!=33 or find(g.get("nodes",[])):
+                      raise RuntimeError("MODE2_NATIVE_UNDO_READBACK_FAILED")
+                  print("MODE2_NATIVE_UNDO_READBACK=PASS nodes=33",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\mode2_postundo.py -Encoding UTF8
+          uv run --python 3.12 python .\mode2_postundo.py
+          if($LASTEXITCODE -ne 0){throw 'MODE2_UNDO_FAILED_NO_REPLAY'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $hash='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($rel in @('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd')){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $hash){throw 'MODE2_PROTECTED_NATIVE_CHANGED'}
+          }
+          Write-Host 'MODE2_ORIGINAL_NATIVE_UNCHANGED=PASS'
+          Write-Host 'MODE2_UNDO_E2E_VERIFIED=PASS'
