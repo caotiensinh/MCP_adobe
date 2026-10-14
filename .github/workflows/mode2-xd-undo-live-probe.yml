@@ -43,17 +43,29 @@ jobs:
           $edit=@($children|Where-Object {[string]$_.Current.AutomationId -match 'AppMenuBar_Edit' -or [string]$_.Current.Name -eq 'Edit'})
           $undo=@($children|Where-Object {[string]$_.Current.Name -match '^Undo( |$)'})
           Write-Host "MODE2_EDIT_MENU_COUNT=$($edit.Count) UNDO_CONTROL_COUNT=$($undo.Count)"
+          if($edit.Count -ne 1){throw 'MODE2_EDIT_MENU_NOT_UNIQUE'}
+          $editPattern=$null
+          try{$editPattern=$edit[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)}catch{}
+          if($null -eq $editPattern){throw 'MODE2_EDIT_MENU_EXPAND_UNAVAILABLE'}
+          if($editPattern.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$editPattern.Expand()}
+          Start-Sleep -Milliseconds 300
+          $children=$target[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $undo=@($children|Where-Object {[string]$_.Current.Name -match '^(Undo|元に戻す)( |$)'})
+          Write-Host "MODE2_EXPANDED_UNDO_COUNT=$($undo.Count)"
+          foreach($item in $undo){Write-Host "MODE2_UNDO_EXPANDED name=$([string]$item.Current.Name) enabled=$($item.Current.IsEnabled)"}
+          $editPattern.Collapse()
+          Write-Host 'MODE2_EDIT_MENU_READONLY_OPEN_CLOSE=PASS'
           foreach($item in $undo){Write-Host "MODE2_UNDO_CONTROL name=$([string]$item.Current.Name) enabled=$($item.Current.IsEnabled)"}
           $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
           @'
           import asyncio,json
           from mcp import Client
-          from scripts.export_region_metadata import payload
+          from scripts.export_region_metadata import payload,unwrap
           async def main():
               async with Client("http://127.0.0.1:8787/mcp") as c:
                   for cap in ("creative.health","creative.selection.get","creative.document.info","creative.scenegraph.list"):
                       r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=12)
-                      d=payload(r)
+                      d=unwrap(payload(r))
                       if not isinstance(d,dict): raise RuntimeError("MODE2_INVALID_READ "+cap)
                       if cap=="creative.scenegraph.list":
                           print("MODE2_SCENE_ID="+str(d.get("document_id"))+" NODES="+str(d.get("node_count")),flush=True)
