@@ -26,7 +26,7 @@ def unwrap(value: Any) -> Any:
             if key in value and isinstance(value[key], (Mapping, list, str)):
                 nested = unwrap(value[key])
                 if isinstance(nested, Mapping) and any(
-                    k in nested for k in ("document", "hasDocument", "layers", "width", "activeLayer")
+                    k in nested for k in ("document", "hasDocument", "layers", "width", "activeLayer", "document_id", "complete", "nodes")
                 ):
                     return nested
         if "text" in value:
