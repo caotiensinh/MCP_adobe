@@ -1,4 +1,5 @@
 name: Mode 2 XD bounded isolated-copy recovery
+# 2026-10-14 guarded recovery after live probe saw zero XD windows and sockets
 on:
   push:
     branches: [feat/canvas-region-targeting]
