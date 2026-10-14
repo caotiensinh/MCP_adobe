@@ -58,8 +58,16 @@ def execute_guarded_xd_edit(
         edit_called = True
         gateway.edit_layer(proposal["node_id"], proposal["operation"], expected_generation=proposal["generation"])
         after_node = gateway.read_layer(proposal["node_id"])
+        if not isinstance(after_node, Mapping) or str(after_node.get("id")) != str(proposal["node_id"]):
+            raise RuntimeError("XD host mutation readback target mismatch")
         if fingerprint(after_node) == before:
             raise RuntimeError("no host mutation detected")
+        operation = proposal["operation"]
+        if operation.get("kind") != "set_fill":
+            raise RuntimeError("XD operation is not supported by verified readback")
+        intended = operation.get("parameters", {}).get("color")
+        if not isinstance(intended, str) or after_node.get("fill", "").upper() != intended.upper():
+            raise RuntimeError("XD mutation did not produce requested fill")
         gateway.undo()
         undone = gateway.read_layer(proposal["node_id"])
         if fingerprint(undone) != before:
