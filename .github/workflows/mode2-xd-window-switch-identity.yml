@@ -43,6 +43,8 @@ jobs:
           $test=@($windows|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
           $panda=@($windows|Where-Object {[string]$_.Current.Name -match '^Panda_Mode2_Editable_Experiment.*Adobe XD$'})
           $ws=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "MODE2_PRECHECK_WINDOWS=$($windows.Count) TEST=$($test.Count) PANDA=$($panda.Count) BRIDGE=$($ws.Count)"
+          foreach($w in $windows){Write-Host "MODE2_WINDOW_NAME=$([string]$w.Current.Name)"}
           if($windows.Count -ne 2 -or $test.Count -ne 1 -or $panda.Count -ne 1 -or $ws.Count -lt 1){throw 'MODE2_TWO_DOCUMENTS_NOT_READY'}
           $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
           @'
