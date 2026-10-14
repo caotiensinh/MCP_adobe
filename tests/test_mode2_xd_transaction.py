@@ -67,6 +67,25 @@ class XDTransactionTests(unittest.TestCase):
                 self.run_it(gateway, allow_live_mutation=True)
             self.assertEqual(gateway.edits, 0)
 
+    def test_invalid_host_edit_is_rejected_before_any_mutation(self):
+        for operation in (
+            {"kind": "delete_node", "parameters": {}},
+            {"kind": "set_fill", "parameters": {"color": "#GGGGGG"}},
+            {"kind": "set_fill", "parameters": {"color": "red"}},
+            {"kind": "set_fill", "parameters": {}},
+        ):
+            with self.subTest(operation=operation):
+                mock = MockXD()
+                proposal = {**self.proposal, "operation": operation}
+                proposal.pop("proposal_sha256")
+                proposal["proposal_sha256"] = fingerprint(proposal)
+                with self.assertRaisesRegex(ValueError, "unsupported XD operation"):
+                    execute_guarded_xd_edit(
+                        proposal=proposal, gateway=mock,
+                        isolated_copy=self.copy, allow_live_mutation=True,
+                    )
+                self.assertEqual(mock.edits, 0)
+
     def test_unexpected_fill_readback_is_quarantined(self):
         class WrongFill(MockXD):
             def edit_layer(self, node_id, operation, *, expected_generation):
