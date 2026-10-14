@@ -42,11 +42,13 @@ async def main():
                 "application": "xd", "capability": capability, "arguments": arguments or {}
             }), timeout=15)
             o = payload(r)
-            if r.is_error or not isinstance(o, dict) or o.get("ok") is not True:
+            if not isinstance(o, dict) or o.get("ok") is False:
                 raise RuntimeError("MODE2_MCP_RESPONSE_UNKNOWN_" + capability)
+            if isinstance(o.get("result"), dict):
+                o = o["result"]
             o = unwrap(o)
-            if isinstance(o, dict) and isinstance(o.get("result"), dict):
-                o = unwrap(o["result"])
+            if not isinstance(o, dict):
+                raise RuntimeError("MODE2_MCP_RESULT_NOT_OBJECT_" + capability)
             return o
         g = await call("creative_read", "creative.scenegraph.list")
         h = await call("creative_read", "creative.health")
