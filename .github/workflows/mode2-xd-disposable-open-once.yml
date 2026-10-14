@@ -1,0 +1,59 @@
+name: Mode 2 XD disposable fixture open once
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-disposable-open-once.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  open-test:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Open only new disposable test XD and observe Windows host
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $source=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $active=Join-Path $root 'mode2-isolated\Panda_Mode2_Editable_Experiment.xd'
+          $test=Join-Path $root 'mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($file in @($source,$active,$test)){
+            if(!(Test-Path -LiteralPath $file -PathType Leaf) -or (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_NATIVE_BASELINE_MISMATCH'}
+          }
+          if(@(Get-Process -Name Illustrator,Photoshop -ErrorAction SilentlyContinue).Count -gt 0){throw 'MODE2_OTHER_ADOBE_ACTIVE'}
+          if(@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1}).Count -gt 0){throw 'MODE2_PICKER_ACTIVE'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $scope=[System.Windows.Automation.TreeScope]::Children
+          $cond=[System.Windows.Automation.Condition]::TrueCondition
+          $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,$cond)
+          $xd=@($windows|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $testBefore=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          $panda=@($xd|Where-Object {[string]$_.Current.Name -match '^Panda_Mode2_Editable_Experiment.*Adobe XD$'})
+          Write-Host "MODE2_BEFORE_WINDOWS=$($xd.Count) PANDA_COPY=$($panda.Count) TEST=$($testBefore.Count)"
+          if($testBefore.Count -gt 0){throw 'MODE2_TEST_ALREADY_OPEN_NO_REPLAY'}
+          if($xd.Count -gt 1 -or ($xd.Count -eq 1 -and $panda.Count -ne 1)){throw 'MODE2_FOREIGN_WINDOW_NO_OPEN'}
+          $tracking=$env:RUNNER_TRACKING_ID
+          try{$env:RUNNER_TRACKING_ID='';Start-Process -FilePath $test -ErrorAction Stop}finally{$env:RUNNER_TRACKING_ID=$tracking}
+          Write-Host 'MODE2_TEST_OPEN_REQUESTED_ONCE'
+          for($i=1;$i -le 6;$i++){
+            Start-Sleep -Seconds 3
+            $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,$cond)
+            $xd=@($windows|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+            $testWindows=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+            Write-Host "MODE2_TEST_POLL=$i XD_WINDOWS=$($xd.Count) TEST=$($testWindows.Count)"
+            if($testWindows.Count -eq 1){break}
+          }
+          foreach($file in @($source,$active,$test)){
+            if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_FILE_CHANGED_DURING_OPEN'}
+          }
+          if($testWindows.Count -ne 1){throw 'MODE2_TEST_WINDOW_UNVERIFIED_NO_RETRY'}
+          Write-Host 'MODE2_TEST_NATIVE_FILE_OPEN_WINDOW=PASS'
+          Write-Host 'MODE2_TEST_MUTATION_NOT_ATTEMPTED=True'
