@@ -71,9 +71,10 @@ async def main():
         }, indent=2), encoding="utf-8")
         print("MODE2_RECT_QUEUED_ONCE=" + str(op_id), flush=True)
         # Only the existing proven XD real UXP menu helper is allowed to apply.
-        sys.path.insert(0, str(Path(__file__).parent))
-        from panda_xd_apply_hot import apply_one
-        apply_one()
+        import subprocess
+        helper = Path(__file__).with_name("mode2_disposable_apply_once.ps1")
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive",
+            "-ExecutionPolicy", "Bypass", "-File", str(helper)], check=True, timeout=20)
         for _ in range(16):
             status = await call("creative_read", "xd.queue.status", {"operation_id": op_id})
             if status.get("status") != "queued":
