@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 from mcp import Client
-from scripts.export_region_metadata import payload, unwrap
+from export_region_metadata import payload, unwrap
 
 ROOT = Path(os.environ["USERPROFILE"]) / "Documents" / "MCPAdobe"
 ORIGINAL = ROOT / "MCP_Mode1_Panda_XD_38136531800.xd"
