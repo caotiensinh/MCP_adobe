@@ -37,7 +37,14 @@ jobs:
           $processes=@(Get-CimInstance Win32_Process|Where-Object {$_.Name -match '^(XD|Adobe XD|AdobeXD|PickerHost|Illustrator|Photoshop)\.exe$' -or $_.ExecutablePath -match 'Adobe.XD'})
           $established=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
           Write-Host "MODE2_PRECHECK_WINDOWS=$($windows.Count) PROCESSES=$($processes.Count) CONNECTIONS=$($established.Count)"
-          $existingTest=@($windows|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD
+          $existingTest=@($windows|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          if($windows.Count -eq 1 -and $existingTest.Count -eq 1 -and $established.Count -ge 1){
+            Write-Host 'MODE2_REUSE_ONLY_EXISTING_DISPOSABLE=PASS'
+          }elseif($windows.Count -eq 0 -and $processes.Count -eq 0 -and $established.Count -eq 0){
+            $old=$env:RUNNER_TRACKING_ID
+            try{$env:RUNNER_TRACKING_ID='';Start-Process -FilePath $native -ErrorAction Stop}finally{$env:RUNNER_TRACKING_ID=$old}
+            Write-Host 'MODE2_DISPOSABLE_OPEN_ONCE'
+          }else{throw 'MODE2_FOREIGN_OR_UNCERTAIN_HOST_NO_OPEN'}
           $ready=$false
           for($i=1;$i -le 12;$i++){
             Start-Sleep -Seconds 3
