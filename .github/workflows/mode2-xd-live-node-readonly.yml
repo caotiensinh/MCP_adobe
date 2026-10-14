@@ -58,7 +58,7 @@ jobs:
                   if json.dumps(graph_a,sort_keys=True,default=str)!=json.dumps(graph_b,sort_keys=True,default=str):
                       raise RuntimeError("MODE2_GRAPH_CHANGED_DURING_CAPTURE")
                   # Independent ID readback; never suppress a document mismatch.
-                  print("MODE2_HOST_ID_DIAGNOSTIC="+json.dumps({"graph_id":str(graph_b.get("document_id")) if isinstance(graph_b,dict) else None,"frame_id":str(frame.get("document_id")) if isinstance(frame,dict) else None,"graph_type":type(graph_b).__name__,"frame_type":type(frame).__name__,"health_type":type(health).__name__},sort_keys=True),flush=True)
+                  print("MODE2_HOST_ID_DIAGNOSTIC="+json.dumps({"graph_id":str(graph_b.get("document_id")) if isinstance(graph_b,dict) else None,"frame_id":str(frame.get("document_id")) if isinstance(frame,dict) else None,"graph_type":type(graph_b).__name__,"graph_keys":sorted(graph_b.keys())[:20] if isinstance(graph_b,dict) else [],"graph_complete":graph_b.get("complete") if isinstance(graph_b,dict) else None,"frame_type":type(frame).__name__,"health_type":type(health).__name__},sort_keys=True),flush=True)
                   metadata=normalize_xd_canvas_snapshot(graph_b,frame)
                   layers=metadata["layers"]
                   matched=[layer for layer in layers if layer.get("bounds") and not layer.get("background")]
