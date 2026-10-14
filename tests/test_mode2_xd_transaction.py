@@ -67,6 +67,26 @@ class XDTransactionTests(unittest.TestCase):
                 self.run_it(gateway, allow_live_mutation=True)
             self.assertEqual(gateway.edits, 0)
 
+    def test_unexpected_fill_readback_is_quarantined(self):
+        class WrongFill(MockXD):
+            def edit_layer(self, node_id, operation, *, expected_generation):
+                self.edits += 1
+                self.node["fill"] = "#FFFFFF"
+        mock = WrongFill()
+        with self.assertRaisesRegex(RuntimeError, "outcome uncertain"):
+            self.run_it(mock, allow_live_mutation=True)
+        self.assertEqual(mock.edits, 1)
+
+    def test_unexpected_node_readback_is_quarantined(self):
+        class WrongNode(MockXD):
+            def edit_layer(self, node_id, operation, *, expected_generation):
+                super().edit_layer(node_id, operation, expected_generation=expected_generation)
+                self.node["id"] = "different-node"
+        mock = WrongNode()
+        with self.assertRaisesRegex(RuntimeError, "outcome uncertain"):
+            self.run_it(mock, allow_live_mutation=True)
+        self.assertEqual(mock.edits, 1)
+
     def test_unknown_mutation_is_never_replayed(self):
         class Broken(MockXD):
             def undo(self): pass
