@@ -51,6 +51,8 @@ jobs:
           Start-Sleep -Milliseconds 300
           $children=$target[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
           $undo=@($children|Where-Object {[string]$_.Current.Name -match '^Undo( |$)'})
+          $menuItems=@($children|Where-Object {[string]$_.Current.ControlType.ProgrammaticName -eq "ControlType.MenuItem"})
+          foreach($item in $menuItems|Select-Object -First 65){Write-Host "MODE2_EDIT_MENU_ITEM name=$([string]$item.Current.Name) id=$([string]$item.Current.AutomationId) enabled=$($item.Current.IsEnabled)"}
           Write-Host "MODE2_EXPANDED_UNDO_COUNT=$($undo.Count)"
           foreach($item in $undo){Write-Host "MODE2_UNDO_EXPANDED name=$([string]$item.Current.Name) enabled=$($item.Current.IsEnabled)"}
           $editPattern.Collapse()
@@ -65,13 +67,16 @@ jobs:
               async with Client("http://127.0.0.1:8787/mcp") as c:
                   for cap in ("creative.health","creative.selection.get","creative.document.info","creative.scenegraph.list"):
                       r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=12)
-                      d=unwrap(payload(r))
+                      raw=payload(r)
+                      d=unwrap(raw)
+                      if isinstance(d,dict) and "result" in d and isinstance(d["result"],dict):
+                          d=unwrap(d["result"])
                       if not isinstance(d,dict): raise RuntimeError("MODE2_INVALID_READ "+cap)
                       if cap=="creative.scenegraph.list":
                           print("MODE2_SCENE_ID="+str(d.get("document_id"))+" NODES="+str(d.get("node_count")),flush=True)
                           if not d.get("complete") or not d.get("document_id"):raise RuntimeError("MODE2_SCENE_UNVERIFIED")
                       elif cap=="creative.selection.get":
-                          print("MODE2_LIVE_SELECTION="+json.dumps({"keys":sorted(d.keys()),"selected":len(d.get("items",[])) if isinstance(d.get("items"),list) else None},sort_keys=True),flush=True)
+                          print("MODE2_LIVE_SELECTION="+json.dumps({"keys":sorted(d.keys()),"selected":len(d.get("items",[])) if isinstance(d.get("items"),list) else None,"ids":[str(i.get("guid") or i.get("id")) for i in d.get("items",[]) if isinstance(i,dict)][:5]},sort_keys=True),flush=True)
                       else:
                           print("MODE2_READ="+cap+" keys="+",".join(sorted(d.keys())[:12]),flush=True)
           asyncio.run(main())
