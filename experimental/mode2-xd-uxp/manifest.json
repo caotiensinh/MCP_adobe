@@ -1,0 +1,34 @@
+{
+  "manifestVersion": 4,
+  "id": "MCPADM2E",
+  "name": "MCP Adobe Mode 2 Experimental",
+  "version": "0.1.0",
+  "main": "main.js",
+  "host": {
+    "app": "XD",
+    "minVersion": "40.0"
+  },
+  "entrypoints": [
+    {
+      "type": "command",
+      "id": "mcpAdobeConnect",
+      "label": {
+        "default": "MCP Adobe Mode 2 Connect"
+      }
+    },
+    {
+      "type": "command",
+      "id": "mcpAdobeApply",
+      "label": {
+        "default": "MCP Adobe Mode 2 Apply"
+      }
+    },
+    {
+      "type": "panel",
+      "id": "mcpAdobeBridge",
+      "label": {
+        "default": "MCP Adobe Mode 2 Experimental"
+      }
+    }
+  ]
+}
