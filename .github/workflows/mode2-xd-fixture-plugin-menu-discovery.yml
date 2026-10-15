@@ -69,4 +69,14 @@ jobs:
             }
           }
           if($px.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Expanded){$px.Collapse()}
+          $expect='MCP Mode 2 Select Staged Disposable Rectangle'
+          $match=@($all|Where-Object {[string]$_.Current.Name -eq $expect -and [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'})
+          Write-Host "MODE2_GUIDED_V2_MENU_COMMAND_COUNT=$($match.Count)"
+          $develop=Join-Path $env:LOCALAPPDATA 'Packages\Adobe.XD_pc75e8sa7ep4e\LocalState\develop'
+          $p=Join-Path $develop 'MCPAdobeMode2Experiment\main.js'
+          $m=Join-Path $develop 'MCPAdobeMode2Experiment\manifest.json'
+          $git=(Get-Command git -ErrorAction Stop).Source
+          Write-Host "MODE2_GUIDED_V2_DISK_BLOBS_MAIN=$((& $git hash-object -- $p).Trim()) MANIFEST=$((& $git hash-object -- $m).Trim())"
+          $once=Join-Path $root 'mode2-disposable-native\Mode2_StagedGUIDSelectionV2_ReloadOnce.marker'
+          Write-Host "MODE2_GUIDED_V2_RELOAD_ONCE_MARKER=$(Test-Path -LiteralPath $once)"
           Write-Host 'MODE2_PLUGIN_MENU_DISCOVERY_READONLY=PASS'
