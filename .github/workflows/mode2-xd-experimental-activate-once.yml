@@ -2,7 +2,9 @@ name: Mode 2 XD one-shot experimental plugin activation and live readback
 on:
   push:
     branches: [feat/canvas-region-targeting]
-    paths: ['.github/workflows/mode2-xd-experimental-activate-once.yml']
+    paths:
+      - '.github/workflows/mode2-xd-experimental-activate-once.yml'
+      - 'scripts/mode2_xd_activate_staged_once.ps1'
   workflow_dispatch:
 permissions:
   contents: read
