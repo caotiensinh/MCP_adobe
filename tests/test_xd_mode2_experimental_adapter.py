@@ -5,7 +5,7 @@ import copy
 import unittest
 
 from mcp_adobe.xd import XdAdapter
-from mcp_adobe.xd_mode2_experimental import ExperimentalXdMode2Adapter
+from mcp_adobe.xd_mode2_experimental import ExperimentalXdMode2Adapter, EXPERIMENTAL_BRIDGE_BUILD
 
 
 ARGS = {
@@ -19,12 +19,16 @@ FILL = {**ARGS, "fill": "#A1B2C3", "isolated_test_copy": True, "user_confirmed":
 class FakeExperimentalBridge:
     connected = True
 
-    def __init__(self, timeout=False):
+    def __init__(self, timeout=False, build=EXPERIMENTAL_BRIDGE_BUILD, pending_count=0):
         self.calls = []
         self.timeout = timeout
+        self.build = build
+        self.pending_count = pending_count
 
     def call_tool(self, method, arguments):
         self.calls.append((method, copy.deepcopy(arguments)))
+        if method == "xd.health":
+            return {"bridge": "connected", "bridge_build": self.build, "pending_count": self.pending_count}
         if self.timeout:
             raise TimeoutError("unknown delivery")
         if method == "xd.mode2.node.inspect":
@@ -53,7 +57,7 @@ class XdMode2AdapterTests(unittest.TestCase):
         result = adapter.execute("xd.mode2.node.inspect", ARGS)
         self.assertEqual(result["bridge_method"], "xd.mode2.node.inspect")
         self.assertEqual(result["outcome"], "read")
-        self.assertEqual(bridge.calls, [("xd.mode2.node.inspect", ARGS)])
+        self.assertEqual(bridge.calls, [("xd.health", {}), ("xd.mode2.node.inspect", ARGS)])
 
     def test_fill_requires_explicit_opt_in_and_produces_approval_receipt(self):
         bridge = FakeExperimentalBridge()
@@ -62,7 +66,7 @@ class XdMode2AdapterTests(unittest.TestCase):
         self.assertEqual(result["bridge_method"], "xd.queue.mode2_fill")
         self.assertEqual(result["outcome"], "pending_user_approval")
         self.assertEqual(result["result"]["status"], "queued")
-        self.assertEqual(bridge.calls, [("xd.queue.mode2_fill", FILL)])
+        self.assertEqual(bridge.calls, [("xd.health", {}), ("xd.queue.mode2_fill", FILL)])
         self.assertFalse(adapter.info().undo_supported)
 
     def test_explicit_writes_disabled_even_when_experimental_opted_in(self):
@@ -102,13 +106,26 @@ class XdMode2AdapterTests(unittest.TestCase):
             adapter.execute("xd.mode2.node.inspect", FILL)
         self.assertEqual(bridge.calls, [])
 
+    def test_wrong_experimental_build_and_pending_queue_fail_before_dispatch(self):
+        for bridge in (
+            FakeExperimentalBridge(build="xd-ellipse-radius-geometry-v4"),
+            FakeExperimentalBridge(build=None),
+            FakeExperimentalBridge(pending_count=1),
+            FakeExperimentalBridge(pending_count=True),
+        ):
+            with self.subTest(build=bridge.build, pending=bridge.pending_count):
+                adapter = ExperimentalXdMode2Adapter(bridge)
+                with self.assertRaises(RuntimeError):
+                    adapter.execute("xd.queue.mode2_fill", FILL)
+                self.assertEqual(bridge.calls, [("xd.health", {})])
+
     def test_write_timeout_must_be_unverified_not_auto_retried(self):
         from mcp_adobe.photoshop import OperationUnknownError
         bridge = FakeExperimentalBridge(timeout=True)
         adapter = ExperimentalXdMode2Adapter(bridge)
         with self.assertRaises(OperationUnknownError):
             adapter.execute("xd.queue.mode2_fill", FILL)
-        self.assertEqual(len(bridge.calls), 1)
+        self.assertEqual(bridge.calls, [("xd.health", {}), ("xd.queue.mode2_fill", FILL)])
 
 
 if __name__ == "__main__":
