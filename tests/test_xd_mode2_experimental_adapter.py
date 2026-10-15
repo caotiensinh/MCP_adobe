@@ -124,7 +124,7 @@ class XdMode2AdapterTests(unittest.TestCase):
         self.assertEqual(queued["outcome"], "pending_user_approval")
         self.assertEqual(
             [method for method, _ in experimental.calls],
-            ["xd.health", "xd.mode2.node.inspect", "xd.health", "xd.queue.mode2_fill"],
+            ["xd.health", "xd.mode2.node.inspect", "xd.health", "xd.health", "xd.queue.mode2_fill"],
         )
 
     def test_wrong_experimental_build_and_pending_queue_fail_before_dispatch(self):
