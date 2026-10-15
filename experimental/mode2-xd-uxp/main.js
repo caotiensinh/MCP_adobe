@@ -235,6 +235,10 @@ function attestDisposableRect(params) {
 }
 
 function stageDisposableSelection(params) {
+  if (!params || Object.keys(params).sort().join(",") !==
+      "bounds,document_id,isolated_test_copy,name,node_id") {
+    throw new Error("MODE2_STAGED_SELECTION_UNTRUSTED_KEYS");
+  }
   if (stagedDisposableSelection) throw new Error("MODE2_SELECTION_ALREADY_STAGED");
   // A preparation does not change XD selection or native scenegraph.
   attestDisposableRect(params);
