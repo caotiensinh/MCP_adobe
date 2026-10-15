@@ -37,8 +37,20 @@ $fx.Expand();Start-Sleep -Milliseconds 240
 $items=$test[0].FindAll($desc,$allCond)
 $activeSave=@($items|Where-Object {[string]$_.Current.Name -eq 'Save' -and $_.Current.IsEnabled})
 $fx.Collapse()
-Write-Host "MODE2_ACTIVE_SAVE_COUNT=$($activeSave.Count)"
+Write-Host "MODE2_ACTIVE_SAVE_INITIAL=$($activeSave.Count)"
+# On a just-opened XD document the Save state may be transient.
+# Never bypass the guard: require a fresh disabled Save on a bounded poll.
+for($check=1;$check -le 15 -and $activeSave.Count -ne 0;$check++){
+  Start-Sleep -Seconds 3
+  $fx.Expand()
+  Start-Sleep -Milliseconds 180
+  $items=$test[0].FindAll($desc,$allCond)
+  $activeSave=@($items|Where-Object {[string]$_.Current.Name -eq 'Save' -and $_.Current.IsEnabled})
+  $fx.Collapse()
+  Write-Host "MODE2_ACTIVE_SAVE_POLL=$check ENABLED=$($activeSave.Count)"
+}
 if($activeSave.Count -ne 0){throw 'MODE2_UNSAVED_DOCUMENT_NO_RELOAD'}
+Write-Host 'MODE2_DISPOSABLE_CLEAN_SAVE_GUARD=PASS'
 $plugins=Find-Menu 'AppMenuBar_Plugins'
 $px=$plugins.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
 $px.Expand();Start-Sleep -Milliseconds 220
