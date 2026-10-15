@@ -19,6 +19,8 @@ from .photoshop import OperationUnknownError
 from .verification import pending_user_approval, unverified_mutation
 from .xd import ToolBinding, XdAdapter
 
+EXPERIMENTAL_BRIDGE_BUILD = "xd-mode2-guarded-experimental-v1"
+
 _EXPERIMENTAL: dict[str, ToolBinding] = {
     "xd.mode2.node.inspect": ToolBinding("xd.mode2.node.inspect", RiskClass.READ),
     "xd.queue.mode2_fill": ToolBinding("xd.queue.mode2_fill", RiskClass.WRITE_REVERSIBLE),
@@ -71,6 +73,18 @@ class ExperimentalXdMode2Adapter(XdAdapter):
         if binding is None:
             return super().execute(capability, arguments)
         validate_mode2_arguments(capability, arguments)
+        # The production XD plugin implements only the known-good API; an
+        # opt-in Python object alone is NOT proof the experimental UXP is loaded.
+        # This read-only host attestation must pass before *any* Mode 2 request.
+        health = self._client.call_tool("xd.health", {})
+        if (not isinstance(health, Mapping)
+                or health.get("bridge") != "connected"
+                or health.get("bridge_build") != EXPERIMENTAL_BRIDGE_BUILD):
+            raise RuntimeError("experimental XD UXP build is not connected")
+        if (capability == "xd.queue.mode2_fill"
+                and (type(health.get("pending_count")) is not int
+                     or health["pending_count"] != 0)):
+            raise RuntimeError("Mode 2 requires empty pending XD queue")
         if binding.risk is not RiskClass.READ and not self._writes_enabled:
             raise PermissionError("experimental Mode 2 writes are disabled")
         try:
