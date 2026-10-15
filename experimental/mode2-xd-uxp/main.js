@@ -19,6 +19,7 @@ let pendingWrites = [];
 let operationStatus = {};
 let operationOrder = [];
 let operationCounter = 0;
+let stagedDisposableSelection = null;
 
 function safeNumber(value, fallback) {
   const parsed = Number(value);
@@ -186,6 +187,85 @@ function requireSelection(selection) {
   if (!selection || !selection.items || selection.items.length === 0) {
     throw new Error("Adobe XD operation requires at least one selected node");
   }
+}
+
+// Read-only prepare on WebSocket, actual selection only via a user-invoked
+// XD menu command. This intentionally rejects all existing Panda components.
+const MODE2_DISPOSABLE_RECT_NAME = "MODE2_DISPOSABLE_FILL_RECT_GUID_E2E";
+const MODE2_DISPOSABLE_DOC = "98d6635b-3767-4254-b200-ec8442b69ad2";
+
+function attestDisposableRect(params) {
+  const root = scenegraph.root;
+  if (!root || String(root.guid) !== MODE2_DISPOSABLE_DOC ||
+      !params || String(params.document_id) !== MODE2_DISPOSABLE_DOC ||
+      params.name !== MODE2_DISPOSABLE_RECT_NAME ||
+      params.isolated_test_copy !== true ||
+      typeof params.node_id !== "string" ||
+      !/^[0-9a-fA-F-]{36}$/.test(params.node_id)) {
+    throw new Error("MODE2_DISPOSABLE_RECT_IDENTITY_REJECTED");
+  }
+  const expected = params.bounds;
+  if (!expected || Object.keys(expected).sort().join(",") !== "bottom,left,right,top" ||
+      ![expected.left,expected.top,expected.right,expected.bottom].every(Number.isFinite) ||
+      expected.right <= expected.left || expected.bottom <= expected.top) {
+    throw new Error("MODE2_DISPOSABLE_RECT_BOUNDS_REJECTED");
+  }
+  if (pendingWrites.length !== 0) throw new Error("MODE2_SELECTION_PENDING_WRITE_QUEUE");
+  const graph = xdScenegraphSnapshot();
+  if (graph.node_count !== 34 || graph.document_id !== MODE2_DISPOSABLE_DOC) {
+    throw new Error("MODE2_DISPOSABLE_RECT_SCENE_NOT_PLUS_ONE");
+  }
+  const node = scenegraph.getNodeByGUID(params.node_id);
+  if (!node || String(node.guid) !== params.node_id ||
+      node.name !== MODE2_DISPOSABLE_RECT_NAME ||
+      !node.constructor || node.constructor.name !== "Rectangle" ||
+      node.visible === false || node.locked === true || !("fill" in node)) {
+    throw new Error("MODE2_DISPOSABLE_RECT_WRONG_NODE");
+  }
+  const b = node.globalBounds;
+  if (!b || ![b.x,b.y,b.width,b.height].every(Number.isFinite) ||
+      b.width <= 0 || b.height <= 0 ||
+      Math.abs(b.x - expected.left) > .01 ||
+      Math.abs(b.y - expected.top) > .01 ||
+      Math.abs(b.x + b.width - expected.right) > .01 ||
+      Math.abs(b.y + b.height - expected.bottom) > .01) {
+    throw new Error("MODE2_DISPOSABLE_RECT_BOUNDS_CHANGED");
+  }
+  return node;
+}
+
+function stageDisposableSelection(params) {
+  if (stagedDisposableSelection) throw new Error("MODE2_SELECTION_ALREADY_STAGED");
+  // A preparation does not change XD selection or native scenegraph.
+  attestDisposableRect(params);
+  stagedDisposableSelection = {
+    document_id: params.document_id,
+    node_id: params.node_id,
+    name: params.name,
+    isolated_test_copy: true,
+    bounds: {...params.bounds},
+    expires_at: Date.now() + 90000
+  };
+  return {status:"awaiting_user_menu", approval_required:true,
+    node_id:params.node_id, expires_in_seconds:90};
+}
+
+function selectStagedDisposableCommand(selection, documentRoot) {
+  const request = stagedDisposableSelection;
+  stagedDisposableSelection = null; // one-shot, including failed requests
+  if (!request || Date.now() > request.expires_at ||
+      !documentRoot || String(documentRoot.guid) !== MODE2_DISPOSABLE_DOC) {
+    throw new Error("MODE2_STAGED_SELECTION_EXPIRED_OR_WRONG_DOC");
+  }
+  const node = attestDisposableRect(request);
+  selection.items = [node]; // only in XD's explicit plugin command context
+  const proof = mode2InspectSelectedNode(request);
+  if (proof.selection_count !== 1 || proof.node_id !== request.node_id) {
+    throw new Error("MODE2_DISPOSABLE_SELECTION_NOT_EXACT");
+  }
+  snapshot(selection, documentRoot);
+  return {selected:true, document_id:proof.document_id, node_id:proof.node_id,
+    bounds:proof.bounds};
 }
 
 // Mode 2 guarded node ownership. Reads only; never changes the active selection.
@@ -582,6 +662,7 @@ function dispatch(method, params) {
   }
 
   if (method === "xd.mode2.node.inspect") return mode2InspectSelectedNode(params || {});
+  if (method === "xd.mode2.selection.stage_disposable") return stageDisposableSelection(params || {});
 
   if (method === "xd.selection.get") {
     try { snapshot(scenegraph.selection, scenegraph.root); } catch (_) {}
@@ -890,7 +971,8 @@ entrypoints.setup({
   commands: {
     mcpAdobeConnect: connectCommand,
     mcpAdobeApply: applyPendingCommand,
-    mcpAdobeMode2SelectFixture: selectMode2FixtureCommand
+    mcpAdobeMode2SelectFixture: selectMode2FixtureCommand,
+    mcpAdobeMode2SelectStagedRect: selectStagedDisposableCommand
   },
   panels: {
     mcpAdobeBridge: {
