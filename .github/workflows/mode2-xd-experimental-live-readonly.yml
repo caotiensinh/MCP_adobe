@@ -1,5 +1,8 @@
 name: Mode 2 XD experimental activated-host read-only E2E
 on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-experimental-live-readonly.yml']
   workflow_dispatch:
 permissions:
   contents: read
@@ -23,6 +26,21 @@ jobs:
           $all=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
           $xd=@($all|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
           $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          if($xd.Count -eq 0){
+            $native=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd'
+            $tracking=$env:RUNNER_TRACKING_ID
+            try{$env:RUNNER_TRACKING_ID='';Start-Process -FilePath $native -ErrorAction Stop}finally{$env:RUNNER_TRACKING_ID=$tracking}
+            Write-Host 'MODE2_EXPERIMENTAL_READONLY_OPENED_DISPOSABLE_ONCE'
+            $scope=[System.Windows.Automation.TreeScope]::Children
+            $cond=[System.Windows.Automation.Condition]::TrueCondition
+            for($i=1;$i -le 15;$i++){
+              Start-Sleep -Seconds 3
+              $all=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,$cond)
+              $xd=@($all|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+              $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+              if($xd.Count -eq 1 -and $test.Count -eq 1){break}
+            }
+          }
           if($xd.Count -ne 1 -or $test.Count -ne 1){throw 'MODE2_EXPERIMENTAL_WRONG_DOCUMENT'}
           $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
           $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
