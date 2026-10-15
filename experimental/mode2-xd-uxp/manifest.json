@@ -24,6 +24,13 @@
       }
     },
     {
+      "type": "command",
+      "id": "mcpAdobeMode2SelectFixture",
+      "label": {
+        "default": "MCP Mode 2 Select Verified Fixture"
+      }
+    },
+    {
       "type": "panel",
       "id": "mcpAdobeBridge",
       "label": {
