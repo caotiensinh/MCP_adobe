@@ -1,0 +1,64 @@
+name: Mode 2 XD experimental live host identity read-only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-experimental-host-identity-readonly.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  identify-plugin:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read-only Adobe XD build identity and original disk protection
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($rel in @('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd','mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd')){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_PROTECTED_SOURCE_SHA_CHANGED'}
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $xd=@($windows|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          $connections=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "MODE2_IDENTITY_XD_WINDOWS=$($xd.Count) DISPOSABLE_WINDOWS=$($test.Count) BRIDGE_CONNECTIONS=$($connections.Count)"
+          if($xd.Count -ne 1 -or $test.Count -ne 1 -or $connections.Count -lt 1){
+            Write-Host 'MODE2_EXPERIMENTAL_HOST=NOT_VERIFIED_NOT_ACTIVATED'
+          }else{
+            $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+            @'
+          import asyncio
+          from mcp import Client
+          from scripts.export_region_metadata import unwrap,payload
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":"creative.health","arguments":{}}),timeout=14)
+                  h=unwrap(payload(r))
+                  if isinstance(h,dict) and isinstance(h.get("result"),dict):h=unwrap(h["result"])
+                  build=h.get("bridge_build")
+                  print("MODE2_XD_ACTIVE_BRIDGE_BUILD="+str(build),flush=True)
+                  print("MODE2_XD_EXPERIMENTAL_HOST="+("PRESENT" if build=="xd-mode2-guarded-experimental-v1" else "NOT_PRESENT"),flush=True)
+                  print("MODE2_XD_PENDING_COUNT="+str(h.get("pending_count")),flush=True)
+          asyncio.run(main())
+          '@|Set-Content -LiteralPath .\mode2_identity_probe.py -Encoding UTF8
+            uv run --python 3.12 python .\mode2_identity_probe.py
+            if($LASTEXITCODE -ne 0){throw 'MODE2_MCP_READ_FAILED'}
+          }
+          foreach($rel in @('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd','mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd')){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_PROTECTED_CHANGED_DURING_PROBE'}
+          }
+          Write-Host 'MODE2_HOST_IDENTITY_READONLY=PASS'
+          Write-Host 'MODE2_LIVE_MUTATION_ATTEMPTED=False'
