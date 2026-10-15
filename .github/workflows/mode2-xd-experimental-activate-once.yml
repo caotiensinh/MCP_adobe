@@ -1,0 +1,61 @@
+name: Mode 2 XD one-shot experimental plugin activation and live readback
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-experimental-activate-once.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  activate-and-read:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start isolated 8766 sidecar, invoke clean XD plugin reload once, read real UXP
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $uv=(Get-Command uv -ErrorAction Stop).Source
+          $output=Join-Path $env:RUNNER_TEMP 'mode2_8766_activation_stdout.txt'
+          $errors=Join-Path $env:RUNNER_TEMP 'mode2_8766_activation_stderr.txt'
+          if(@(Get-NetTCPConnection -LocalPort 8766 -State Listen -ErrorAction SilentlyContinue).Count -gt 0){throw 'MODE2_8766_ALREADY_LISTENING_UNOWNED'}
+          $child=Start-Process -FilePath $uv -ArgumentList @('run','--python','3.12','python','scripts/mode2_xd_experimental_readback.py','--wait-seconds','45') -PassThru -WindowStyle Hidden -RedirectStandardOutput $output -RedirectStandardError $errors
+          try{
+            $listening=$false
+            for($i=0;$i -lt 40;$i++){
+              Start-Sleep -Milliseconds 400
+              if($child.HasExited){throw "MODE2_8766_SIDECAR_EXITED_PREMATURELY_$($child.ExitCode)"}
+              if(@(Get-NetTCPConnection -LocalPort 8766 -State Listen -ErrorAction SilentlyContinue).Count -eq 1){$listening=$true;break}
+            }
+            if(-not $listening){throw 'MODE2_8766_LISTENER_NOT_READY'}
+            Write-Host 'MODE2_SIDECAR_LISTENING=PASS'
+            & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/mode2_xd_activate_staged_once.ps1
+            if($LASTEXITCODE -ne 0){throw 'MODE2_EXPERIMENTAL_GUI_RELOAD_FAILED_NO_REPLAY'}
+            if(-not $child.WaitForExit(65000)){throw 'MODE2_EXPERIMENTAL_READBACK_TIMEOUT_NO_REPLAY'}
+            Write-Host "MODE2_SIDECAR_EXIT_CODE=$($child.ExitCode)"
+            if(Test-Path -LiteralPath $output){Get-Content -LiteralPath $output | ForEach-Object {Write-Host $_}}
+            if(Test-Path -LiteralPath $errors){Get-Content -LiteralPath $errors -Tail 18 | ForEach-Object {Write-Host "MODE2_SIDECAR_DIAGNOSTIC=$_"}}
+            if($child.ExitCode -ne 0){throw 'MODE2_EXPERIMENTAL_CONNECTION_NOT_PROVEN'}
+            if(-not (Select-String -LiteralPath $output -Pattern '^MODE2_EXPERIMENTAL_BRIDGE_READONLY=PASS$' -Quiet)){throw 'MODE2_EXPERIMENTAL_NO_READBACK_PASS'}
+            Write-Host 'MODE2_EXPERIMENTAL_UXP_ACTIVATED_AND_READBACK=PASS'
+          }finally{
+            if(-not $child.HasExited){Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue}
+          }
+      - name: Confirm original and disposable native bytes unchanged
+        shell: powershell
+        run: |
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($rel in @('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd','mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd')){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_PROTECTED_NATIVE_CHANGED'}
+          }
+          Write-Host 'MODE2_POST_ACTIVATION_NATIVE_SHA=PASS'
