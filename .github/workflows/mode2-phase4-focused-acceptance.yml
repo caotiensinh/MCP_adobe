@@ -19,6 +19,7 @@ on:
       - 'src/mcp_adobe/xd_mode2_experimental.py'
       - 'tests/xd_mode2_experimental_runtime.cjs'
       - 'tests/xd_mode2_explicit_fixture_selection.cjs'
+      - 'tests/xd_mode2_disposable_selection_runtime.cjs'
       - 'tests/test_region_targeting.py'
       - 'tests/test_region_annotation_ui.py'
       - 'tests/test_xd_scenegraph_targeting.py'
@@ -59,6 +60,7 @@ jobs:
           node tests/xd_mode2_guarded_plugin_contract.cjs
           node tests/xd_mode2_experimental_runtime.cjs
           node tests/xd_mode2_explicit_fixture_selection.cjs
+          node tests/xd_mode2_disposable_selection_runtime.cjs
           node tests/xd_mode2_isolated_distribution_contract.cjs
       - name: Explicitly retain release boundary (unit PASS is not production E2E)
         run: |
