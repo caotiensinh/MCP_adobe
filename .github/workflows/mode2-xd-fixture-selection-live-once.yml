@@ -70,6 +70,25 @@ jobs:
           }
           if(-not $ready){throw 'MODE2_XD_PRODUCTION_NOT_CONNECTED'}
           Write-Host 'MODE2_FIXTURE_SOLE_DISPOSABLE_AND_8765=PASS'
+          # Windows may minimize XD between self-hosted CI runs. In that
+          # state UIAutomation exposes only 6 titlebar controls, not menu items.
+          # Normalize ONLY the attested disposable window before menu lookup.
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Mode2GuiForeground {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+          }
+          '@
+          $windowPattern=$test[0].GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+          Write-Host "MODE2_FIXTURE_WINDOW_STATE_BEFORE=$($windowPattern.Current.WindowVisualState)"
+          if($windowPattern.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Minimized){
+            $windowPattern.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Normal)
+          }
+          try{$test[0].SetFocus()}catch{}
+          [void][Mode2GuiForeground]::SetForegroundWindow([IntPtr]$test[0].Current.NativeWindowHandle)
+          Start-Sleep -Seconds 2
+          Write-Host 'MODE2_FIXTURE_WINDOW_RESTORED_AND_FOCUSED=PASS'
           function Find-Menu([string]$menuId){
             for($attempt=1;$attempt -le 28;$attempt++){
               Start-Sleep -Milliseconds 450
