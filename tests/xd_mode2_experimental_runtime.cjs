@@ -61,6 +61,9 @@ const args = {
   isolated_test_copy: true, user_confirmed: true, fill: "#A1B2C3"
 };
 (async () => {
+  const host = await call("xd.health");
+  assert.equal(host.ok, true);
+  assert.equal(host.result.bridge_build, "xd-mode2-guarded-experimental-v1");
   let reply = await call("xd.mode2.node.inspect", {
     document_id: DOC, node_id: NODE, bounds
   });
