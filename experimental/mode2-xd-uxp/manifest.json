@@ -31,6 +31,13 @@
       }
     },
     {
+      "type": "command",
+      "id": "mcpAdobeMode2SelectStagedRect",
+      "label": {
+        "default": "MCP Mode 2 Select Staged Disposable Rectangle"
+      }
+    },
+    {
       "type": "panel",
       "id": "mcpAdobeBridge",
       "label": {
