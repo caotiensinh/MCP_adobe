@@ -53,6 +53,12 @@ jobs:
           foreach($x in @($nodes|Where-Object {[string]$_.Current.AutomationId -in @('AppMenu_Save','AppMenu_RevertToSaved','AppMenu_SaveAs') })){
             Write-Host "MODE2_FILE_COMMAND_ID=$([string]$x.Current.AutomationId) NAME=$([string]$x.Current.Name) ENABLED=$($x.Current.IsEnabled)"
           }
+          $save=@($nodes|Where-Object {[string]$_.Current.AutomationId -eq 'AppMenu_Save'})
+          $revert=@($nodes|Where-Object {[string]$_.Current.AutomationId -eq 'AppMenu_RevertToSaved'})
+          if($save.Count -ne 1 -or $revert.Count -ne 1 -or $save[0].Current.IsEnabled -or $revert[0].Current.IsEnabled){
+            throw 'MODE2_REVERT_DID_NOT_RESTORE_CLEAN_SAVE_STATE'
+          }
+          Write-Host 'MODE2_POST_REVERT_FILE_CLEAN=PASS'
           $title=@($nodes|Where-Object {[string]$_.Current.AutomationId -eq 'TitleText'})
           foreach($x in $title|Select-Object -First 3){Write-Host "MODE2_XD_DOCUMENT_TITLE=$([string]$x.Current.Name)"}
           if($xp.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Expanded){$xp.Collapse()}
