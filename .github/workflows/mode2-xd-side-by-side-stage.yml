@@ -1,0 +1,41 @@
+name: Mode 2 XD isolated experimental plugin staging
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-side-by-side-stage.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Distinct plugin and port contract
+        run: |
+          node --check experimental/mode2-xd-uxp/main.js
+          node tests/xd_mode2_isolated_distribution_contract.cjs
+  stage-on-mrcao:
+    needs: [validate]
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add separate experimental files without reloading XD or changing the production plugin
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_STAGE_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          $rel=@('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd','mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd')
+          foreach($item in $rel){if((Get-FileHash -LiteralPath (Join-Path $root $item) -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_STAGE_PROTECTED_FILE_CHANGED'}}
+          & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/stage_mode2_xd_experimental_plugin.ps1
+          if($LASTEXITCODE -ne 0){throw 'MODE2_PLUGIN_STAGE_FAILED'}
+          foreach($item in $rel){if((Get-FileHash -LiteralPath (Join-Path $root $item) -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_STAGE_PROTECTED_FILE_CHANGED_AFTER'}}
+          Write-Host 'MODE2_DISPOSABLE_NATIVE_PRESERVED=PASS'
+          Write-Host 'MODE2_EXPERIMENTAL_PLUGIN_STAGED_NOT_ACTIVATED=PASS'
