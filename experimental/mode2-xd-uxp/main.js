@@ -5,7 +5,7 @@ const { Rectangle, Ellipse, Path, Text, Color } = scenegraph;
 
 const BRIDGE_URL = "ws://127.0.0.1:8765";
 const STATUS_LIMIT = 200;
-const BRIDGE_BUILD = "xd-ellipse-radius-geometry-v4";
+const BRIDGE_BUILD = "xd-mode2-guarded-experimental-v1";
 
 let panel;
 let socket;
