@@ -5,6 +5,7 @@ import copy
 import unittest
 
 from mcp_adobe.xd import XdAdapter
+from mcp_adobe.core import CapabilityRegistry
 from mcp_adobe.xd_mode2_experimental import ExperimentalXdMode2Adapter, EXPERIMENTAL_BRIDGE_BUILD
 
 
@@ -105,6 +106,26 @@ class XdMode2AdapterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             adapter.execute("xd.mode2.node.inspect", FILL)
         self.assertEqual(bridge.calls, [])
+
+    def test_registry_only_routes_mode2_when_explicitly_registered(self):
+        ordinary = FakeExperimentalBridge()
+        registry = CapabilityRegistry()
+        registry.register(XdAdapter(ordinary))
+        with self.assertRaises(LookupError):
+            registry.execute("xd", "xd.mode2.node.inspect", ARGS)
+        self.assertEqual(ordinary.calls, [])
+
+        experimental = FakeExperimentalBridge()
+        registry = CapabilityRegistry()
+        registry.register(ExperimentalXdMode2Adapter(experimental))
+        read = registry.execute("xd", "xd.mode2.node.inspect", ARGS)
+        self.assertEqual(read["outcome"], "read")
+        queued = registry.execute("xd", "xd.queue.mode2_fill", FILL)
+        self.assertEqual(queued["outcome"], "pending_user_approval")
+        self.assertEqual(
+            [method for method, _ in experimental.calls],
+            ["xd.health", "xd.mode2.node.inspect", "xd.health", "xd.queue.mode2_fill"],
+        )
 
     def test_wrong_experimental_build_and_pending_queue_fail_before_dispatch(self):
         for bridge in (
