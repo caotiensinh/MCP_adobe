@@ -1,0 +1,78 @@
+name: Mode 2 XD consume stale experimental selection ticket once
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-consume-stale-selection-ticket-once.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  consume:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Attempt expired staged selection menu only on disposable Rectangle, no Fill and no Reload
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $testDir=Join-Path $root 'mode2-disposable-native'
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($rel in @('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd','mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd')){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $sha){throw 'MODE2_STALE_TICKET_NATIVE_HASH_MISMATCH'}
+          }
+          $receipt=Join-Path $testDir 'mode2_fill_rect_guid_receipt.json'
+          $ticket=Get-Content -LiteralPath $receipt -Raw -Encoding UTF8 | ConvertFrom-Json
+          if($ticket.state -ne 'applied' -or $ticket.node_id -ne '9989e92f-7c9b-4721-9cdc-b5b5ea33cdf2'){throw 'MODE2_WRONG_RECT_RECEIPT'}
+          $marker=Join-Path $testDir 'Mode2_Consume_Expired_StagedRect_TicketOnce.marker'
+          if(Test-Path -LiteralPath $marker){throw 'MODE2_STALE_TICKET_ALREADY_CONSUMED_NO_REPLAY'}
+          if(@(Get-Process -Name Illustrator,Photoshop,PickerHost -ErrorAction SilentlyContinue).Count -gt 0){throw 'MODE2_UNRELATED_ADOBE_APP'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class Mode2ExpiredTicketFocus { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }'
+          $children=[System.Windows.Automation.TreeScope]::Children
+          $desc=[System.Windows.Automation.TreeScope]::Descendants
+          $cond=[System.Windows.Automation.Condition]::TrueCondition
+          $id=[System.Windows.Automation.AutomationElement]::AutomationIdProperty
+          $top=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($children,$cond)
+          $xd=@($top|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          if($xd.Count -ne 1 -or $test.Count -ne 1){throw 'MODE2_WRONG_DISPOSABLE_WINDOW'}
+          $w=$test[0]
+          $wp=$w.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+          if($wp.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Minimized){$wp.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Normal)}
+          try{$w.SetFocus()}catch{}
+          [void][Mode2ExpiredTicketFocus]::SetForegroundWindow([IntPtr]$w.Current.NativeWindowHandle)
+          Start-Sleep -Milliseconds 600
+          $p=$w.FindFirst($desc,(New-Object System.Windows.Automation.PropertyCondition($id,'AppMenuBar_Plugins')))
+          if(-not $p){throw 'MODE2_PLUGINS_MENU_MISSING'}
+          $px=$p.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+          if($px.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$px.Expand()}
+          Start-Sleep -Milliseconds 250
+          $menuItems=$w.FindAll($desc,$cond)
+          $roots=@($menuItems|Where-Object {[string]$_.Current.Name -eq 'MCP Adobe Mode 2 Experimental' -and [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'})
+          if($roots.Count -ne 1){throw 'MODE2_EXPERIMENT_ROOT_NOT_UNIQUE'}
+          $rx=$roots[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+          if($rx.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$rx.Expand()}
+          Start-Sleep -Milliseconds 300
+          $items=$w.FindAll($desc,$cond)
+          $select=@($items|Where-Object {[string]$_.Current.Name -eq 'MCP Mode 2 Select Staged Disposable Rectangle' -and [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and $_.Current.IsEnabled})
+          if($select.Count -ne 1){throw 'MODE2_STALE_SELECT_MENU_NOT_UNIQUE'}
+          # The UXP handler consumes the ticket before checking expiration; it
+          # may throw its expected 'expired' error. No native write is requested.
+          "run=$env:GITHUB_RUN_ID at=$([DateTime]::UtcNow.ToString('o'))" | Set-Content -LiteralPath $marker -Encoding ASCII -NoNewline
+          try{
+            $select[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            Write-Host 'MODE2_STALE_SELECTION_MENU_INVOKED_ONCE'
+          }catch{
+            Write-Host "MODE2_STALE_SELECTION_UIA_EXCEPTION=$($_.Exception.GetType().Name)"
+          }
+          Start-Sleep -Seconds 2
+          foreach($rel in @('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd','mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd')){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $sha){throw 'MODE2_NATIVE_CHANGED_AFTER_STALE_SELECTION_ATTEMPT'}
+          }
+          Write-Host 'MODE2_STALE_TICKET_USER_COMMAND_INVOKED_NO_FILL=PASS'
