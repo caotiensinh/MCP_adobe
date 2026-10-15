@@ -71,4 +71,18 @@ jobs:
           $file=@($children|Where-Object {[string]$_.Current.AutomationId -eq 'AppMenu_File'})
           $plugin=@($children|Where-Object {[string]$_.Current.AutomationId -eq 'AppMenuBar_Plugins'})
           Write-Host "MODE2_UIA_FILE_COUNT=$($file.Count) PLUGINS_COUNT=$($plugin.Count)"
+          $dialog=@($children|Where-Object {
+            [string]$_.Current.Name -match '(Revert|Cancel|Discard|Save|Unsaved|Confirm|changes|Do you want|OK)' -or
+            [string]$_.Current.AutomationId -match '(Dialog|Revert|Confirm|Cancel|Warning|Save)'
+          })
+          Write-Host "MODE2_UIA_POSSIBLE_DIALOG_CONTROLS=$($dialog.Count)"
+          foreach($node in $dialog|Select-Object -First 75){
+            $b=$node.Current.BoundingRectangle
+            Write-Host "MODE2_UIA_DIALOG_NODE name=$([string]$node.Current.Name) id=$([string]$node.Current.AutomationId) type=$([string]$node.Current.ControlType.ProgrammaticName) enabled=$($node.Current.IsEnabled) bounds=$([int]$b.X),$([int]$b.Y),$([int]$b.Width),$([int]$b.Height)"
+          }
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,$cond)
+          $popupWindows=@($desktop|Where-Object {[string]$_.Current.Name -match '(Revert|Confirm|Discard|Save changes|Adobe XD)'})
+          foreach($w in $popupWindows|Select-Object -First 16){
+            Write-Host "MODE2_UIA_TOP_WINDOW name=$([string]$w.Current.Name) id=$([string]$w.Current.AutomationId) type=$([string]$w.Current.ControlType.ProgrammaticName)"
+          }
           Write-Host 'MODE2_UIA_FOCUS_READONLY_COMPLETE=PASS'
