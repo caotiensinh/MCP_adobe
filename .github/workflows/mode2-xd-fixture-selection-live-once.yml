@@ -1,8 +1,5 @@
 name: Mode 2 XD live user-command select fixture once
 on:
-  push:
-    branches: [feat/canvas-region-targeting]
-    paths: ['.github/workflows/mode2-xd-fixture-selection-live-once.yml']
   workflow_dispatch:
 permissions:
   contents: read
