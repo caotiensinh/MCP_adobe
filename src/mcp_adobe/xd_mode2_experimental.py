@@ -64,6 +64,10 @@ class ExperimentalXdMode2Adapter(XdAdapter):
         return replace(
             base,
             native_capabilities=base.native_capabilities | frozenset(_EXPERIMENTAL),
+            capability_risks={
+                **base.capability_risks,
+                **{name: binding.risk for name, binding in _EXPERIMENTAL.items()},
+            },
             # Never claim an implemented Undo gateway based on UIA experiments.
             undo_supported=False,
         )
