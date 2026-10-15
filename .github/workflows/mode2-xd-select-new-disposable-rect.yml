@@ -76,13 +76,7 @@ jobs:
               if(@(Get-NetTCPConnection -LocalPort 8766 -State Listen -ErrorAction SilentlyContinue).Count -eq 1){$listen=$true;break}
             }
             if(-not $listen){throw 'MODE2_EXPERIMENTAL_LISTENER_NOT_READY'}
-            Add-Type @'
-            using System;
-            using System.Runtime.InteropServices;
-            public static class Mode2StagedSelectForeground {
-              [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
-            }
-            '@
+            Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class Mode2StagedSelectForeground { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }'
             function Open-ExperimentMenu {
               for($attempt=1;$attempt -le 12;$attempt++){
                 $top=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,$cond)
