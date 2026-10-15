@@ -1,0 +1,53 @@
+name: Mode 2 Phase 4 focused acceptance contracts
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - '.github/workflows/mode2-phase4-focused-acceptance.yml'
+      - 'docs/MODE2_PHASE4_REVIEW_EVIDENCE_2026-10-15.md'
+      - 'src/mcp_adobe/mode2_*.py'
+      - 'src/mcp_adobe/region_targeting.py'
+      - 'src/mcp_adobe/xd_scenegraph_targeting.py'
+      - 'tests/test_mode2_*.py'
+      - 'tests/test_region_targeting.py'
+      - 'tests/test_region_annotation_ui.py'
+      - 'tests/test_xd_scenegraph_targeting.py'
+      - 'tests/xd_mode2_guarded_plugin_contract.cjs'
+      - 'experimental/mode2-xd-uxp/main.js'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mode2-safety:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install narrowly scoped MCP dependencies
+        run: python -m pip install 'mcp>=2,<3' 'websockets>=15,<16'
+      - name: Run Mode 2 safety, provenance and annotation tests
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m unittest -v \
+            tests.test_mode2_edit_guard \
+            tests.test_mode2_edit_simulation \
+            tests.test_mode2_xd_transaction \
+            tests.test_mode2_native_provenance \
+            tests.test_region_targeting \
+            tests.test_region_annotation_ui \
+            tests.test_xd_scenegraph_targeting
+      - name: Validate experimental plugin syntax and safe guarded edit contract
+        run: |
+          node --check experimental/mode2-xd-uxp/main.js
+          node --check adobe-xd-plugin/main.js
+          node tests/xd_mode2_guarded_plugin_contract.cjs
+      - name: Explicitly retain release boundary (unit PASS is not production E2E)
+        run: |
+          echo 'MODE2_FOCUSED_CONTRACTS=PASS'
+          echo 'MODE2_DISPOSABLE_XD_E2E_EVIDENCE=RUNS_38592253921_38592737629_38593302094_38734348877'
+          echo 'MODE2_PRODUCTION_REGION_TO_EDIT=NOT_VERIFIED'
+          echo 'MODE2_PR32_AUTO_MERGE=NOT_AUTHORIZED'
