@@ -599,6 +599,22 @@ function dispatch(method, params) {
     return operationStatus[operationId] || { status: "unknown", operation_id: operationId };
   }
 
+  // Reject an unverified Mode 2 operation BEFORE queueing. Revalidate again at
+  // Apply time via mode2InspectSelectedNode to catch selection/document changes.
+  // These flags do NOT attest the native copy's on-disk provenance.
+  if (method === "xd.queue.mode2_fill") {
+    const p = params || {};
+    if (p.isolated_test_copy !== true || p.user_confirmed !== true ||
+        !/^#[0-9a-fA-F]{6}$/.test(p.fill || "")) {
+      throw new Error("MODE2_COPY_CONFIRMATION_OR_COLOR_MISSING");
+    }
+    if (pendingWrites.length !== 0) {
+      throw new Error("MODE2_QUEUE_MUST_BE_EMPTY");
+    }
+    mode2InspectSelectedNode(p);
+    return queueMutation(method, p);
+  }
+
   if (
     method === "xd.queue.rectangle_create" ||
     method === "xd.queue.path_create" ||
@@ -607,8 +623,7 @@ function dispatch(method, params) {
     method === "xd.queue.ellipse_geometry_repair" ||
     method === "xd.queue.text_create" ||
     method === "xd.queue.selection_resize" ||
-    method === "xd.queue.selection_fill" ||
-    method === "xd.queue.mode2_fill"
+    method === "xd.queue.selection_fill"
   ) {
     return queueMutation(method, params || {});
   }
