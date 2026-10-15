@@ -1,0 +1,88 @@
+name: Mode 2 XD experimental activation preflight without reload
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-experiment-reload-preflight.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  discover:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Discover XD Plugins Development reload control without invoking it
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $top=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $xd=@($top|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          $prod=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "MODE2_RELOAD_PRECHECK_XD=$($xd.Count) TEST=$($test.Count) PROD_UXP=$($prod.Count)"
+          if($xd.Count -ne 1 -or $test.Count -ne 1 -or $prod.Count -lt 1){throw 'MODE2_RELOAD_DISCOVERY_BAD_HOST'}
+          $id=[System.Windows.Automation.AutomationElement]::AutomationIdProperty
+          $plugins=$test[0].FindFirst([System.Windows.Automation.TreeScope]::Descendants,(New-Object System.Windows.Automation.PropertyCondition($id,'AppMenuBar_Plugins')))
+          if(-not $plugins){throw 'MODE2_PLUGINS_MENU_MISSING'}
+          $xp=$plugins.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+          try{
+            if($xp.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$xp.Expand()}
+            Start-Sleep -Milliseconds 280
+            $items=$test[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+            foreach($item in @($items | Where-Object {[string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'}) | Select-Object -First 35){
+              $n=[string]$item.Current.Name
+              $aid=[string]$item.Current.AutomationId
+              Write-Host "MODE2_PLUGINS_MENU_ITEM name=$n id=$aid enabled=$($item.Current.IsEnabled)"
+            }
+            $dev=@($items|Where-Object {[string]$_.Current.Name -eq 'Development' -and [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'})
+            Write-Host "MODE2_DEVELOPMENT_MENU_COUNT=$($dev.Count)"
+            if($dev.Count -eq 1){
+              $sub=$null
+              try{$sub=$dev[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)}catch{}
+              if($sub){
+                if($sub.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$sub.Expand()}
+                Start-Sleep -Milliseconds 250
+                $all=$test[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+                foreach($item in @($all|Where-Object {[string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and [string]$_.Current.Name -match 'Reload|Develop'})|Select-Object -First 15){
+                  Write-Host "MODE2_RELOAD_DISCOVERY name=$([string]$item.Current.Name) id=$([string]$item.Current.AutomationId) enabled=$($item.Current.IsEnabled)"
+                }
+                $sub.Collapse()
+              }
+            }
+          }finally{
+            if($xp.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Expanded){$xp.Collapse()}
+          }
+          Write-Host 'MODE2_GUI_RELOAD_INVOKED=False'
+      - name: Check loopback experimental socket connectivity only
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import json,time
+          from mcp_adobe.xd_bridge import XdWebSocketBridgeClient
+          b=XdWebSocketBridgeClient(host="127.0.0.1",port=8766,startup_timeout_seconds=5,call_timeout_seconds=5)
+          try:
+              b.start()
+              for _ in range(25):
+                  if b.connected:break
+                  time.sleep(.4)
+              print("MODE2_8766_SIDECAR_CONNECTED="+str(b.connected),flush=True)
+              if b.connected:
+                  print("MODE2_8766_PLUGIN_HELLO="+json.dumps({k:v for k,v in b.plugin_info.items() if k in ("application","bridgeBuild","protocol")},sort_keys=True),flush=True)
+          finally:
+              b.close()
+          '@|Set-Content -LiteralPath .\mode2_8766_check.py -Encoding UTF8
+          uv run --python 3.12 python .\mode2_8766_check.py
+          if($LASTEXITCODE -ne 0){throw 'MODE2_SIDECAR_TEST_FAILED'}
+          Write-Host 'MODE2_ONLY_READONLY_ACTIVATION_PREFLIGHT=PASS'
