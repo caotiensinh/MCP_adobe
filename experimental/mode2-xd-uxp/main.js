@@ -3,7 +3,8 @@ const { entrypoints } = require("uxp");
 const scenegraph = require("scenegraph");
 const { Rectangle, Ellipse, Path, Text, Color } = scenegraph;
 
-const BRIDGE_URL = "ws://127.0.0.1:8765";
+// Dedicated experimental listener. The production bridge stays on port 8765.
+const BRIDGE_URL = "ws://127.0.0.1:8766";
 const STATUS_LIMIT = 200;
 const BRIDGE_BUILD = "xd-mode2-guarded-experimental-v1";
 
