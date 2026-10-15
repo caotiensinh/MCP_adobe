@@ -1,8 +1,5 @@
 name: Mode 2 XD confirm existing disposable Revert dialog once
 on:
-  push:
-    branches: [feat/canvas-region-targeting]
-    paths: ['.github/workflows/mode2-xd-confirm-revert-dialog-once.yml']
   workflow_dispatch:
 permissions:
   contents: read
