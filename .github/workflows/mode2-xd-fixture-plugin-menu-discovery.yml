@@ -55,6 +55,8 @@ jobs:
           }
           $submenu=@($nodes|Where-Object {[string]$_.Current.Name -match 'MCP Adobe Mode 2 Experimental'})
           foreach($candidate in $submenu|Select-Object -First 3){
+            $supported=@($candidate.GetSupportedPatterns()|ForEach-Object {$_.ProgrammaticName})
+            Write-Host "MODE2_EXPERIMENTAL_ROOT_TYPE=$([string]$candidate.Current.ControlType.ProgrammaticName) PATTERNS=$($supported -join ',')"
             $ex=$null;try{$ex=$candidate.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)}catch{}
             if($ex){
               if($ex.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$ex.Expand()}
