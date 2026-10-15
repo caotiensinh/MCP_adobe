@@ -11,6 +11,7 @@ on:
       - 'tests/test_mode2_*.py'
       - 'tests/test_xd_mode2_experimental_adapter.py'
       - 'src/mcp_adobe/xd.py'
+      - 'src/mcp_adobe/xd_mode2_experimental.py'
       - 'tests/xd_mode2_experimental_runtime.cjs'
       - 'tests/test_region_targeting.py'
       - 'tests/test_region_annotation_ui.py'
