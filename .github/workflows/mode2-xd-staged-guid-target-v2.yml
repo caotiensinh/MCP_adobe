@@ -1,0 +1,67 @@
+name: Mode 2 XD stage guided GUID targeting UXP v2
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-staged-guid-target-v2.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage only the exact experimental plugin upgrade; immutable production and Panda sources
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $nativeHash='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          $rels=@('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd','mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd')
+          foreach($p in $rels){if((Get-FileHash -LiteralPath (Join-Path $root $p) -Algorithm SHA256).Hash -ne $nativeHash){throw 'MODE2_PROTECTED_NATIVE_HASH_MISMATCH'}}
+          $develop=Join-Path $env:LOCALAPPDATA 'Packages\Adobe.XD_pc75e8sa7ep4e\LocalState\develop'
+          $prodMain=Join-Path $develop 'MCPAdobeBridge\main.js'
+          $prodManifest=Join-Path $develop 'MCPAdobeBridge\manifest.json'
+          $expMain=Join-Path $develop 'MCPAdobeMode2Experiment\main.js'
+          $expManifest=Join-Path $develop 'MCPAdobeMode2Experiment\manifest.json'
+          foreach($p in @($prodMain,$prodManifest,$expMain,$expManifest)){if(!(Test-Path -LiteralPath $p -PathType Leaf)){throw 'MODE2_STAGED_FILE_MISSING'}}
+          $prodHash=@{}
+          foreach($p in @($prodMain,$prodManifest)){$prodHash[$p]=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash}
+          if((Get-Content -LiteralPath $prodManifest -Raw -Encoding UTF8 | ConvertFrom-Json).id -ne 'MCPADB01'){throw 'MODE2_WRONG_PRODUCTION_ID'}
+          if((Get-Content -LiteralPath $expManifest -Raw -Encoding UTF8 | ConvertFrom-Json).id -ne 'MCPADM2E'){throw 'MODE2_WRONG_EXPERIMENTAL_ID'}
+          $git=(Get-Command git -ErrorAction Stop).Source
+          $sourceMain=Join-Path $PWD 'experimental\mode2-xd-uxp\main.js'
+          $sourceManifest=Join-Path $PWD 'experimental\mode2-xd-uxp\manifest.json'
+          $sourceMainSha=(& $git hash-object -- $sourceMain).Trim()
+          $sourceManifestSha=(& $git hash-object -- $sourceManifest).Trim()
+          $oldMain=(& $git hash-object -- $expMain).Trim()
+          $oldManifest=(& $git hash-object -- $expManifest).Trim()
+          Write-Host "MODE2_STAGED_PREV_BLOBS=$oldMain / $oldManifest"
+          if($sourceMainSha -ne '7fde12a16a13cd1b79c236a62ee874ea0b3f60d0' -or
+             $sourceManifestSha -ne '873d9fb1de76612e6e48375e8ad8933d2eaeb83d'){
+            throw 'MODE2_UNEXPECTED_NEW_UXP_SOURCE'
+          }
+          if($oldMain -eq $sourceMainSha -and $oldManifest -eq $sourceManifestSha){
+            Write-Host 'MODE2_STAGED_GUID_PLUGIN_ALREADY_CURRENT=PASS'
+          }elseif($oldMain -eq '33f99aff6ab0467cab90da7a9fb4bf0838dcc955' -and
+                 $oldManifest -eq '74d0f81a4a26d71e3bb22401e455a58ab40635d3'){
+            $backup=Join-Path $root 'mode2-disposable-native\staged-guid-selection-previous-uxp'
+            if(Test-Path -LiteralPath $backup){throw 'MODE2_GUID_STAGE_BACKUP_ALREADY_EXISTS_NO_REPLAY'}
+            New-Item -ItemType Directory -Path $backup -ErrorAction Stop|Out-Null
+            Copy-Item -LiteralPath $expMain -Destination (Join-Path $backup 'main.js') -ErrorAction Stop
+            Copy-Item -LiteralPath $expManifest -Destination (Join-Path $backup 'manifest.json') -ErrorAction Stop
+            Copy-Item -LiteralPath $sourceMain -Destination $expMain -ErrorAction Stop
+            Copy-Item -LiteralPath $sourceManifest -Destination $expManifest -ErrorAction Stop
+            if((& $git hash-object -- $expMain).Trim() -ne $sourceMainSha -or
+               (& $git hash-object -- $expManifest).Trim() -ne $sourceManifestSha){throw 'MODE2_GUID_STAGE_MISMATCH'}
+            Write-Host 'MODE2_STAGED_GUID_PLUGIN_UPDATED=PASS'
+          }else{throw 'MODE2_UNKNOWN_EXPERIMENTAL_BUILD_NO_OVERWRITE'}
+          foreach($p in @($prodMain,$prodManifest)){if((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash -ne $prodHash[$p]){throw 'MODE2_PRODUCTION_PLUGIN_CHANGED'}}
+          foreach($rel in $rels){if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $nativeHash){throw 'MODE2_NATIVE_CHANGED_AFTER_GUID_STAGING'}}
+          Write-Host 'MODE2_PRODUCTION_PLUGIN_AND_ALL_NATIVE_FILES_PRESERVED=PASS'
+          Write-Host 'MODE2_GUID_PLUGIN_RELOAD_NOT_PERFORMED=True'
