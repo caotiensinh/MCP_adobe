@@ -111,9 +111,14 @@ jobs:
             if($fx.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$fx.Expand()}
             Start-Sleep -Milliseconds 220
             $list=$test[0].FindAll($desc,$cond)
-            $saveEnabled=@($list|Where-Object {[string]$_.Current.Name -eq 'Save' -and $_.Current.IsEnabled})
+            $saveExact=@($list|Where-Object {
+              [string]$_.Current.AutomationId -eq 'AppMenu_Save' -and
+              [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'
+            })
+            if($saveExact.Count -ne 1){throw "MODE2_EXACT_SAVE_NOT_UNIQUE count=$($saveExact.Count)"}
+            $saveEnabled=@($saveExact|Where-Object {$_.Current.IsEnabled})
             $fx.Collapse()
-            Write-Host "MODE2_FIXTURE_SAVE_CHECK=$i ENABLED=$($saveEnabled.Count)"
+            Write-Host "MODE2_FIXTURE_SAVE_CHECK=$i REAL_MENU_ENABLED=$($saveEnabled.Count)"
             if($saveEnabled.Count -eq 0){$clean=$true;break}
             Start-Sleep -Seconds 3
           }
