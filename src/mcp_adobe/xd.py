@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import time
+from math import isfinite
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -43,17 +45,52 @@ _BINDINGS: dict[str, ToolBinding] = {
     "xd.queue.selection_fill": ToolBinding("xd.queue.selection_fill", RiskClass.WRITE_REVERSIBLE),
 }
 
+# These bridge methods exist only in experimental/mode2-xd-uxp.
+# The installed production plugin does not implement them.
+_MODE2_EXPERIMENTAL_BINDINGS: dict[str, ToolBinding] = {
+    "xd.mode2.node.inspect": ToolBinding("xd.mode2.node.inspect", RiskClass.READ),
+    "xd.queue.mode2_fill": ToolBinding("xd.queue.mode2_fill", RiskClass.WRITE_REVERSIBLE),
+}
+
+
+def _validate_mode2_arguments(capability: str, args: Mapping[str, Any]) -> None:
+    required = {"document_id", "node_id", "bounds"}
+    allowed = required if capability == "xd.mode2.node.inspect" else (
+        required | {"fill", "isolated_test_copy", "user_confirmed"}
+    )
+    if set(args) != allowed:
+        raise ValueError("Mode 2 requires exact, bounded experimental arguments")
+    for name in ("document_id", "node_id"):
+        if not isinstance(args[name], str) or not (1 <= len(args[name]) <= 128):
+            raise ValueError("Mode 2 requires nonempty exact document/node identity")
+    bounds = args["bounds"]
+    if not isinstance(bounds, Mapping) or set(bounds) != {"left", "top", "right", "bottom"}:
+        raise ValueError("Mode 2 bounds must have four global coordinates")
+    if any(type(value) not in (float, int) or not isfinite(value) or
+           abs(value) > 1_000_000 for value in bounds.values()):
+        raise ValueError("Mode 2 bounds must be bounded finite numbers")
+    if bounds["right"] <= bounds["left"] or bounds["bottom"] <= bounds["top"]:
+        raise ValueError("Mode 2 bounds must have positive area")
+    if capability == "xd.queue.mode2_fill":
+        if (args["isolated_test_copy"] is not True or args["user_confirmed"] is not True
+                or not isinstance(args["fill"], str)
+                or re.fullmatch(r"#[0-9a-fA-F]{6}", args["fill"]) is None):
+            raise ValueError("Mode 2 fill requires explicit test-copy approval and hex color")
+
 
 class XdAdapter:
-    def __init__(self, client: UpstreamToolClient, *, version: str | None = None, writes_enabled: bool = True) -> None:
+    def __init__(self, client: UpstreamToolClient, *, version: str | None = None, writes_enabled: bool = True, experimental_mode2: bool = False) -> None:
         self._client = client
         self._version = version
         self._writes_enabled = writes_enabled
+        self._experimental_mode2 = experimental_mode2
         self._ready_until = 0.0
 
     def info(self) -> AdapterInfo:
         common = frozenset(name for name in _BINDINGS if name.startswith("creative."))
         native = frozenset(name for name in _BINDINGS if name.startswith("xd."))
+        if self._experimental_mode2:
+            native |= frozenset(_MODE2_EXPERIMENTAL_BINDINGS)
         return AdapterInfo(
             application="xd",
             connected=self._client.connected,
@@ -71,7 +108,7 @@ class XdAdapter:
 
     @staticmethod
     def _is_mutating(capability: str) -> bool:
-        return _BINDINGS[capability].risk is not RiskClass.READ
+        return (_BINDINGS.get(capability) or _MODE2_EXPERIMENTAL_BINDINGS[capability]).risk is not RiskClass.READ
 
     @staticmethod
     def _health_ready(result: Mapping[str, Any]) -> bool:
@@ -97,7 +134,15 @@ class XdAdapter:
 
     def execute(self, capability: str, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         try:
-            binding = _BINDINGS[capability]
+            if capability in _MODE2_EXPERIMENTAL_BINDINGS:
+                if not self._experimental_mode2:
+                    raise LookupError("experimental XD Mode 2 is disabled")
+                _validate_mode2_arguments(capability, arguments)
+                if capability == "xd.queue.mode2_fill" and not self._writes_enabled:
+                    raise PermissionError("experimental XD Mode 2 writes are disabled")
+                binding = _MODE2_EXPERIMENTAL_BINDINGS[capability]
+            else:
+                binding = _BINDINGS[capability]
         except KeyError as exc:
             raise LookupError(f"unsupported Adobe XD capability: {capability}") from exc
 
