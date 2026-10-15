@@ -91,11 +91,15 @@ jobs:
               if($wp.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Minimized){
                 $wp.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Normal)
               }
-              $null=$win.SetFocus()
-              [void][Mode2RevertForeground]::SetForegroundWindow([IntPtr]$win.Current.NativeWindowHandle)
-              Start-Sleep -Milliseconds 550
-              $file=$win.FindFirst($desc,(New-Object System.Windows.Automation.PropertyCondition($aid,'AppMenu_File')))
-            }catch{$file=$null}
+            }catch{if($attempt -eq 1){Write-Host "MODE2_WP_PROBE_EXCEPTION=$($_.Exception.GetType().Name)"}}
+            try{$win.SetFocus()}catch{if($attempt -eq 1){Write-Host "MODE2_SETFOCUS_EXCEPTION=$($_.Exception.GetType().Name)"}}
+            try{[void][Mode2RevertForeground]::SetForegroundWindow([IntPtr]$win.Current.NativeWindowHandle)}catch{}
+            Start-Sleep -Milliseconds 650
+            try{$file=$win.FindFirst($desc,(New-Object System.Windows.Automation.PropertyCondition($aid,'AppMenu_File')))}catch{$file=$null}
+            if($attempt -eq 1 -or $attempt -eq 10){
+              $total=0;try{$total=$win.FindAll($desc,$cond).Count}catch{}
+              Write-Host "MODE2_REVERT_UIA_ATTEMPT=$attempt CONTROLS=$total"
+            }
             if($file){Write-Host "MODE2_REVERT_MENU_READY_ATTEMPT=$attempt";break}
           }
           if(-not $file){throw 'MODE2_REVERT_FILE_MENU_UNAVAILABLE'}
