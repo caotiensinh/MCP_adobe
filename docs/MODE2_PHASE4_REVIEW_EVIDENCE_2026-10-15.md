@@ -56,3 +56,38 @@ Activate the separate dev plugin through the Adobe XD *Development > Reload Plug
 - The one-time GUI activation workflow is now **manual-dispatch only**, after source evidence is secured. Subsequent acceptance should use the read-only workflow, not replay Reload.
 
 **Updated acceptance:** experimental XD UXP activation and live bridge readback **PASS**; distinct selected-node inspection and guarded fill/Undo through the experimental adapter **NOT YET PASS**. PR #32 stays OPEN.
+
+## Real XD exact fixture selection acceptance (2026-10-15)
+
+### Preselection and one-shot recovery
+
+- **New experimental UXP menu command**: `mcpAdobeMode2SelectFixture`, exposed only in `MCPADM2E`, uses a synchronous user-invoked XD command to select exactly one already-known Panda Right Ear fixture (`130fdb64-c691-4374-ab46-66fd3f9e077c`) on the disposable copy. It validates the expected root GUID, node GUID/name/type, visible/unlocked state, global bounds, and empty pending queue. Remote WebSocket messages cannot select nodes.
+- **Safety simulation**: [focused Mode 2 test #38748952627](https://github.com/caotiensinh/MCP_adobe/actions/runs/38748952627) PASS; executable UXP tests reject remote attempts and stale fixture properties. Production plugin and adapter sources remained unchanged.
+- **Installed experimental-only files**: [stage #38749238257](https://github.com/caotiensinh/MCP_adobe/actions/runs/38749238257) PASS. The previous deployed Git blobs were verified exactly before copying new experimental main.js/manifest.json, and the production plugin/native SHA guards passed.
+- **GUI availability issue identified**: [focus UIA run #38750433053](https://github.com/caotiensinh/MCP_adobe/actions/runs/38750433053) proved a minimized XD window exposes just 6 UIA descendants; Restore/Focus reveals 404 descendants including File and Plugins. No blind coordinate click required.
+- **Dirty test copy recovery**: [revert preflight #38751582165](https://github.com/caotiensinh/MCP_adobe/actions/runs/38751582165) verified Save and Revert to Saved enabled, document starred, 33 nodes and no queue, with all original hashes unchanged. [Revert invocation #38752668988](https://github.com/caotiensinh/MCP_adobe/actions/runs/38752668988) invoked Revert exactly once. [UIA dialog discovery #38753242906](https://github.com/caotiensinh/MCP_adobe/actions/runs/38753242906) identified the precise in-window confirmation for `Mode2_Undo_E2E_38584984023.xd`. [Confirmation #38753486896](https://github.com/caotiensinh/MCP_adobe/actions/runs/38753486896) **SUCCESS**: clicked the exact `dialogPlatformRevertButton` once, dialog vanished, native hashes unchanged.
+- **No replay of experimental plugin reload**: [reload attempt #38750994874](https://github.com/caotiensinh/MCP_adobe/actions/runs/38750994874) had been blocked by dirty Save before plugin invocation. The separate updated-plugin reload was invoked once in [run #38750596634](https://github.com/caotiensinh/MCP_adobe/actions/runs/38750596634), but the 8766 listener did not connect automatically. The new plugin menu was confirmed present in [run #38754410620](https://github.com/caotiensinh/MCP_adobe/actions/runs/38754410620): `MCP Adobe Mode 2 Connect`, `MCP Adobe Mode 2 Apply`, `MCP Mode 2 Select Verified Fixture`.
+
+### Final selected-node proof (real Adobe XD)
+
+[**MRCAO run #38754779615 — SUCCESS**](https://github.com/caotiensinh/MCP_adobe/actions/runs/38754779615):
+
+```text
+MODE2_FIXTURE_CLEAN_NATIVE=PASS
+MODE2_EXPERIMENTAL_CONNECT_MENU_INVOKED_ONCE
+MODE2_EXPERIMENTAL_8766_CONNECTED=PASS
+MODE2_EXPERIMENTAL_SELECT_GUID_MENU_INVOKED_ONCE
+MODE2_FIXTURE_LIVE_UXP_BUILD=PASS
+MODE2_FIXTURE_PRESELECT_GRAPH=PASS
+MODE2_FIXTURE_SELECTION_GUID=130fdb64-c691-4374-ab46-66fd3f9e077c
+MODE2_FIXTURE_SELECTED_AND_INSPECTED=PASS
+MODE2_FIXTURE_NO_WRITE_QUEUE=PASS
+MODE2_NATIVE_FIXTURE_SELECT_AND_INSPECT=PASS
+MODE2_NATIVE_HASH_UNCHANGED_AFTER_SELECTION=PASS
+```
+
+This proves **one real XD native user-command selection of the exact known fixture with experimental UXP inspection on port 8766**, while document scenegraph remains at 33 nodes and all protected baseline SHA-256 values match. No fill Apply was performed on the Panda ear. This does **not** verify arbitrary region-to-node selection or complete production Mode 2.
+
+The reload, Revert, Revert confirmation and fixture-selection one-shot workflows were changed to **manual-dispatch-only** after evidence was collected. Durable on-machine markers separately prevent blind replay.
+
+**Remaining acceptance**: select a **new uniquely created test Rectangle** rather than the existing Panda component; execute guarded Fill → live color readback → native Undo → reopen persistence on the disposable document. Verify native file ownership/provenance (a copied XD root GUID alone is not proof). Photoshop and Illustrator region-based production editing, atomic preview provenance and complete user approval remain unverified. PR #32 stays OPEN; do not merge based only on this fixture test.
