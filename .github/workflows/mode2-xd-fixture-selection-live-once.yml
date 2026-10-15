@@ -71,9 +71,19 @@ jobs:
           if(-not $ready){throw 'MODE2_XD_PRODUCTION_NOT_CONNECTED'}
           Write-Host 'MODE2_FIXTURE_SOLE_DISPOSABLE_AND_8765=PASS'
           function Find-Menu([string]$menuId){
-            $m=$test[0].FindFirst($desc,(New-Object System.Windows.Automation.PropertyCondition($id,$menuId)))
-            if(-not $m){throw "MODE2_MENU_NOT_FOUND_$menuId"}
-            return $m
+            for($attempt=1;$attempt -le 28;$attempt++){
+              Start-Sleep -Milliseconds 450
+              $script:xd=@(Windows-XD)
+              $script:test=@($script:xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+              if($script:xd.Count -ne 1 -or $script:test.Count -ne 1){throw 'MODE2_WINDOW_CHANGED_DURING_UIA_PROBE'}
+              try{
+                $m=$script:test[0].FindFirst($desc,(New-Object System.Windows.Automation.PropertyCondition($id,$menuId)))
+              }catch{$m=$null}
+              if($m){Write-Host "MODE2_UIA_MENU_READY=$menuId ATTEMPT=$attempt";return $m}
+            }
+            $available=0
+            try{$available=$script:test[0].FindAll($desc,$cond).Count}catch{}
+            throw "MODE2_MENU_NOT_FOUND_$menuId UIA_DESCENDANTS=$available"
           }
           $file=Find-Menu 'AppMenu_File'
           $fx=$file.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
