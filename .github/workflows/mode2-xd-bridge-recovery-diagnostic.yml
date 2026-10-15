@@ -41,4 +41,16 @@ jobs:
           $xd=@($windows|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
           $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
           Write-Host "MODE2_XD_WINDOWS=$($xd.Count) DISPOSABLE=$($test.Count)"
+          foreach($file in @('mode2_fixture_connect_selected.txt','mode2_fixture_connect_errors.txt')){
+            $p=Join-Path $env:RUNNER_TEMP $file
+            Write-Host "MODE2_PREVIOUS_WATCH_LOG=$file EXISTS=$(Test-Path -LiteralPath $p)"
+            if(Test-Path -LiteralPath $p -PathType Leaf){
+              Get-Content -LiteralPath $p -Tail 35 | ForEach-Object {Write-Host "MODE2_PREVIOUS_WATCH_DETAIL=$_"}
+            }
+          }
+          $receipt=Join-Path $root 'mode2-disposable-native\mode2_fill_rect_guid_receipt.json'
+          if(Test-Path -LiteralPath $receipt -PathType Leaf){
+            $r=Get-Content -LiteralPath $receipt -Raw -Encoding UTF8 | ConvertFrom-Json
+            Write-Host "MODE2_NEW_RECT_RECEIPT_STATE=$($r.state) GUID=$($r.node_id)"
+          }
           Write-Host 'MODE2_DIAGNOSTIC_READ_ONLY=PASS'
