@@ -788,6 +788,53 @@ function connectCommand(selection, documentRoot) {
   renderStatus();
 }
 
+// This experiment selects only the already-attested Panda Right Ear fixture.
+// It is a user-invoked XD menu command, never a WebSocket-triggered edit.
+// Selecting is not permission to modify the Panda node or original document.
+const MODE2_SELECTION_FIXTURE = Object.freeze({
+  document_id: "98d6635b-3767-4254-b200-ec8442b69ad2",
+  node_id: "130fdb64-c691-4374-ab46-66fd3f9e077c",
+  name: "11 XD Panda Right Ear",
+  bounds: Object.freeze({left: 484, top: 166, right: 584, bottom: 280})
+});
+
+function selectMode2FixtureCommand(selection, documentRoot) {
+  const fixture = MODE2_SELECTION_FIXTURE;
+  if (!documentRoot || String(documentRoot.guid) !== fixture.document_id ||
+      !scenegraph.root || String(scenegraph.root.guid) !== fixture.document_id) {
+    throw new Error("MODE2_FIXTURE_DOCUMENT_NOT_EXACT");
+  }
+  if (pendingWrites.length !== 0) throw new Error("MODE2_FIXTURE_PENDING_QUEUE_NONEMPTY");
+  const node = scenegraph.getNodeByGUID(fixture.node_id);
+  if (!node || String(node.guid) !== fixture.node_id ||
+      String(node.name) !== fixture.name ||
+      !node.constructor || node.constructor.name !== "Ellipse" ||
+      node.visible === false || node.locked === true ||
+      !("fill" in node)) {
+    throw new Error("MODE2_FIXTURE_IDENTITY_OR_TYPE_MISMATCH");
+  }
+  const b = node.globalBounds, expected = fixture.bounds;
+  if (!b || ![b.x,b.y,b.width,b.height].every(Number.isFinite) ||
+      b.width <= 0 || b.height <= 0 ||
+      Math.abs(b.x - expected.left) > 0.01 ||
+      Math.abs(b.y - expected.top) > 0.01 ||
+      Math.abs(b.x + b.width - expected.right) > 0.01 ||
+      Math.abs(b.y + b.height - expected.bottom) > 0.01) {
+    throw new Error("MODE2_FIXTURE_BOUNDS_MISMATCH");
+  }
+  // Called directly from XD's explicit Plugins menu command.
+  // Adobe XD checks that this node is in the current edit context.
+  selection.items = [node];
+  const selected = selection.items;
+  if (!selected || selected.length !== 1 ||
+      String(selected[0].guid) !== fixture.node_id) {
+    throw new Error("MODE2_FIXTURE_SELECTION_NOT_CONFIRMED");
+  }
+  snapshot(selection, documentRoot);
+  renderStatus();
+  return {document_id: fixture.document_id, node_id: fixture.node_id, selected: true};
+}
+
 function applyPendingCommand(selection, documentRoot) {
   if (pendingWrites.length === 0) {
     snapshot(selection, documentRoot);
@@ -842,7 +889,8 @@ entrypoints.setup({
   },
   commands: {
     mcpAdobeConnect: connectCommand,
-    mcpAdobeApply: applyPendingCommand
+    mcpAdobeApply: applyPendingCommand,
+    mcpAdobeMode2SelectFixture: selectMode2FixtureCommand
   },
   panels: {
     mcpAdobeBridge: {
