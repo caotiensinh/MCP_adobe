@@ -14,8 +14,9 @@ assert.notEqual(prod.id, experiment.id);
 assert.equal(experiment.host.app, "XD");
 assert.equal(experiment.manifestVersion, 4);
 assert.equal(experiment.main, "main.js");
-assert.equal(experiment.entrypoints.length, 4);
+assert.equal(experiment.entrypoints.length, 5);
 assert.ok(experiment.entrypoints.some(x => x.id === "mcpAdobeMode2SelectFixture"));
+assert.ok(experiment.entrypoints.some(x => x.id === "mcpAdobeMode2SelectStagedRect"));
 assert.equal(experiment.entrypoints.every(x => !x.shortcut), true,
   "experimental plugin must not override production keyboard shortcuts");
 assert.match(prodSource, /BRIDGE_URL = "ws:\/\/127\.0\.0\.1:8765"/);
