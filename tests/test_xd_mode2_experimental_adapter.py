@@ -5,6 +5,7 @@ import copy
 import unittest
 
 from mcp_adobe.xd import XdAdapter
+from mcp_adobe.xd_mode2_experimental import ExperimentalXdMode2Adapter
 
 
 ARGS = {
@@ -47,7 +48,7 @@ class XdMode2AdapterTests(unittest.TestCase):
 
     def test_inspect_is_read_only_with_exact_arguments(self):
         bridge = FakeExperimentalBridge()
-        adapter = XdAdapter(bridge, experimental_mode2=True, writes_enabled=False)
+        adapter = ExperimentalXdMode2Adapter(bridge, writes_enabled=False)
         self.assertIn("xd.mode2.node.inspect", adapter.info().native_capabilities)
         result = adapter.execute("xd.mode2.node.inspect", ARGS)
         self.assertEqual(result["bridge_method"], "xd.mode2.node.inspect")
@@ -56,7 +57,7 @@ class XdMode2AdapterTests(unittest.TestCase):
 
     def test_fill_requires_explicit_opt_in_and_produces_approval_receipt(self):
         bridge = FakeExperimentalBridge()
-        adapter = XdAdapter(bridge, experimental_mode2=True)
+        adapter = ExperimentalXdMode2Adapter(bridge)
         result = adapter.execute("xd.queue.mode2_fill", FILL)
         self.assertEqual(result["bridge_method"], "xd.queue.mode2_fill")
         self.assertEqual(result["outcome"], "pending_user_approval")
@@ -66,7 +67,7 @@ class XdMode2AdapterTests(unittest.TestCase):
 
     def test_explicit_writes_disabled_even_when_experimental_opted_in(self):
         bridge = FakeExperimentalBridge()
-        adapter = XdAdapter(bridge, experimental_mode2=True, writes_enabled=False)
+        adapter = ExperimentalXdMode2Adapter(bridge, writes_enabled=False)
         with self.assertRaises(PermissionError):
             adapter.execute("xd.queue.mode2_fill", FILL)
         self.assertEqual(bridge.calls, [])
@@ -89,14 +90,14 @@ class XdMode2AdapterTests(unittest.TestCase):
         for change in cases:
             with self.subTest(change=change):
                 bridge = FakeExperimentalBridge()
-                adapter = XdAdapter(bridge, experimental_mode2=True)
+                adapter = ExperimentalXdMode2Adapter(bridge)
                 with self.assertRaises(ValueError):
                     adapter.execute("xd.queue.mode2_fill", {**FILL, **change})
                 self.assertEqual(bridge.calls, [])
 
     def test_inspect_cannot_sneak_in_write_parameters(self):
         bridge = FakeExperimentalBridge()
-        adapter = XdAdapter(bridge, experimental_mode2=True)
+        adapter = ExperimentalXdMode2Adapter(bridge)
         with self.assertRaises(ValueError):
             adapter.execute("xd.mode2.node.inspect", FILL)
         self.assertEqual(bridge.calls, [])
@@ -104,7 +105,7 @@ class XdMode2AdapterTests(unittest.TestCase):
     def test_write_timeout_must_be_unverified_not_auto_retried(self):
         from mcp_adobe.photoshop import OperationUnknownError
         bridge = FakeExperimentalBridge(timeout=True)
-        adapter = XdAdapter(bridge, experimental_mode2=True)
+        adapter = ExperimentalXdMode2Adapter(bridge)
         with self.assertRaises(OperationUnknownError):
             adapter.execute("xd.queue.mode2_fill", FILL)
         self.assertEqual(len(bridge.calls), 1)
