@@ -1,8 +1,5 @@
 name: Mode 2 XD revert dirty disposable to verified saved native
 on:
-  push:
-    branches: [feat/canvas-region-targeting]
-    paths: ['.github/workflows/mode2-xd-disposable-revert-once.yml']
   workflow_dispatch:
 permissions:
   contents: read
