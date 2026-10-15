@@ -1,0 +1,81 @@
+name: Mode 2 XD stage verified fixture selection command
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-fixture-selection-stage.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Replace only attested prior experimental staging; preserve both production plugin and native files
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($rel in @('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd','mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd')){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $sha){throw 'MODE2_NATIVE_BASELINE_CHANGED'}
+          }
+          $develop=Join-Path $env:LOCALAPPDATA 'Packages\Adobe.XD_pc75e8sa7ep4e\LocalState\develop'
+          $prod=Join-Path $develop 'MCPAdobeBridge'
+          $exp=Join-Path $develop 'MCPAdobeMode2Experiment'
+          $prodMain=Join-Path $prod 'main.js'
+          $prodManifest=Join-Path $prod 'manifest.json'
+          $expMain=Join-Path $exp 'main.js'
+          $expManifest=Join-Path $exp 'manifest.json'
+          foreach($p in @($prodMain,$prodManifest,$expMain,$expManifest)){
+            if(!(Test-Path -LiteralPath $p -PathType Leaf)){throw 'MODE2_PLUGIN_NOT_STAGED'}
+          }
+          if((Get-Content -LiteralPath $prodManifest -Raw -Encoding UTF8 | ConvertFrom-Json).id -ne 'MCPADB01'){throw 'MODE2_PRODUCTION_ID_MISMATCH'}
+          if((Get-Content -LiteralPath $expManifest -Raw -Encoding UTF8 | ConvertFrom-Json).id -ne 'MCPADM2E'){throw 'MODE2_EXPERIMENT_ID_MISMATCH'}
+          $prodHashes=@{}
+          foreach($p in @($prodMain,$prodManifest)){$prodHashes[$p]=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash}
+          $git=(Get-Command git -ErrorAction Stop).Source
+          $oldMain=(& $git hash-object -- $expMain).Trim()
+          $oldManifest=(& $git hash-object -- $expManifest).Trim()
+          Write-Host "MODE2_STAGED_OLD_GITBLOB_MAIN=$oldMain MANIFEST=$oldManifest"
+          $expectedOldMain='6f083cf6dc53ece9b2b48e0c040378db0e7a2fcf'
+          $expectedOldManifest='cbefee7cafc08d264f55c2ae75f3e46adc8b9c96'
+          $newMain=Join-Path $PWD 'experimental\mode2-xd-uxp\main.js'
+          $newManifest=Join-Path $PWD 'experimental\mode2-xd-uxp\manifest.json'
+          $newMainBlob=(& $git hash-object -- $newMain).Trim()
+          $newManifestBlob=(& $git hash-object -- $newManifest).Trim()
+          if($newMainBlob -ne '33f99aff6ab0467cab90da7a9fb4bf0838dcc955' -or
+             $newManifestBlob -ne '74d0f81a4a26d71e3bb22401e455a58ab40635d3'){
+            throw 'MODE2_FIXTURE_SOURCE_UNEXPECTED'
+          }
+          if($oldMain -eq $newMainBlob -and $oldManifest -eq $newManifestBlob){
+            Write-Host 'MODE2_FIXTURE_NEW_PLUGIN_ALREADY_STAGED=PASS'
+          }elseif($oldMain -eq $expectedOldMain -and $oldManifest -eq $expectedOldManifest){
+            $backup=Join-Path $root 'mode2-disposable-native\fixture-selection-plugin-stage-backup'
+            if(Test-Path -LiteralPath $backup){throw 'MODE2_BACKUP_ALREADY_PRESENT_NO_REPLAY'}
+            New-Item -ItemType Directory -Path $backup -ErrorAction Stop | Out-Null
+            Copy-Item -LiteralPath $expMain -Destination (Join-Path $backup 'main.js') -ErrorAction Stop
+            Copy-Item -LiteralPath $expManifest -Destination (Join-Path $backup 'manifest.json') -ErrorAction Stop
+            Copy-Item -LiteralPath $newMain -Destination $expMain -ErrorAction Stop
+            Copy-Item -LiteralPath $newManifest -Destination $expManifest -ErrorAction Stop
+            if((& $git hash-object -- $expMain).Trim() -ne $newMainBlob -or
+               (& $git hash-object -- $expManifest).Trim() -ne $newManifestBlob){
+              throw 'MODE2_STAGE_NEW_FILES_NOT_EXACT'
+            }
+            Write-Host 'MODE2_FIXTURE_EXPERIMENTAL_STAGE_UPDATED=PASS'
+          }else{
+            throw 'MODE2_OLD_EXPERIMENTAL_PLUGIN_UNEXPECTED_NO_OVERWRITE'
+          }
+          foreach($p in @($prodMain,$prodManifest)){
+            if((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash -ne $prodHashes[$p]){throw 'MODE2_PRODUCTION_PLUGIN_CHANGED'}
+          }
+          foreach($rel in @('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd','mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd')){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $sha){throw 'MODE2_NATIVE_CHANGED_AFTER_STAGE'}
+          }
+          Write-Host 'MODE2_PRODUCTION_SOURCE_AND_NATIVE_PRESERVED=PASS'
+          Write-Host 'MODE2_RELOAD_PERFORMED=False'
