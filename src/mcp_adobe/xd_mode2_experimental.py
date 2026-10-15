@@ -73,6 +73,8 @@ class ExperimentalXdMode2Adapter(XdAdapter):
         if binding is None:
             return super().execute(capability, arguments)
         validate_mode2_arguments(capability, arguments)
+        if binding.risk is not RiskClass.READ and not self._writes_enabled:
+            raise PermissionError("experimental Mode 2 writes are disabled")
         # The production XD plugin implements only the known-good API; an
         # opt-in Python object alone is NOT proof the experimental UXP is loaded.
         # This read-only host attestation must pass before *any* Mode 2 request.
@@ -85,8 +87,6 @@ class ExperimentalXdMode2Adapter(XdAdapter):
                 and (type(health.get("pending_count")) is not int
                      or health["pending_count"] != 0)):
             raise RuntimeError("Mode 2 requires empty pending XD queue")
-        if binding.risk is not RiskClass.READ and not self._writes_enabled:
-            raise PermissionError("experimental Mode 2 writes are disabled")
         try:
             result = self._client.call_tool(binding.bridge_method, dict(arguments))
         except TimeoutError as exc:
