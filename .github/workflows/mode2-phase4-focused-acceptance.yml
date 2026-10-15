@@ -9,6 +9,9 @@ on:
       - 'src/mcp_adobe/region_targeting.py'
       - 'src/mcp_adobe/xd_scenegraph_targeting.py'
       - 'tests/test_mode2_*.py'
+      - 'tests/test_xd_mode2_experimental_adapter.py'
+      - 'src/mcp_adobe/xd.py'
+      - 'tests/xd_mode2_experimental_runtime.cjs'
       - 'tests/test_region_targeting.py'
       - 'tests/test_region_annotation_ui.py'
       - 'tests/test_xd_scenegraph_targeting.py'
@@ -37,6 +40,7 @@ jobs:
             tests.test_mode2_edit_simulation \
             tests.test_mode2_xd_transaction \
             tests.test_mode2_native_provenance \
+            tests.test_xd_mode2_experimental_adapter \
             tests.test_region_targeting \
             tests.test_region_annotation_ui \
             tests.test_xd_scenegraph_targeting
@@ -45,6 +49,7 @@ jobs:
           node --check experimental/mode2-xd-uxp/main.js
           node --check adobe-xd-plugin/main.js
           node tests/xd_mode2_guarded_plugin_contract.cjs
+          node tests/xd_mode2_experimental_runtime.cjs
       - name: Explicitly retain release boundary (unit PASS is not production E2E)
         run: |
           echo 'MODE2_FOCUSED_CONTRACTS=PASS'
