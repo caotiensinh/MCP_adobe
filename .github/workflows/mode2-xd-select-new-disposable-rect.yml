@@ -138,7 +138,12 @@ jobs:
             $stageReady=$false
             for($i=1;$i -le 70;$i++){
               Start-Sleep -Milliseconds 350
-              if($child.HasExited){throw 'MODE2_SELECTION_STAGING_BRIDGE_EXITED'}
+              if($child.HasExited){
+                Write-Host "MODE2_STAGING_BRIDGE_EXIT=$($child.ExitCode)"
+                if(Test-Path -LiteralPath $stdout){Get-Content -LiteralPath $stdout -Tail 50|ForEach-Object {Write-Host "MODE2_STAGE_STDOUT=$_"}}
+                if(Test-Path -LiteralPath $stderr){Get-Content -LiteralPath $stderr -Tail 50|ForEach-Object {Write-Host "MODE2_STAGE_STDERR=$_"}}
+                throw 'MODE2_SELECTION_STAGING_BRIDGE_EXITED_NO_NATIVE_SELECTION'
+              }
               if((Test-Path -LiteralPath $stdout) -and (Select-String -LiteralPath $stdout -Pattern '^MODE2_STAGED_DISPOSABLE_RECT_AWAITING_MENU=PASS$' -Quiet)){$stageReady=$true;break}
             }
             if(-not $stageReady){throw 'MODE2_SELECTION_STAGE_NOT_ATTESTED_NO_INVOKE'}
