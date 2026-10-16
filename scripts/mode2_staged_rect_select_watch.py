@@ -110,6 +110,21 @@ def main():
             raise RuntimeError("MODE2_SELECTION_MODIFIED_SCENE")
         if bridge.call_tool("xd.health",{}).get("pending_count")!=0:
             raise RuntimeError("MODE2_SELECTION_LEFT_PENDING_QUEUE")
+        # This handler was not available in the previous installed UXP runtime.
+        # The Adobe host must prove the actual saved test Rectangle's solid fill.
+        fill = bridge.call_tool("xd.mode2.node.fill.inspect", {
+            "document_id": DOC, "node_id": guid, "name": NAME, "bounds": bounds
+        })
+        if (fill.get("document_id") != DOC or
+            fill.get("node_id") != guid or
+            fill.get("name") != NAME or
+            fill.get("bounds") != bounds or
+            fill.get("fill") != "#445566" or
+            fill.get("fill_type") != "Color" or
+            fill.get("selected_count") != 1 or
+            fill.get("pending_count") != 0):
+            raise RuntimeError("MODE2_SAVED_RECT_INITIAL_NATIVE_FILL_UNVERIFIED")
+        print("MODE2_SAVED_RECT_INITIAL_FILL_READBACK=PASS",flush=True)
         print("MODE2_NEW_RECT_EXPLICIT_SELECT_AND_INSPECT=PASS",flush=True)
         print("MODE2_NEW_RECT_NO_FILL_ATTEMPTED=True",flush=True)
     finally:bridge.close()
