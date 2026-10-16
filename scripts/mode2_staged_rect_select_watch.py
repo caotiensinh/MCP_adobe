@@ -14,6 +14,32 @@ def walk(nodes):
         yield node
         yield from walk(node.get("children",[]))
 
+def classify_ticket_status(value, guid):
+    """Return the only safe next action without changing Adobe XD state.
+
+    Live active tickets are reusable for the same GUID only. Expired tickets
+    are evicted lazily by the experimental UXP's read-only stage handler.
+    """
+    if not isinstance(value, dict):
+        raise RuntimeError("MODE2_SELECTION_TICKET_STATUS_UNVERIFIED")
+    state = value.get("status")
+    if state == "none":
+        if value.get("node_id") is not None:
+            raise RuntimeError("MODE2_SELECTION_TICKET_NONE_HAS_NODE")
+        return "stage_new"
+    if state == "expired":
+        # Do not reuse an expired one; bridge stage can evict it safely.
+        return "stage_new"
+    if state == "awaiting_user_menu":
+        if (value.get("node_id") != guid or value.get("document_id") != DOC):
+            raise RuntimeError("MODE2_SELECTION_TICKET_TARGET_CONFLICT")
+        remaining = value.get("expires_in_seconds")
+        if type(remaining) is not int or remaining < 25 or remaining > 90:
+            raise RuntimeError("MODE2_SELECTION_TICKET_TOO_SHORT_OR_INVALID")
+        return "use_existing"
+    raise RuntimeError("MODE2_SELECTION_TICKET_UNKNOWN_STATE")
+
+
 def main():
     ap=argparse.ArgumentParser()
     ap.add_argument("--wait-seconds",type=int,default=85)
@@ -49,9 +75,17 @@ def main():
         print("MODE2_NEW_RECT_LIVE_UID="+guid,flush=True)
         prepare={"document_id":DOC,"node_id":guid,"name":NAME,
                  "isolated_test_copy":True,"bounds":bounds}
-        staged=bridge.call_tool("xd.mode2.selection.stage_disposable",prepare)
-        if staged.get("status")!="awaiting_user_menu" or staged.get("node_id")!=guid:
-            raise RuntimeError("MODE2_NEW_RECT_STAGE_UNVERIFIED")
+        status_before=bridge.call_tool("xd.mode2.selection.status",{})
+        action=classify_ticket_status(status_before,guid)
+        print("MODE2_SELECTION_TICKET_PRECHECK="+str(status_before.get("status"))+
+              " ACTION="+action,flush=True)
+        if action=="stage_new":
+            staged=bridge.call_tool("xd.mode2.selection.stage_disposable",prepare)
+            if staged.get("status")!="awaiting_user_menu" or staged.get("node_id")!=guid:
+                raise RuntimeError("MODE2_NEW_RECT_STAGE_UNVERIFIED")
+        after_stage=bridge.call_tool("xd.mode2.selection.status",{})
+        if classify_ticket_status(after_stage,guid)!="use_existing":
+            raise RuntimeError("MODE2_NEW_RECT_STAGED_TICKET_NOT_ACTIVE")
         print("MODE2_STAGED_DISPOSABLE_RECT_AWAITING_MENU=PASS",flush=True)
         while time.monotonic()<deadline:
             selected=bridge.call_tool("xd.selection.get",{}).get("items",[])
