@@ -1,0 +1,55 @@
+name: Mode 2 XD unexpected unsaved host exit forensic read-only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-unsaved-host-exit-forensics.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Inspect relevant XD crashes in Windows event log and user CrashDumps without reopening app
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_DESKTOP'}
+          Write-Host "MODE2_FORENSIC_LOCAL_NOW=$((Get-Date).ToString('o'))"
+          foreach($log in @('Application','Microsoft-Windows-AppModel-Runtime/Admin')){
+            try{
+              $events=@(Get-WinEvent -FilterHashtable @{LogName=$log;StartTime=(Get-Date).AddHours(-2)} -MaxEvents 250 -ErrorAction Stop |
+                Where-Object {
+                  $_.ProviderName -match 'Application Error|Windows Error Reporting|Application Hang|AppModel|Runtime' -or
+                  $_.Message -match 'XD.exe|Adobe.XD'
+                } | Select-Object -First 32)
+              Write-Host "MODE2_FORENSIC_LOG=$log CANDIDATES=$($events.Count)"
+              foreach($ev in $events) {
+                $summary=($ev.Message -replace '[\r\n]+',' ' -replace '\s+',' ')
+                if($summary.Length -gt 450){$summary=$summary.Substring(0,450)}
+                Write-Host "MODE2_FORENSIC_EVENT_TIME=$($ev.TimeCreated.ToString('o')) ID=$($ev.Id) PROVIDER=$($ev.ProviderName) DETAIL=$summary"
+              }
+            }catch{
+              Write-Host "MODE2_FORENSIC_LOG_UNAVAILABLE=$log ERROR=$($_.Exception.GetType().Name)"
+            }
+          }
+          $dumpRoot=Join-Path $env:LOCALAPPDATA 'CrashDumps'
+          if(Test-Path -LiteralPath $dumpRoot -PathType Container){
+            foreach($file in @(Get-ChildItem -LiteralPath $dumpRoot -File -ErrorAction SilentlyContinue |
+                Where-Object {$_.Name -match '^XD\.exe' -or $_.Name -match 'Adobe.*XD'} |
+                Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 8)){
+              Write-Host "MODE2_FORENSIC_DUMP_METADATA=$($file.Name) BYTES=$($file.Length) MODIFIED=$($file.LastWriteTimeUtc.ToString('o'))"
+            }
+          }
+          Write-Host "MODE2_XD_PROCESS_COUNT=@((Get-Process -Name XD -ErrorAction SilentlyContinue)).Count"
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $baseline='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($rel in @('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd')){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $baseline){throw 'MODE2_ORIGINAL_HASH_CHANGED'}
+          }
+          Write-Host 'MODE2_FORENSIC_ORIGINALS_PROTECTED=PASS'
+          Write-Host 'MODE2_FORENSIC_NO_GUI_CHANGE_OR_REOPEN=PASS'
