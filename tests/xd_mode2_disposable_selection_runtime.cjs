@@ -57,6 +57,10 @@ const args={
   bounds:{left:820,top:500,right:856,bottom:528}
 };
 (async()=>{
+  let ticketStatus=await call("xd.mode2.selection.status");
+  assert.equal(ticketStatus.ok,true);
+  assert.equal(ticketStatus.result.status,"none");
+  assert.equal(selection.items.length,0);
   const wrong=[
     {...args,document_id:"unknown"},
     {...args,node_id:"0".repeat(36)},
@@ -75,6 +79,10 @@ const args={
   let response=await call("xd.mode2.selection.stage_disposable",args);
   assert.equal(response.ok,true);
   assert.equal(response.result.status,"awaiting_user_menu");
+  ticketStatus=await call("xd.mode2.selection.status");
+  assert.equal(ticketStatus.result.status,"awaiting_user_menu");
+  assert.equal(ticketStatus.result.node_id,GUID);
+  assert.equal(ticketStatus.result.expires_in_seconds,90);
   assert.equal(selection.items.length,0,"WebSocket stage must never select");
   response=await call("xd.mode2.selection.stage_disposable",args);
   assert.equal(response.ok,false,"already staged must reject");
@@ -110,6 +118,10 @@ const args={
   response=await call("xd.mode2.selection.stage_disposable",args);
   assert.equal(response.ok,false,"unexpired staging remains immutable");
   now+=90001;
+  ticketStatus=await call("xd.mode2.selection.status");
+  assert.equal(ticketStatus.result.status,"expired");
+  assert.equal(ticketStatus.result.expires_in_seconds,0);
+  assert.equal(selection.items.length,1);
   response=await call("xd.mode2.selection.stage_disposable",args);
   assert.equal(response.ok,true,"expired staging should not block forever");
   assert.equal(selection.items.length,1);
@@ -118,5 +130,7 @@ const args={
   assert.equal(renewed.node_id,GUID);
   assert.equal(shape.fill,"#445566");
   assert.equal(editCalls,0,"expired-ticket replacement must not edit native node");
+  ticketStatus=await call("xd.mode2.selection.status");
+  assert.equal(ticketStatus.result.status,"none");
   console.log("MODE2_STAGED_DISPOSABLE_GUID_SELECTION_RUNTIME_PASS");
 })().catch(e=>{console.error(e);process.exitCode=1});
