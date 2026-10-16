@@ -1,0 +1,51 @@
+name: PANDA XD reconcile prior filename write and click Save once
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-confirm-and-click-20261011.yml"
+      - "scripts/panda_xd_confirm_and_click_save_20261011.ps1"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  save:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify WM_GETTEXT from PickerHost and commit one native Save button click
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $src=Join-Path $PWD 'scripts/panda_xd_confirm_and_click_save_20261011.ps1'
+          $tokens=$null;$parseErrors=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($src,[ref]$tokens,[ref]$parseErrors)
+          if(@($parseErrors).Count -gt 0){
+            foreach($e in $parseErrors){
+              Write-Host "XD_SAVE_PARSE_ERROR line=$($e.Extent.StartLineNumber) col=$($e.Extent.StartColumnNumber) message=$($e.Message)"
+            }
+            throw 'XD_SAVE_PARSE_FAILURE_NO_WRITE'
+          }
+          Write-Host 'XD_SAVE_SCRIPT_PARSER=PASS'
+          powershell -NoProfile -ExecutionPolicy Bypass -File $src -RunId 38132321143
+          if($LASTEXITCODE -ne 0){throw 'XD_SAVE_VERIFICATION_FAILED_NO_BLIND_RETRY'}
+      - name: Capture real Adobe XD document after native Save
+        if: always()
+        shell: powershell
+        run: |
+          $p=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38132321143.xd'
+          if(Test-Path -LiteralPath $p -PathType Leaf){
+            Copy-Item -LiteralPath $p -Destination (Join-Path $PWD 'xd_original.xd')
+            Write-Host "XD_SOURCE_FILE_BYTES=$((Get-Item -LiteralPath $p).Length)"
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-xd-natively-saved-document
+          path: xd_original.xd
+          if-no-files-found: ignore
+          retention-days: 14

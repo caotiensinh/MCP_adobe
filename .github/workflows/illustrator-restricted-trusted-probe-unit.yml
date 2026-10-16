@@ -1,0 +1,19 @@
+name: Illustrator restricted trusted CEP probe unit
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - "src/mcp_adobe/illustrator_trusted_cep_probe.py"
+      - "tests/test_illustrator_trusted_cep_probe.py"
+      - ".github/workflows/illustrator-restricted-trusted-probe-unit.yml"
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --python 3.12
+      - run: uv run --with pytest pytest -q tests/test_illustrator_trusted_cep_probe.py

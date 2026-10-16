@@ -1,0 +1,67 @@
+name: Kung Fu Panda 4 Photoshop live checkpoint 3 red shapes
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-ps-resume-3-shapes.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  extend:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 9
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify original PSD SHA, true live layer bounds, and separate writable checkpoint
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'PS_THREE_WRONG_MACHINE'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'PS_THREE_WRONG_SESSION'}
+          $s=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_KFP4_Red_PS_38146001775.psd'
+          if(-not(Test-Path -LiteralPath $s -PathType Leaf)){throw 'PS_THREE_ORIGINAL_MISSING'}
+          $expected='4062233B7688583B1ED185C23FD38F22D0CB1E578F24E00DE5FE95CE1AE41CDF'
+          if((Get-FileHash -LiteralPath $s -Algorithm SHA256).Hash -ne $expected){throw 'PS_THREE_SOURCE_CHECKSUM_DRIFT'}
+          Write-Host "RED_PS_SOURCE_SHA=PASS bytes=$((Get-Item -LiteralPath $s).Length)"
+          $ps=@(Get-Process -Name Photoshop -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+          if($ps.Count -ne 1){throw 'PS_THREE_INTERACTIVE_APP_NOT_UNIQUE'}
+          Write-Host "RED_PS_OWNER=PASS pid=$($ps[0].Id)"
+      - name: Draw actual color bands 2 and 3 via MCP with readback and save after each
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run --python 3.12 python -m py_compile scripts/panda_red_photoshop_resume_3shapes.py
+          if($LASTEXITCODE -ne 0){throw 'PS_THREE_SCRIPT_SYNTAX_FAIL'}
+          uv run --python 3.12 python scripts/panda_red_photoshop_resume_3shapes.py
+          if($LASTEXITCODE -ne 0){throw 'PS_THREE_REAL_E2E_FAIL_INSPECT_PERSISTED_STATE'}
+      - name: Copy real result to job artifact without altering source
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $dir=Join-Path $PWD 'red_ps_three'
+          New-Item -ItemType Directory -Path $dir -Force|Out-Null
+          foreach($extension in @('psd','png')){
+            $src=Join-Path $env:USERPROFILE "Documents\MCPAdobe\MCP_KFP4_Red_PS_$($env:GITHUB_RUN_ID)_3shapes.$extension"
+            if(Test-Path -LiteralPath $src -PathType Leaf){
+              $dest=Join-Path $dir "panda_red_3_independent_shapes.$extension"
+              Copy-Item -LiteralPath $src -Destination $dest
+              $hash=(Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+              if((Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash -ne $hash){throw 'PS_THREE_COPY_HASH_FAIL'}
+              Write-Host "RED_PS_THREE_REAL_ARTIFACT=$extension bytes=$((Get-Item $src).Length) sha256=$hash"
+            }else{Write-Host "RED_PS_THREE_NOT_PRODUCED=$extension"}
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kung-fu-red-photoshop-3-native-shapes
+          path: red_ps_three/*
+          if-no-files-found: warn
+          retention-days: 14

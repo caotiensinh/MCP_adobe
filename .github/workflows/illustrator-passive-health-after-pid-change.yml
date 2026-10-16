@@ -1,0 +1,38 @@
+name: Illustrator passive health after GUI PID change
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-passive-health-after-pid-change.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Query only passive host health without evalScript
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":False,"timeout":5}})
+                  print("PASSIVE_TOOL_ERROR="+str(r.is_error),flush=True)
+                  p=r.structured_content
+                  if isinstance(p,dict):
+                      d=p.get("result",{}).get("connection",{}).get("data",{})
+                      print("PASSIVE_HEALTH="+json.dumps({"ready":d.get("ready"),"blockedAt":d.get("blockedAt"),"blocking":d.get("blocking"),"panel":d.get("layers",{}).get("panel"),"document":d.get("layers",{}).get("document")},default=str)[:5000],flush=True)
+                  else:
+                      print("PASSIVE_HEALTH_UNAVAILABLE",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content passive_health.py -Encoding UTF8
+          uv run python passive_health.py

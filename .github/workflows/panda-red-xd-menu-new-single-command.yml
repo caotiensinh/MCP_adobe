@@ -1,0 +1,90 @@
+name: Panda XD invoke exact native File New menu item one time
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-menu-new-single-command.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  new:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Invoke exactly verified XD File New menu element once and check real draft
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_NEW_MENU_WRONG_DESKTOP'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;using System.Runtime.InteropServices;using System.Text;
+          public class XdNewMenu {
+            public delegate bool EnumProc(IntPtr hwnd,IntPtr ignored);
+            [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback,IntPtr ignored);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd,out uint pid);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd,StringBuilder str,int max);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+          }
+          '@
+          $base=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $source=Join-Path $base 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $expected){throw 'XD_NEW_MENU_SOURCE_SHA_DIVERGED'}
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1})
+          if($xd.Count -ne 1){throw 'XD_NEW_MENU_PROCESS_NOT_UNIQUE'}
+          $pickers=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1})
+          if($pickers.Count -gt 0){throw 'XD_NEW_MENU_MODAL_ACTIVE'}
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $windows=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $original=@($windows|Where-Object {[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+          $draft=@($windows|Where-Object {[string]$_.Current.Name -match '^Untitled.*Adobe XD$'})
+          Write-Host "XD_NEW_MENU_PREFLIGHT original=$($original.Count) draft=$($draft.Count) picker=$($pickers.Count)"
+          if($original.Count -ne 1 -or $draft.Count -gt 0){throw 'XD_NEW_MENU_UNEXPECTED_ACTIVE_DOCUMENT'}
+          $xdPid=[uint32]$xd[0].Id
+          $popups=New-Object System.Collections.Generic.List[System.IntPtr]
+          $callback=[XdNewMenu+EnumProc]{
+            param([IntPtr]$hwnd,[IntPtr]$ignored)
+            $p=[uint32]0
+            [void][XdNewMenu]::GetWindowThreadProcessId($hwnd,[ref]$p)
+            if($p -ne $xdPid -or -not [XdNewMenu]::IsWindowVisible($hwnd)){return $true}
+            $cls=New-Object System.Text.StringBuilder(100)
+            [void][XdNewMenu]::GetClassName($hwnd,$cls,100)
+            if($cls.ToString() -eq 'Xaml_WindowedPopupClass'){$popups.Add($hwnd)}
+            return $true
+          }
+          [void][XdNewMenu]::EnumWindows($callback,[IntPtr]::Zero)
+          $matches=@()
+          foreach($hwnd in $popups){
+            $popup=[System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+            $cond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'AppMenu_CreateNew')
+            foreach($item in $popup.FindAll([System.Windows.Automation.TreeScope]::Descendants,$cond)){
+              if([string]$item.Current.Name -eq 'New' -and $item.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and $item.Current.IsEnabled){
+                $matches+=,$item
+              }
+            }
+          }
+          Write-Host "XD_NEW_MENU_EXACT_COMMAND_COUNT=$($matches.Count)"
+          if($matches.Count -ne 1){throw 'XD_NEW_MENU_EXACT_COMMAND_NOT_UNIQUE_NO_INPUT'}
+          $invoke=$matches[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+          try{$invoke.Invoke();Write-Host 'XD_NEW_MENU_COMMAND_INVOKED_ONCE=PASS'}catch{throw "XD_NEW_MENU_OUTCOME_UNKNOWN_NO_REPLAY $($_.Exception.GetType().Name)"}
+          $deadline=(Get-Date).AddSeconds(60)
+          $found=@()
+          do{
+            Start-Sleep -Milliseconds 650
+            $tops=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+            $found=@($tops|Where-Object {[string]$_.Current.Name -match '^Untitled.*Adobe XD$'})
+            if($found.Count -gt 1){throw 'XD_NEW_MENU_MULTIPLE_DRAFTS'}
+            if($found.Count -eq 1){break}
+          }until((Get-Date)-ge $deadline)
+          foreach($w in $tops){
+            $name=[string]$w.Current.Name
+            if($name -match 'Adobe XD|Untitled|New Document|Create'){Write-Host "XD_NEW_MENU_TOP_READBACK title=$name class=$($w.Current.ClassName) pid=$($w.Current.ProcessId)"}
+          }
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $expected){throw 'XD_NEW_MENU_SOURCE_MODIFIED'}
+          if($found.Count -ne 1){throw 'XD_NEW_MENU_NO_NEW_DRAFT_VISIBLE_NO_REPLAY'}
+          Write-Host "XD_NEW_MENU_REAL_UNTITLED=PASS title=$($found[0].Current.Name) source_unchanged=1"

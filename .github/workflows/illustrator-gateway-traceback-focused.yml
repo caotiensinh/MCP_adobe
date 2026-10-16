@@ -1,0 +1,40 @@
+name: Illustrator gateway traceback focused
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-gateway-traceback-focused.yml"]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Read-only process endpoint and recent logs
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          Write-Output "RUNNER_SESSION=$([Diagnostics.Process]::GetCurrentProcess().SessionId)"
+          foreach($port in @(8787,8081)){
+            foreach($conn in @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)){
+              $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$($conn.OwningProcess)" -ErrorAction SilentlyContinue
+              Write-Output "LISTENER port=$port owner=$($owner.Name) pid=$($conn.OwningProcess) session=$($owner.SessionId)"
+            }
+            foreach($conn in @(Get-NetTCPConnection -State Established -LocalPort $port -ErrorAction SilentlyContinue)){
+              Write-Output "ESTABLISHED port=$port pid=$($conn.OwningProcess) remote=$($conn.RemotePort)"
+            }
+          }
+          foreach($p in @(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'")){
+            Write-Output "ILLUSTRATOR pid=$($p.ProcessId) session=$($p.SessionId)"
+          }
+          $log=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\logs\local-host.log'
+          if(Test-Path -LiteralPath $log){
+            Write-Output "GATEWAY_LOG_LAST_WRITE=$((Get-Item $log).LastWriteTime.ToString('o'))"
+            foreach($line in @(Get-Content $log -Tail 300 -ErrorAction SilentlyContinue)){
+              $safe=[string]$line
+              $safe=$safe -replace '(?i)(token|password|secret|authorization|api[_-]?key)\s*[:=]\s*[^\s,}]+','$1=[REDACTED]'
+              if($safe.Length -gt 500){$safe=$safe.Substring(0,500)}
+              if($safe -match 'error|exception|timeout|host|prewarm|restart|port|reconnect|traceback|fail|illustrator|creative_read|creative.health'){Write-Output "GATEWAY_TAIL $safe"}
+            }
+          }
+          Write-Output 'LAYER_DIAGNOSTIC=PASS'

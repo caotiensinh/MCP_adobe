@@ -1,0 +1,77 @@
+name: XD read-only bridge and gateway failure diagnosis
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - '.github/workflows/panda-xd-readonly-bridge-diagnosis.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Observe actual XD processes, listener ownership and recorded source
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_DIAG_WRONG_HOST'}
+          $session=[System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          Write-Host "XD_DIAG_SESSION=$session"
+          if($session -ne 1){throw 'XD_DIAG_NOT_IN_DESKTOP'}
+          $p=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          if(Test-Path -LiteralPath $p){
+            $sha=(Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash
+            Write-Host "XD_DIAG_NATIVE_SOURCE_HASH=$sha bytes=$((Get-Item $p).Length)"
+          }
+          foreach($name in @('XD','ApplicationFrameHost','PickerHost')){
+            foreach($proc in @(Get-Process -Name $name -ErrorAction SilentlyContinue)){
+              Write-Host "XD_DIAG_PROCESS name=$name pid=$($proc.Id) session=$($proc.SessionId) title=$($proc.MainWindowTitle) hwnd=$($proc.MainWindowHandle)"
+            }
+          }
+          foreach($port in @(8787,8765,8081)){
+            $listeners=@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+            $connections=@(Get-NetTCPConnection -LocalPort $port -State Established -ErrorAction SilentlyContinue)
+            Write-Host "XD_DIAG_TCP port=$port listening=$($listeners.Count) established=$($connections.Count)"
+            foreach($l in $listeners){
+              $proc=Get-CimInstance Win32_Process -Filter "ProcessId=$($l.OwningProcess)" -ErrorAction SilentlyContinue
+              Write-Host "XD_DIAG_PORT_OWNER port=$port pid=$($l.OwningProcess) executable=$($proc.ExecutablePath) command=$($proc.CommandLine)"
+            }
+          }
+      - name: Inspect raw read-only gateway errors, no writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'XD_DIAG_ENV_SYNC_FAIL'}
+          @'
+          import asyncio,json,traceback
+          from mcp import Client
+          async def main():
+              try:
+                  async with Client("http://127.0.0.1:8787/mcp") as c:
+                      for capability in ("creative.health","creative.scenegraph.list"):
+                          try:
+                              r=await c.call_tool("creative_read",{"application":"xd","capability":capability,"arguments":{}})
+                              print("XD_DIAG_RAW="+json.dumps({"capability":capability,"is_error":r.is_error,
+                                  "structured_content":r.structured_content,"content":[str(t)[:1500] for t in r.content]},ensure_ascii=False,default=str)[:12000],flush=True)
+                          except Exception as e:
+                              print("XD_DIAG_CAP_EXCEPTION="+json.dumps({"cap":capability,
+                                   "class":type(e).__name__,"text":str(e)[:2500]}),flush=True)
+              except Exception as e:
+                  print("XD_DIAG_SESSION_EXCEPTION="+json.dumps({"class":type(e).__name__,
+                       "text":str(e)[:2500]}),flush=True)
+              print("XD_DIAG_READ_ONLY_DONE=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath xd_gateway_readonly_diagnostic.py -Encoding UTF8
+          uv run python xd_gateway_readonly_diagnostic.py
+          if($LASTEXITCODE -ne 0){throw 'XD_DIAG_PYTHON_FAILED'}

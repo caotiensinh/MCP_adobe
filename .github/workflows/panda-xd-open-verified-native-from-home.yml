@@ -1,0 +1,78 @@
+name: Panda XD open verified native document once from already active home
+# 2026-10-13 Mode 2 read-only verified document reopen after launch 38417985887.
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-xd-open-verified-native-from-home.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  native-open:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Invoke OS file association ONCE only after verifying unique XD home and native SHA
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'PANDA_XD_OPEN_WRONG_DESKTOP'}
+          $source=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if(-not(Test-Path -LiteralPath $source -PathType Leaf) -or
+             (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $expected){
+            throw 'PANDA_XD_OPEN_NATIVE_SOURCE_NOT_TRUSTED'
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          function Get-Tops {
+            $root=[System.Windows.Automation.AutomationElement]::RootElement
+            return $root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          }
+          $top=Get-Tops
+          $xdHomeWindows=@();$document=@();$other=@()
+          foreach($w in $top){
+            $title=[string]$w.Current.Name
+            if($title -eq 'Adobe XD'){$xdHomeWindows+=,$w}
+            elseif($title -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'){$document+=,$w}
+            elseif($title -match 'Adobe XD$'){$other+=,$w}
+          }
+          Write-Host "PANDA_XD_OPEN_PREFLIGHT home=$($xdHomeWindows.Count) requestedDoc=$($document.Count) otherDocs=$($other.Count)"
+          if($other.Count -gt 0 -or $document.Count -gt 1){throw 'PANDA_XD_OPEN_OTHER_DOCUMENT_UNSAFE'}
+          $socket=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          $pickers=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})
+          if($pickers.Count -gt 0){throw 'PANDA_XD_OPEN_NATIVE_PICKER_ACTIVE_REFUSE'}
+          if($document.Count -eq 0){
+            if($xdHomeWindows.Count -ne 1 -or $socket.Count -ne 0){
+              throw 'PANDA_XD_OPEN_NO_UNIQUE_IDLE_HOME'
+            }
+            $tracking=$env:RUNNER_TRACKING_ID
+            try{
+              $env:RUNNER_TRACKING_ID=''
+              Start-Process -FilePath $source -ErrorAction Stop
+            }finally{$env:RUNNER_TRACKING_ID=$tracking}
+            Write-Host 'PANDA_XD_NATIVE_OS_OPEN_REQUESTED_ONCE=PASS'
+          }else{
+            Write-Host 'PANDA_XD_NATIVE_ALREADY_OPEN=PASS no second open'
+          }
+          $deadline=(Get-Date).AddSeconds(100);$found=$false
+          do{
+            $tops=Get-Tops
+            $documents=@()
+            foreach($win in $tops){
+              if([string]$win.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'){
+                $documents+=,$win
+              }
+            }
+            if($documents.Count -gt 1){throw 'PANDA_XD_OPEN_MULTIPLE_DOCUMENT_WINDOWS'}
+            if($documents.Count -eq 1){$found=$true;break}
+            Start-Sleep -Seconds 2
+          }until((Get-Date)-ge $deadline)
+          if(-not $found){throw 'PANDA_XD_OPEN_NATIVE_DOCUMENT_GUI_NOT_VISIBLE_NO_REPLAY'}
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $expected){
+            throw 'PANDA_XD_OPEN_NATIVE_SOURCE_CHANGED_AFTER_OPEN'
+          }
+          Write-Host "PANDA_XD_NATIVE_DOCUMENT_VISIBLE=PASS title=$($documents[0].Current.Name) source_sha256=$expected"

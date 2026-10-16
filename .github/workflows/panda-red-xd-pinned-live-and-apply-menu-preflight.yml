@@ -1,0 +1,78 @@
+name: Panda red XD exact live first-write and Apply menu preflight
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-pinned-live-and-apply-menu-preflight.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify live Adobe v57 native document and exact empty artboard with persisted JSON
+        shell: powershell
+        env:
+          UV_LINK_MODE: copy
+          PYTHONUTF8: '1'
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_PREWRITE_WRONG_HOST_SESSION'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $report=Join-Path $env:RUNNER_TEMP 'red_xd_pinned_preflight.json'
+          uv run --python 3.12 python scripts/panda_red_xd_verify_target_readonly.py --expected-document-id '304d4d00-6fba-47c0-b67a-d0e8ecf30254' --report $report
+          if($LASTEXITCODE -ne 0){throw 'XD_PREWRITE_PINNED_DOCUMENT_CHECK_FAILED'}
+          $proof=Get-Content -LiteralPath $report -Raw|ConvertFrom-Json
+          if($proof.outcome -ne 'READ_ONLY_PREFLIGHT_PASS' -or $proof.ready_for_first_write -ne $true -or
+             $proof.binding.artboard_id -ne 'b195fab0-c97f-46be-8139-5d30a6149e37'){throw 'XD_PREWRITE_JSON_READBACK_INVALID'}
+          Write-Host "XD_PREWRITE_NATIVE_LIVE_GATE=PASS document=$($proof.binding.document_id) artboard=$($proof.binding.artboard_id)"
+      - name: Verify one red document Plugins MCP Adobe Apply command exists but do not invoke
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $frames=@($top|Where-Object{[string]$_.Current.Name -match '^MCP_KFP4_Red_XD_38205166138.*Adobe XD$' -and
+              [string]$_.Current.ClassName -eq 'ApplicationFrameWindow'})
+          $picker=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          if($frames.Count -ne 1 -or $picker.Count -ne 0){throw 'XD_PREWRITE_DOCUMENT_FRAME_NOT_UNIQUE'}
+          $children=$frames[0].FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $core=@($children|Where-Object{[string]$_.Current.ClassName -eq 'Windows.UI.Core.CoreWindow'})
+          if($core.Count -ne 1){throw 'XD_PREWRITE_TARGET_CORE_NOT_UNIQUE'}
+          $cond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'AppMenuBar_Plugins')
+          $menus=$core[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,$cond)
+          if($menus.Count -ne 1 -or -not $menus[0].Current.IsEnabled){throw 'XD_PREWRITE_PLUGINS_MENU_NOT_READY'}
+          $pattern=$menus[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+          if($pattern.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$pattern.Expand()}
+          Start-Sleep -Milliseconds 180
+          $all=$frames[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $parent=@()
+          foreach($node in $all){
+            if([string]$node.Current.Name -ne 'MCP Adobe Bridge' -or $node.Current.ControlType.ProgrammaticName -ne 'ControlType.MenuItem'){continue}
+            try{[void]$node.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern);$parent+=,$node}catch{}
+          }
+          Write-Host "XD_PREWRITE_BRIDGE_MENU_COUNT=$($parent.Count)"
+          if($parent.Count -ne 1){throw 'XD_PREWRITE_BRIDGE_MENU_AMBIGUOUS'}
+          $sub=$parent[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+          if($sub.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$sub.Expand()}
+          Start-Sleep -Milliseconds 220
+          $all=$frames[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $action=@($all|Where-Object{[string]$_.Current.Name -eq 'MCP Adobe Apply' -and
+              $_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and $_.Current.IsEnabled})
+          Write-Host "XD_PREWRITE_APPLY_CONTROL_COUNT=$($action.Count)"
+          if($action.Count -ne 1){throw 'XD_PREWRITE_APPLY_ACTION_AMBIGUOUS'}
+          [void]$action[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+          Write-Host 'XD_PREWRITE_EXACT_APPLY_UI_PATH=PASS; NO_APPLY_INVOKED'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-red-xd-firstwrite-pinned-native-evidence
+          path: ${{ runner.temp }}/red_xd_pinned_preflight.json
+          if-no-files-found: warn
+          retention-days: 14

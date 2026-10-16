@@ -1,0 +1,78 @@
+name: XD inspect exact Reload Plugins UIA command before any runtime upgrade
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-xd-reload-menu-readonly-preflight.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect Adobe XD Plugins > Development > Reload Plugins without invocation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_RELOAD_UIA_WRONG_DESKTOP'}
+          $src=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          if(-not(Test-Path -LiteralPath $src) -or (Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash -ne '3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'){throw 'XD_RELOAD_UIA_NATIVE_CHANGED'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $windows=@()
+          foreach($w in $top){
+            if([string]$w.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$' -and [string]$w.Current.ClassName -eq 'ApplicationFrameWindow'){$windows+=,$w}
+          }
+          if($windows.Count -ne 1){throw "XD_RELOAD_UIA_DOCUMENT_NOT_EXACT count=$($windows.Count)"}
+          $doc=$windows[0]
+          $condition=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'AppMenuBar_Plugins')
+          $menu=$doc.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
+          if(-not $menu -or -not $menu.Current.IsEnabled){throw 'XD_RELOAD_UIA_PLUGINS_DISABLED'}
+          $expand=$menu.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+          if($expand.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$expand.Expand()}
+          Start-Sleep -Milliseconds 180
+          $items=$doc.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $development=@()
+          foreach($n in $items){
+            if([string]$n.Current.Name -eq 'Development' -and [string]$n.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'){
+              try{[void]$n.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern);$development+=,$n}catch{}
+            }
+          }
+          Write-Host "XD_RELOAD_UIA_DEVELOPMENT_MENU_COUNT=$($development.Count)"
+          if($development.Count -ne 1){throw 'XD_RELOAD_UIA_DEVELOPMENT_NOT_UNIQUE'}
+          $sub=$development[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+          if($sub.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$sub.Expand()}
+          Start-Sleep -Milliseconds 180
+          $all=$doc.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $matches=@()
+          foreach($n in $all){
+            if([string]$n.Current.Name -eq 'Reload Plugins' -and [string]$n.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and $n.Current.IsEnabled){
+              try{[void]$n.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern);$matches+=,$n}catch{}
+            }
+          }
+          $candidateCount=0
+          foreach($n in $all){
+            $label=[string]$n.Current.Name
+            if([string]$n.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and $label -and $candidateCount -lt 45){
+              Write-Host "XD_RELOAD_UIA_DOC_MENU name=$label enabled=$($n.Current.IsEnabled)"
+              $candidateCount++
+            }
+          }
+          $rootMatches=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          foreach($n in $rootMatches){
+            $label=[string]$n.Current.Name
+            if($label -match 'Reload|re.?load|読|プラグイン|Development' -and
+               [string]$n.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'){
+              Write-Host "XD_RELOAD_UIA_POPUP_MATCH name=$label enabled=$($n.Current.IsEnabled) class=$($n.Current.ClassName)"
+            }
+          }
+          Write-Host "XD_RELOAD_UIA_EXACT_COMMAND_COUNT=$($matches.Count)"
+          if($matches.Count -ne 1){throw 'XD_RELOAD_UIA_COMMAND_NOT_ACCESSIBLE'}
+          Write-Host 'XD_RELOAD_UIA_TARGET_VERIFIED=PASS no-reload-invoked'

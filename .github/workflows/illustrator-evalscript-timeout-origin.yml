@@ -1,0 +1,47 @@
+name: Illustrator evalScript timeout origin diagnosis
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-evalscript-timeout-origin.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Find concrete 30-second evalScript watchdog location without host calls
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $roots=@(
+            (Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway'),
+            (Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\venv\Lib\site-packages\illustrator_mcp'),
+            (Join-Path $env:APPDATA 'Adobe\CEP\extensions'),
+            (Join-Path $env:LOCALAPPDATA 'Adobe\CEP\extensions'),
+            (Join-Path $env:ProgramFiles 'Common Files\Adobe\CEP\extensions')
+          )
+          foreach($root in $roots){
+            if(-not(Test-Path $root)){continue}
+            Write-Output "SEARCH_ROOT=$root"
+            $files=@(Get-ChildItem -LiteralPath $root -Recurse -File -ErrorAction SilentlyContinue | Where-Object {$_.Extension -in @('.py','.js','.jsx','.ts','.tsx','.json','.ps1') -and $_.Length -lt 900000})
+            Write-Output "SEARCH_FILE_COUNT=$($files.Count)"
+            foreach($file in $files){
+              $hits=@(Select-String -LiteralPath $file.FullName -Pattern 'Illustrator evalScript timeout','evalScript timeout','evalScript','30000','30_000' -SimpleMatch -ErrorAction SilentlyContinue)
+              foreach($match in $hits|Select-Object -First 8){
+                if($match.Line -match '(?i)timeout|evalScript'){ 
+                  $name=$file.FullName.Replace($env:USERPROFILE,'~')
+                  $snippet=([string]$match.Line).Trim()
+                  if($snippet.Length -gt 180){$snippet=$snippet.Substring(0,180)}
+                  $snippet=$snippet -replace '(?i)(token|password|secret)\s*[:=]\s*\S+','$1=[REDACTED]'
+                  Write-Output "WATCHDOG_MATCH path=$name line=$($match.LineNumber) snippet=$snippet"
+                }
+              }
+            }
+          }
+          $ai=Get-Process Illustrator -ErrorAction SilentlyContinue
+          Write-Output "ILLUSTRATOR_RESPONDING=$($ai.Responding)"
+          Write-Output "WATCHDOG_ORIGIN_SCAN=PASS"

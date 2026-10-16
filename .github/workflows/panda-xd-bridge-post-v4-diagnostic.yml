@@ -1,0 +1,82 @@
+name: XD diagnose live bridge after ellipse v4 failure read only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-bridge-post-v4-diagnostic.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  diagnostic:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Capture actual XD process, native file, plugin and socket state without GUI writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_V4_DIAG_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_V4_DIAG_WRONG_SESSION'}
+          Write-Host 'XD_V4_DIAG_READ_ONLY=START'
+          $native=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          if(Test-Path -LiteralPath $native -PathType Leaf){
+            $file=Get-Item -LiteralPath $native
+            Write-Host "XD_V4_NATIVE bytes=$($file.Length) sha256=$((Get-FileHash $native -Algorithm SHA256).Hash)"
+          }else{Write-Host 'XD_V4_NATIVE=MISSING'}
+          $receipt=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800_ellipse_repair.json'
+          if(Test-Path -LiteralPath $receipt){
+            $value=Get-Content -LiteralPath $receipt -Raw | ConvertFrom-Json
+            Write-Host "XD_V4_REPAIR_CHECKPOINT repaired=$(@($value.repaired).Count) pending=$($value.pending.operation_id)"
+          }else{Write-Host 'XD_V4_REPAIR_CHECKPOINT=ABSENT'}
+          foreach($name in @('XD','PickerHost','ApplicationFrameHost','explorer')){
+            foreach($proc in @(Get-Process -Name $name -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})){
+              Write-Host "XD_V4_PROCESS name=$name pid=$($proc.Id) hwnd=$($proc.MainWindowHandle) title=$($proc.MainWindowTitle)"
+            }
+          }
+          foreach($port in @(8787,8765,8081)){
+            $listeners=@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+            foreach($listener in $listeners){
+              $process=Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
+              Write-Host "XD_V4_LISTENER port=$port pid=$($listener.OwningProcess) process=$($process.Name) exe=$($process.ExecutablePath)"
+            }
+            if($listeners.Count -eq 0){Write-Host "XD_V4_LISTENER port=$port status=ABSENT"}
+            $connections=@(Get-NetTCPConnection -LocalPort $port -State Established -ErrorAction SilentlyContinue)
+            Write-Host "XD_V4_ESTABLISHED port=$port count=$($connections.Count)"
+          }
+          $pkg=@(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'Adobe.*XD|XD.*Adobe'})
+          foreach($p in $pkg){
+            Write-Host "XD_V4_APPX name=$($p.Name) status=$($p.Status) version=$($p.Version)"
+            $dir=Join-Path $env:LOCALAPPDATA "Packages\$($p.PackageFamilyName)\LocalState\develop\MCPAdobeBridge"
+            $main=Join-Path $dir 'main.js'
+            if(Test-Path -LiteralPath $main -PathType Leaf){
+              Write-Host "XD_V4_PLUGIN_ON_DISK path=$main sha256=$((Get-FileHash $main -Algorithm SHA256).Hash)"
+              $needle=Select-String -LiteralPath $main -Pattern 'xd-ellipse-radius-geometry-v4' -SimpleMatch -ErrorAction SilentlyContinue
+              Write-Host "XD_V4_PLUGIN_FILE_HAS_NEW_VERSION=$([bool]$needle)"
+            }else{Write-Host "XD_V4_PLUGIN_ON_DISK=ABSENT path=$main"}
+          }
+          $src=Join-Path $PWD 'adobe-xd-plugin\main.js'
+          Write-Host "XD_V4_REPO_PLUGIN_SHA256=$((Get-FileHash $src -Algorithm SHA256).Hash)"
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $windows=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,
+                                    [System.Windows.Automation.Condition]::TrueCondition)
+          foreach($w in $windows){
+            $title=[string]$w.Current.Name
+            if($title -match 'Adobe XD|Save As|Untitled'){
+              Write-Host "XD_V4_WINDOW name=$title pid=$($w.Current.ProcessId) class=$($w.Current.ClassName)"
+            }
+          }
+          Write-Host 'XD_V4_DIAG_READ_ONLY=DONE'
+      - name: Query actual gateway using bounded MCP read without sending mutation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run python -c "import asyncio,json; from mcp import Client; asyncdef='''async def main():\n try:\n  async with Client('http://127.0.0.1:8787/mcp') as c:\n   r=await asyncio.wait_for(c.call_tool('creative_read',{'application':'xd','capability':'creative.health','arguments':{}}),timeout=8)\n   print('XD_V4_GATEWAY_READ='+json.dumps({'error':r.is_error,'content':r.structured_content,'parts':str(r.content)[:350]},default=str))\n except Exception as e: print('XD_V4_GATEWAY_READ_EXCEPTION='+repr(e))\n''';exec(asyncdef);asyncio.run(main())"
+          Write-Host 'XD_V4_GATEWAY_READONLY_CHECK=COMPLETED'

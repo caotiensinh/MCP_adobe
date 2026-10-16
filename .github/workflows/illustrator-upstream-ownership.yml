@@ -1,0 +1,69 @@
+name: Illustrator gateway upstream ownership
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Inspect 8787 and 8081 process lineage read only
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $procs=@(Get-CimInstance Win32_Process)
+          foreach($port in @(8787,8081)){
+            $listen=@(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
+            foreach($entry in $listen){
+              $id=$entry.OwningProcess
+              $depth=0
+              while($id -gt 0 -and $depth -lt 7){
+                $p=$procs|Where-Object {$_.ProcessId -eq $id}|Select-Object -First 1
+                if(-not $p){break}
+                $line=[string]$p.CommandLine
+                $line=$line -replace '(?i)(token|password|secret|authorization|api[_-]?key)\s*[:=]\s*[^\s,}]+','$1=[REDACTED]'
+                if($line.Length -gt 600){$line=$line.Substring(0,600)}
+                Write-Output "LINEAGE port=$port depth=$depth pid=$($p.ProcessId) ppid=$($p.ParentProcessId) name=$($p.Name) cmd=$line"
+                $id=$p.ParentProcessId
+                $depth++
+              }
+            }
+          }
+          $client=@(Get-NetTCPConnection -RemotePort 8081 -State Established -ErrorAction SilentlyContinue)
+          foreach($e in $client){
+            $p=$procs|Where-Object {$_.ProcessId -eq $e.OwningProcess}|Select-Object -First 1
+            Write-Output "PANEL_CLIENT pid=$($e.OwningProcess) name=$($p.Name) remoteport=$($e.RemotePort)"
+          }
+          # Strict, read-only acceptance for item 02. Preserve Illustrator and CEP.
+          $gateway=@(Get-NetTCPConnection -State Listen -LocalPort 8787 -ErrorAction SilentlyContinue)
+          $upstream=@(Get-NetTCPConnection -State Listen -LocalPort 8081 -ErrorAction SilentlyContinue)
+          if($gateway.Count -ne 1){throw "ITEM_02_1_FAIL gateway_listeners=$($gateway.Count)"}
+          Write-Output "ITEM_02_1_PASS gateway_pid=$($gateway[0].OwningProcess)"
+          if($upstream.Count -ne 1){throw "ITEM_02_2_FAIL upstream_listeners=$($upstream.Count)"}
+          Write-Output "ITEM_02_2_PASS upstream_pid=$($upstream[0].OwningProcess)"
+          $panelSockets=@(Get-NetTCPConnection -RemotePort 8081 -State Established -ErrorAction SilentlyContinue)
+          $cep=@($panelSockets|Where-Object {
+            $p=$procs|Where-Object ProcessId -eq $_.OwningProcess|Select-Object -First 1
+            $p -and $p.Name -eq 'CEPHtmlEngine.exe'
+          })
+          if($cep.Count -eq 0){throw 'ITEM_02_3_FAIL no established CEPHtmlEngine client'}
+          Write-Output "ITEM_02_3_PASS cep_connections=$($cep.Count)"
+          $parentId=[int]$upstream[0].OwningProcess
+          $gatewayPid=[int]$gateway[0].OwningProcess
+          $seen=@{}
+          $owned=$false
+          for($depth=0;$depth -lt 15 -and $parentId -gt 0;$depth++){
+            if($parentId -eq $gatewayPid){$owned=$true;break}
+            if($seen.ContainsKey($parentId)){break}
+            $seen[$parentId]=$true
+            $proc=$procs|Where-Object ProcessId -eq $parentId|Select-Object -First 1
+            if(-not $proc){break}
+            $parentId=[int]$proc.ParentProcessId
+          }
+          if(-not $owned){throw 'ITEM_02_4_FAIL upstream is not gateway descendant'}
+          Write-Output 'ITEM_02_4_PASS upstream is gateway descendant'
+          Write-Output 'ITEM_02_PASS all four read-only assertions passed'

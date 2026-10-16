@@ -1,0 +1,105 @@
+name: PANDA XD saved-document Mode1 32 direct strokes E2E
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-saved-mode1-32-e2e.yml"
+      - "scripts/panda_xd_mode1_e2e.py"
+      - "scripts/panda_xd_fresh_mode1_e2e.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  mode1:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 40
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+      PANDA_XD_WORK_ID: '38136531800'
+      PANDA_XD_SOURCE_RUN_ID: '38136531800'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify live saved document and adapter; run only if source is pristine
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_MODE1_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_MODE1_NOT_INTERACTIVE_SESSION'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'XD_MODE1_ENV_SYNC_FAILED'}
+          uv run python -m py_compile scripts/panda_xd_mode1_e2e.py scripts/panda_xd_fresh_mode1_e2e.py scripts/panda_xd_final_scene_readback.py
+          if($LASTEXITCODE -ne 0){throw 'XD_MODE1_SCRIPT_SYNTAX_FAIL'}
+          uv run python scripts/panda_xd_saved_source_gateway_gate.py after
+          if($LASTEXITCODE -ne 0){throw 'XD_MODE1_PRISTINE_SOURCE_PRECONDITION_FAIL_NO_WRITES'}
+          $source=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          $backup=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800_before_draw.xd'
+          if(Test-Path -LiteralPath $backup){
+            $a=(Get-FileHash $source -Algorithm SHA256).Hash
+            $b=(Get-FileHash $backup -Algorithm SHA256).Hash
+            if($a -ne $b){throw 'XD_MODE1_ORIGINAL_BACKUP_SHA_CHANGED'}
+            Write-Host 'XD_MODE1_PERSISTED_ORIGINAL_BACKUP=ALREADY_VERIFIED'
+          }else{
+            Copy-Item -LiteralPath $source -Destination $backup
+            if((Get-FileHash $source -Algorithm SHA256).Hash -ne (Get-FileHash $backup -Algorithm SHA256).Hash){
+              throw 'XD_MODE1_ORIGINAL_BACKUP_COPY_NOT_VERIFIED'
+            }
+            Write-Host "XD_MODE1_PERSISTED_ORIGINAL_BACKUP=PASS path=$backup"
+          }
+      - name: Draw all 32 parts in XD via separate MCP writes, Apply, receipt and scenegraph
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run python scripts/panda_xd_fresh_mode1_e2e.py
+          if($LASTEXITCODE -ne 0){throw 'XD_MODE1_32_WRITE_OR_READBACK_FAILED_INSPECT_CHECKPOINT'}
+      - name: Save live Adobe XD 32-shape scenegraph into native XD original
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $p=Join-Path $PWD 'scripts/panda_xd_save_32strokes_native.ps1'
+          $tokens=$null;$errors=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($p,[ref]$tokens,[ref]$errors)
+          if(@($errors).Count -gt 0){
+            foreach($e in $errors){Write-Host "XD_NATIVE_SAVE_PARSE_ERROR line=$($e.Extent.StartLineNumber) message=$($e.Message)"}
+            throw 'XD_MODE1_NATIVE_SAVE_SCRIPT_INVALID'
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File $p -SourceRunId 38136531800
+          if($LASTEXITCODE -ne 0){throw 'XD_MODE1_NATIVE_SAVE_FAILED_NO_REPEAT'}
+      - name: Verify final native XD, exported PNG, and exact 32 live GUIDs
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run python scripts/panda_xd_final_scene_readback.py
+          if($LASTEXITCODE -ne 0){throw 'XD_MODE1_FINAL_NATIVE_OR_READBACK_NOT_VERIFIED'}
+      - name: Persist all produced evidence even when a step fails
+        if: always()
+        shell: powershell
+        run: |
+          $src=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $dest=Join-Path $PWD 'xd_panda_evidence'
+          New-Item -ItemType Directory -Path $dest -Force | Out-Null
+          foreach($item in @(
+            'MCP_Mode1_Panda_XD_38136531800.json',
+            'MCP_Mode1_Panda_XD_38136531800.xd',
+            'MCP_Mode1_Panda_XD_38136531800.png',
+            'MCP_Mode1_Panda_XD_38136531800_before_draw.xd'
+          )){
+            $p=Join-Path $src $item
+            if(Test-Path -LiteralPath $p -PathType Leaf){
+              Copy-Item -LiteralPath $p -Destination (Join-Path $dest $item)
+              Write-Host "XD_MODE1_ARTIFACT=$item bytes=$((Get-Item -LiteralPath $p).Length)"
+            }
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-xd-mode1-native-and-32-receipts
+          path: xd_panda_evidence/*
+          if-no-files-found: ignore
+          retention-days: 14

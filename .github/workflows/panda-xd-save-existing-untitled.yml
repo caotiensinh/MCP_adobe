@@ -1,0 +1,32 @@
+name: PANDA XD open Save picker on existing unsaved document
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-save-existing-untitled.yml"
+      - "scripts/panda_xd_open_save_once_existing_document.ps1"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reconcile unsaved XD UI and invoke one enabled Save menu item
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $p=Join-Path $PWD 'scripts/panda_xd_open_save_once_existing_document.ps1'
+          $tokens=$null;$parseErrors=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($p,[ref]$tokens,[ref]$parseErrors)
+          if(@($parseErrors).Count -gt 0){
+            foreach($e in $parseErrors){Write-Host "XD_SAVE_STAGE_PARSE_ERROR line=$($e.Extent.StartLineNumber) message=$($e.Message)"}
+            throw 'XD_SAVE_STAGE_SCRIPT_INVALID'
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File $p
+          if($LASTEXITCODE -ne 0){throw 'XD_SAVE_STAGE_NOT_VERIFIED_NO_BLIND_RERUN'}

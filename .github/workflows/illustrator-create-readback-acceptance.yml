@@ -1,0 +1,49 @@
+name: Illustrator create and readback acceptance
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-create-readback-acceptance.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  document:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create isolated test document and verify via MCP readback
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv sync failed'}
+          @'
+          import asyncio,json
+          from mcp import Client
+          URL="http://127.0.0.1:8787/mcp"
+          def payload(result):
+              if result.is_error or not isinstance(result.structured_content,dict) or not result.structured_content.get("ok"):
+                  raise RuntimeError("MCP_TOOL_FAILED: "+str(result.content)[:900])
+              return result.structured_content
+          async def main():
+              async with Client(URL) as c:
+                  h=payload(await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":True,"timeout":10.0}}))
+                  d=h["result"]["connection"]["data"]
+                  print("PREFLIGHT="+json.dumps({"illustrator":d["layers"]["illustrator"],"document":d["layers"]["document"],"unresolved":d["execution"]["unresolvedJobs"]}),flush=True)
+                  if d["execution"]["unresolvedJobs"]:
+                      raise RuntimeError("Unresolved job exists; no document mutation allowed")
+                  if d["layers"]["document"]["status"]!="none_open":
+                      raise RuntimeError("Refuse creating document over an existing user document")
+                  w=payload(await c.call_tool("creative_write",{"application":"illustrator","capability":"creative.document.create","arguments":{"width":900,"height":600,"color_mode":"RGB","name":"MCPAdobe Readback Acceptance"}}))
+                  print("CREATE_DOCUMENT_RESULT="+json.dumps(w,default=str)[:4200],flush=True)
+                  r=payload(await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.document.info","arguments":{}}))
+                  print("DOCUMENT_READBACK_RESULT="+json.dumps(r,default=str)[:7000],flush=True)
+                  print("MCP_DOCUMENT_READBACK=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath doc_acceptance.py -Encoding UTF8
+          uv run python doc_acceptance.py
+          if($LASTEXITCODE -ne 0){throw 'Document acceptance failed'}

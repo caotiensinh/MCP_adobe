@@ -1,0 +1,59 @@
+name: Kung Fu Panda 4 red Photoshop first real canvas MCP checkpoint
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-ps-first-real-stroke.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  first-stroke:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create fresh portrait PSD and individually verified red background
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'RED_PS_DRAW_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RED_PS_DRAW_NOT_DESKTOP'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $ps=@(Get-Process -Name Photoshop -ErrorAction SilentlyContinue |Where-Object {$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+          if($ps.Count -ne 1){throw 'RED_PS_LIVE_WINDOW_NOT_UNIQUE_NO_WRITES'}
+          Write-Host "RED_PS_SINGLE_GUI_OWNER=PASS pid=$($ps[0].Id) run=$env:GITHUB_RUN_ID"
+          uv run --python 3.12 python -m py_compile scripts/panda_red_photoshop_first_stroke.py scripts/panda_red_poster_blueprint.py
+          if($LASTEXITCODE -ne 0){throw 'RED_PS_SOURCE_INVALID'}
+          uv run --python 3.12 python scripts/panda_red_photoshop_first_stroke.py
+          if($LASTEXITCODE -ne 0){throw 'RED_PS_NATIVE_CHECKPOINT_FAILED_INSPECT_BEFORE_RETRY'}
+      - name: Preserve only existing real Photoshop source and PNG with checksums
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          New-Item -ItemType Directory -Force -Path (Join-Path $PWD 'red_ps_first')|Out-Null
+          foreach($ext in @('psd','png')){
+            $source=Join-Path $root "MCP_KFP4_Red_PS_$env:GITHUB_RUN_ID.$ext"
+            if(Test-Path -LiteralPath $source -PathType Leaf){
+              $dest=Join-Path $PWD "red_ps_first/red_poster_stroke_1.$ext"
+              Copy-Item -LiteralPath $source -Destination $dest -ErrorAction Stop
+              $a=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+              $b=(Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash
+              if($a -ne $b){throw 'RED_PS_ARTIFACT_COPY_CHECKSUM_MISMATCH'}
+              Write-Host "RED_PS_REAL_ARTIFACT name=$ext bytes=$((Get-Item $source).Length) sha256=$a"
+            }else{Write-Host "RED_PS_ARTIFACT_NOT_YET_PRESENT=$ext"}
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kung-fu-red-photoshop-first-native-checkpoint
+          path: red_ps_first/*
+          if-no-files-found: warn
+          retention-days: 14

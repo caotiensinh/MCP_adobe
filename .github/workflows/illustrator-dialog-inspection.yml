@@ -1,0 +1,54 @@
+name: Illustrator startup dialog text inspection
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-dialog-inspection.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Read only Illustrator dialog controls via Win32
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type @'
+          using System;
+          using System.Text;
+          using System.Runtime.InteropServices;
+          public static class DialogInfo {
+            public delegate bool EnumProc(IntPtr h, IntPtr p);
+            [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb,IntPtr p);
+            [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr parent,EnumProc cb,IntPtr p);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+            [DllImport("user32.dll")] public static extern int GetClassName(IntPtr h,StringBuilder s,int n);
+            [DllImport("user32.dll")] public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+            static string Txt(IntPtr h){var s=new StringBuilder(1024);GetWindowText(h,s,1024);return s.ToString();}
+            static string Cls(IntPtr h){var s=new StringBuilder(128);GetClassName(h,s,128);return s.ToString();}
+            public static void Inspect(uint owner) {
+              EnumWindows((h,p)=> {
+                uint pid;GetWindowThreadProcessId(h,out pid);
+                if(pid==owner && IsWindowVisible(h)){
+                  Console.WriteLine("DIALOG_ROOT class="+Cls(h)+" text="+Txt(h));
+                  EnumChildWindows(h,(c,x)=>{
+                    var title=Txt(c);var cls=Cls(c);
+                    if(title.Length>250)title=title.Substring(0,250);
+                    Console.WriteLine("DIALOG_CHILD class="+cls+" text="+title);
+                    return true;
+                  },IntPtr.Zero);
+                }
+                return true;
+              },IntPtr.Zero);
+            }
+          }
+          '@
+          foreach($p in @(Get-Process Illustrator -ErrorAction SilentlyContinue)){
+            [DialogInfo]::Inspect([uint32]$p.Id)
+          }
+          Write-Output 'DIALOG_TEXT_INSPECTION=PASS'

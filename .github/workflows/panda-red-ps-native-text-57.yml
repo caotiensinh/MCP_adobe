@@ -1,0 +1,74 @@
+name: Red Panda Photoshop live title KUNG FU first native Type layer 57
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-ps-native-text-57.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  draw:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 9
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+      RED_PS_SOURCE_NAME: MCP_KFP4_Red_PS_38150143171_56shapes.psd
+      RED_PS_SOURCE_SHA: f1c049b957eeef6df523988c8a0b7a9317cf471291ea48b48cba975c07ba26c2
+      RED_PS_START: '57'
+      RED_PS_END: '57'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact saved Photoshop native source and GUI process
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RED_PS_57_WRONG_DESKTOP'}
+          $ps=@(Get-Process -Name Photoshop -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+          if($ps.Count -ne 1){throw 'RED_PS_57_PHOTOSHOP_OWNER_AMBIGUOUS'}
+          $source=Join-Path (Join-Path $env:USERPROFILE 'Documents\MCPAdobe') $env:RED_PS_SOURCE_NAME
+          if(-not(Test-Path -LiteralPath $source -PathType Leaf)){throw 'RED_PS_57_NATIVE_SOURCE_ABSENT'}
+          $hash=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+          if($hash -ne $env:RED_PS_SOURCE_SHA){throw 'RED_PS_57_NATIVE_SOURCE_SHA_CHANGED'}
+          Write-Host "RED_PS_57_SOURCE=PASS pid=$($ps[0].Id) bytes=$((Get-Item $source).Length) sha256=$hash"
+      - name: Create one true native KUNG FU Type layer, read back layer geometry, persist PSD and export PNG
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run --python 3.12 python -m py_compile scripts/panda_red_photoshop_resume_range.py scripts/panda_red_photoshop_fast_native.py
+          if($LASTEXITCODE -ne 0){throw 'RED_PS_57_INVALID_SCRIPT_STOP'}
+          $sw=[System.Diagnostics.Stopwatch]::StartNew()
+          uv run --python 3.12 python scripts/panda_red_photoshop_resume_range.py
+          $exit=$LASTEXITCODE
+          $sw.Stop()
+          Write-Host "RED_PS_57_TOTAL_WALL_MS=$($sw.ElapsedMilliseconds) rc=$exit"
+          if($exit -ne 0){throw 'RED_PS_57_OUTCOME_UNKNOWN_INSPECT_CHECKPOINT_DO_NOT_REPLAY'}
+      - name: Preserve real Photoshop files only and compare SHA of original and copied artifacts
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $folder=Join-Path $PWD 'red_ps_57'
+          New-Item -Path $folder -ItemType Directory -Force|Out-Null
+          foreach($ext in @('psd','png')){
+            $source=Join-Path $root ("MCP_KFP4_Red_PS_{0}_57shapes.{1}" -f $env:GITHUB_RUN_ID,$ext)
+            if(Test-Path -LiteralPath $source -PathType Leaf){
+              $dest=Join-Path $folder ("red_panda_57.{0}" -f $ext)
+              Copy-Item -LiteralPath $source -Destination $dest -ErrorAction Stop
+              $sha=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+              if((Get-FileHash -LiteralPath $dest -Algorithm SHA256).Hash -ne $sha){throw 'RED_PS_57_ARTIFACT_SHA_COPY_FAIL'}
+              Write-Host "RED_PS_57_ARTIFACT=PASS ext=$ext bytes=$((Get-Item $source).Length) sha256=$sha"
+            }else{Write-Host "RED_PS_57_ARTIFACT_ABSENT=$ext"}
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: red-panda-photoshop-native-57-kung-fu-title
+          path: red_ps_57/*
+          if-no-files-found: warn
+          retention-days: 14

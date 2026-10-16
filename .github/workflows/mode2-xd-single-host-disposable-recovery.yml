@@ -1,0 +1,100 @@
+name: Mode 2 XD isolated disposable single-host native readback
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-single-host-disposable-recovery.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  recover-and-read:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reopen disposable only from fully idle host and read graph in same job
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $native=Join-Path $root 'mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd'
+          $hash='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          $paths=@((Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'),(Join-Path $root 'mode2-isolated\Panda_Mode2_Editable_Experiment.xd'),$native)
+          foreach($file in $paths){if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $hash){throw 'MODE2_BASELINE_MISMATCH'}}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $scope=[System.Windows.Automation.TreeScope]::Children
+          $condition=[System.Windows.Automation.Condition]::TrueCondition
+          $top=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,$condition)
+          $windows=@($top|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $processes=@(Get-CimInstance Win32_Process|Where-Object {$_.Name -match '^(XD|Adobe XD|AdobeXD|PickerHost|Illustrator|Photoshop)\.exe$' -or $_.ExecutablePath -match 'Adobe.XD'})
+          $established=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "MODE2_PRECHECK_WINDOWS=$($windows.Count) PROCESSES=$($processes.Count) CONNECTIONS=$($established.Count)"
+          $existingTest=@($windows|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          if($windows.Count -eq 1 -and $existingTest.Count -eq 1 -and $established.Count -ge 1){
+            Write-Host 'MODE2_REUSE_ONLY_EXISTING_DISPOSABLE=PASS'
+          }elseif($windows.Count -eq 0 -and $processes.Count -eq 0 -and $established.Count -eq 0){
+            $old=$env:RUNNER_TRACKING_ID
+            try{$env:RUNNER_TRACKING_ID='';Start-Process -FilePath $native -ErrorAction Stop}finally{$env:RUNNER_TRACKING_ID=$old}
+            Write-Host 'MODE2_DISPOSABLE_OPEN_ONCE'
+          }else{throw 'MODE2_FOREIGN_OR_UNCERTAIN_HOST_NO_OPEN'}
+          $ready=$false
+          for($i=1;$i -le 12;$i++){
+            Start-Sleep -Seconds 3
+            $top=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,$condition)
+            $windows=@($top|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+            $test=@($windows|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+            $established=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+            Write-Host "MODE2_POLL=$i WINDOWS=$($windows.Count) TEST=$($test.Count) UXP=$($established.Count)"
+            if($windows.Count -eq 1 -and $test.Count -eq 1 -and $established.Count -ge 1){$ready=$true;break}
+          }
+          if(-not $ready){throw 'MODE2_DISPOSABLE_HOST_UNREADY_NO_RETRY'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json
+          from mcp import Client
+          from scripts.export_region_metadata import unwrap,payload
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  async def read(cap):
+                      r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=14)
+                      o=unwrap(payload(r))
+                      if isinstance(o,dict) and isinstance(o.get("result"),dict):o=unwrap(o["result"])
+                      if not isinstance(o,dict):raise RuntimeError("MODE2_PAYLOAD_INVALID")
+                      return o
+                  graph=await read("creative.scenegraph.list")
+                  selection=await read("creative.selection.get")
+                  frame=await read("creative.canvas.frame")
+                  if graph.get("complete") is not True or graph.get("document_id")!=frame.get("document_id"):raise RuntimeError("MODE2_GRAPH_MISMATCH")
+                  items=selection.get("items",[])
+                  if not isinstance(items,list) or len(items)!=1:
+                      raise RuntimeError("MODE2_TARGET_SELECTION_NOT_UNIQUE")
+                  selected=items[0]
+                  node_id=str(selected.get("guid") or selected.get("id") or "")
+                  if not node_id: raise RuntimeError("MODE2_TARGET_ID_MISSING")
+                  def find(nodes):
+                      for node in nodes:
+                          if str(node.get("id"))==node_id:return node
+                          result=find(node.get("children",[]))
+                          if result is not None:return result
+                      return None
+                  match=find(graph.get("nodes",[]))
+                  if not match:raise RuntimeError("MODE2_SELECTION_NOT_IN_SCENEGRAPH")
+                  if match.get("locked") is True or match.get("visible") is False or not match.get("bounds"):
+                      raise RuntimeError("MODE2_SELECTED_NODE_NOT_EDITABLE")
+                  print("MODE2_SELECTED_NODE_REAL="+json.dumps({"id":node_id,"name":match.get("name"),"type":match.get("type"),"bounds":match.get("bounds"),"document_id":graph.get("document_id")},sort_keys=True),flush=True)
+                  print("MODE2_SINGLE_HOST_READBACK="+json.dumps({"document_id":graph.get("document_id"),"nodes":graph.get("node_count"),"selection":len(selection.get("items",[])) if isinstance(selection.get("items"),list) else None,"native_title_verified":True,"other_xd_windows":0},sort_keys=True),flush=True)
+          asyncio.run(main())
+          '@|Set-Content -LiteralPath .\mode2_disposable_readback.py -Encoding UTF8
+          uv run --python 3.12 python .\mode2_disposable_readback.py
+          if($LASTEXITCODE -ne 0){throw 'MODE2_DISPOSABLE_MCP_READ_FAILED'}
+          foreach($file in $paths){if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $hash){throw 'MODE2_NATIVE_CHANGED_AFTER_READ'}}
+          Write-Host 'MODE2_SINGLE_HOST_DISPOSABLE_READONLY=PASS'
+          Write-Host 'MODE2_MUTATION_PERFORMED=False'

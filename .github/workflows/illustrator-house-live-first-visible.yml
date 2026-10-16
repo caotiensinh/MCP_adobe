@@ -1,0 +1,158 @@
+name: Illustrator house live first visible geometry
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  draw:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - name: Foreground the actual Illustrator window
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'NOT_MRCAO'}
+          $ai=@(Get-Process Illustrator -ErrorAction SilentlyContinue|Where-Object {$_.MainWindowHandle -ne 0})
+          if($ai.Count -ne 1){throw 'ILLUSTRATOR_WINDOW_NOT_UNIQUE'}
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class MCPHouseForeground {
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int n);
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+          }
+          '@
+          [MCPHouseForeground]::ShowWindow($ai[0].MainWindowHandle,9)|Out-Null
+          [MCPHouseForeground]::SetForegroundWindow($ai[0].MainWindowHandle)|Out-Null
+          Write-Output "HOUSE_FOREGROUND_PID=$($ai[0].Id)"
+      - name: Create, draw visible walls and sloped red roof, checkpoint and save
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'DEPENDENCIES_FAILED'}
+          @'
+          import asyncio,json,os
+          from pathlib import Path
+          from mcp import Client
+          DOC="MCPAdobe LIVE Two-Story Red Tile House"
+          OUT=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"/"Two_Story_Red_Tile_House.ai"
+          STEPS=[
+             ("01 Beige two-story house walls","creative.shape.rectangle",
+              {"name":"01 Beige two-story house walls","x":175,"y":288,"width":540,"height":332,"fill":{"r":246,"g":226,"b":194}}),
+             ("02 Brown floor division","creative.shape.rectangle",
+              {"name":"02 Brown floor division","x":170,"y":434,"width":550,"height":12,"fill":{"r":121,"g":82,"b":58}}),
+             ("03 Red tiled sloped roof","creative.path.create",
+              {"name":"03 Red tiled sloped roof","points":[[136,291],[445,87],[754,291]],"closed":True,"fill":{"r":179,"g":47,"b":35}})
+          ]
+          def payload(r,label):
+              p=r.structured_content
+              if r.is_error or not isinstance(p,dict) or not p.get("ok"):
+                  raise RuntimeError(label+": MCP error, outcome uncertain; DO NOT RETRY")
+              if (p.get("result") or {}).get("execution") in ("unknown","failed"):
+                  raise RuntimeError(label+": upstream execution unknown or failed; DO NOT RETRY")
+              return p
+          async def request(c,tool,cap,args):
+              return payload(await c.call_tool(tool,{"application":"illustrator","capability":cap,"arguments":args}),cap)
+          async def state(c):
+              p=await request(c,"creative_read","creative.health",{"probe":False,"timeout":5})
+              return p["result"]["connection"]["data"]
+          async def info(c):
+              p=await request(c,"creative_read","creative.document.info",{})
+              result=p["result"]
+              if result.get("execution")!="succeeded":raise RuntimeError("DOCUMENT_READBACK_NOT_SUCCEEDED")
+              return result["data"]
+          def inventory(data):
+              layers=data.get("layers") or []
+              return (sum(int(l.get("itemCount",0)) for l in layers),
+                      [it.get("name") for l in layers for it in (l.get("items") or [])])
+          async def safe_preflight(c):
+              s=await state(c)
+              p=(s.get("layers") or {}).get("panel") or {}
+              e=s.get("execution") or {}
+              if (e.get("unresolvedJobs") or e.get("activeJob") is not None
+                      or e.get("waiting")!=0 or p.get("status")!="ok"
+                      or p.get("busy") is not False or p.get("activeRequestId") is not None
+                      or p.get("heartbeatStale") is True):
+                  raise RuntimeError("HOST_NOT_IDLE_STOP_NO_WRITE")
+              return s
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  h=await safe_preflight(c)
+                  probe=await request(c,"creative_read","creative.health",{"probe":True,"timeout":15})
+                  d=probe["result"]["connection"]["data"]
+                  if d.get("probed") is not True or (d.get("layers") or {}).get("illustrator",{}).get("status")!="ok":
+                      raise RuntimeError("HOST_TRUSTED_PROBE_FAILED")
+                  doc=(d.get("layers") or {}).get("document") or {}
+                  print("HOUSE_DOCUMENT_PREFLIGHT="+json.dumps(doc,default=str),flush=True)
+                  if doc.get("status")!="none_open":
+                      raise RuntimeError("AN_EXISTING_DOCUMENT_REQUIRES_MANUAL_RECONCILIATION")
+                  if OUT.exists():
+                      raise RuntimeError("SAVED_FILE_ALREADY_EXISTS_DO_NOT_OVERWRITE")
+                  OUT.parent.mkdir(parents=True,exist_ok=True)
+                  print("HOUSE_CREATE_START",flush=True)
+                  await request(c,"creative_write","creative.document.create",
+                                {"width":900,"height":700,"color_mode":"RGB","name":DOC})
+                  created=await info(c)
+                  count,names=inventory(created)
+                  print("HOUSE_CREATE_READBACK="+json.dumps({"document":created.get("document"),"count":count},default=str),flush=True)
+                  if created.get("document",{}).get("name")!=DOC or count!=0:
+                      raise RuntimeError("HOUSE_CREATE_DOCUMENT_MISMATCH")
+                  print("HOUSE_CREATE=PASS",flush=True)
+                  previous=0
+                  for i,(name,cap,args) in enumerate(STEPS,1):
+                      s=await safe_preflight(c)
+                      if (s.get("layers") or {}).get("document",{}).get("status")!="ok":
+                          raise RuntimeError("DOCUMENT_NOT_READY_BEFORE_STROKE")
+                      print("HOUSE_STROKE_START="+str(i)+" "+name,flush=True)
+                      await request(c,"creative_write",cap,args)
+                      observed=await info(c)
+                      n,items=inventory(observed)
+                      print("HOUSE_STROKE_READBACK="+json.dumps({"step":i,"name":name,"itemCount":n,"names":items},default=str)[:3200],flush=True)
+                      if n!=previous+1 or name not in items:
+                          raise RuntimeError("STROKE_NOT_CONFIRMED_STOP_NO_REPLAY")
+                      print("HOUSE_STROKE_PASS="+str(i)+" "+name,flush=True)
+                      previous=n
+                      await asyncio.sleep(1.5)
+                  print("HOUSE_FIRST_GEOMETRY=PASS items="+str(previous),flush=True)
+                  await safe_preflight(c)
+                  save=await request(c,"creative_write","creative.document.save",{"file_path":str(OUT)})
+                  if (save.get("result") or {}).get("execution")!="succeeded":
+                      raise RuntimeError("SAVE_OUTCOME_UNVERIFIED")
+                  if not OUT.is_file() or OUT.stat().st_size<1024:
+                      raise RuntimeError("HOUSE_SAVED_FILE_MISSING")
+                  print("HOUSE_FILE_SAVED=PASS path="+str(OUT)+" bytes="+str(OUT.stat().st_size),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath draw_house_first.py -Encoding UTF8
+          uv run python draw_house_first.py
+          if($LASTEXITCODE -ne 0){throw 'HOUSE_FIRST_VISIBLE_DRAW_FAILED'}
+      - name: Capture actual Illustrator desktop evidence
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          try {
+            Add-Type -AssemblyName System.Drawing
+            Add-Type -AssemblyName System.Windows.Forms
+            $ai=Get-Process Illustrator -ErrorAction Stop|Where-Object {$_.MainWindowHandle -ne 0}|Select-Object -First 1
+            $bounds=[System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp=New-Object System.Drawing.Bitmap($bounds.Width,$bounds.Height)
+            $g=[System.Drawing.Graphics]::FromImage($bmp)
+            $g.CopyFromScreen($bounds.Location,[System.Drawing.Point]::Empty,$bounds.Size)
+            $bmp.Save((Join-Path (Get-Location) 'house_first_visible.png'),[System.Drawing.Imaging.ImageFormat]::Png)
+            $g.Dispose();$bmp.Dispose()
+            Write-Output "HOUSE_SCREENSHOT=PASS illustrator=$($ai.Id)"
+          }catch{Write-Output "HOUSE_SCREENSHOT=FAIL $($_.Exception.Message)"}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: illustrator-house-first-visible
+          path: house_first_visible.png
+          retention-days: 14
+          if-no-files-found: warn

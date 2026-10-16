@@ -1,0 +1,90 @@
+name: Mode 2 XD copy opening observation only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-copy-observe.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  observe:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Observe XD after one-shot copy open without replay
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          # Four bounded samples distinguish asynchronous opening from a failed request.
+          # No focus changes, shell opens, keyboard input, or document edits.
+          Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class Mode2Foreground { [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId); }'
+          $observations=@()
+          for($sample=1;$sample -le 4;$sample++){
+            $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+            $xd=@($windows | Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+            $original=@($xd | Where-Object {[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+            $copy=@($xd | Where-Object {[string]$_.Current.Name -match '^Panda_Mode2_Editable_Experiment.*Adobe XD$'})
+            $handle=[Mode2Foreground]::GetForegroundWindow()
+            $foregroundPid=[uint32]0
+            [void][Mode2Foreground]::GetWindowThreadProcessId($handle,[ref]$foregroundPid)
+            Write-Host "MODE2_OBSERVE_SAMPLE=$sample ORIGINAL=$($original.Count) COPY=$($copy.Count) TOTAL=$($xd.Count) FOREGROUND_PID=$foregroundPid"
+            foreach($win in $xd){
+              $foreground=($win.Current.NativeWindowHandle -eq $handle.ToInt32() -and $handle -ne [IntPtr]::Zero)
+              Write-Host "MODE2_OBSERVE_WINDOW_SAMPLE=$sample TITLE=$([string]$win.Current.Name) PID=$($win.Current.ProcessId) HANDLE=$($win.Current.NativeWindowHandle) FOREGROUND=$foreground"
+            }
+            $observations+=@{original=$original.Count;copy=$copy.Count;total=$xd.Count}
+            if($sample -lt 4){Start-Sleep -Seconds 3}
+          }
+          $stableCopy=@($observations | Where-Object {$_.copy -eq 1 -and $_.original -eq 1 -and $_.total -eq 2}).Count -eq 4
+          Write-Host "MODE2_COPY_AND_ORIGINAL_STABLE_FOUR_SAMPLES=$stableCopy"
+          Write-Host 'MODE2_UIA_FOREGROUND_IS_NOT_HOST_NATIVE_PATH_ATTESTATION=True'
+          # Diagnose zero visible windows without reopening or touching the host.
+          $xdProcesses=@(Get-Process -Name XD -ErrorAction SilentlyContinue)
+          foreach($process in $xdProcesses){
+            Write-Host "MODE2_XD_PROCESS PID=$($process.Id) SESSION=$($process.SessionId) RESPONDING=$($process.Responding)"
+          }
+          # Socket ownership alone does not establish a live UXP client.
+          # Collect executable evidence without terminating or launching anything.
+          $candidateProcesses=@(Get-CimInstance Win32_Process | Where-Object {
+            $_.Name -match 'XD|Adobe|UXP|PickerHost|Creative' -or
+            $_.CommandLine -match 'Adobe.XD|AdobeXD|MCPAdobe'
+          })
+          foreach($candidate in $candidateProcesses){
+            $session=try {(Get-Process -Id $candidate.ProcessId -ErrorAction Stop).SessionId} catch {-1}
+            Write-Host "MODE2_PROCESS_CANDIDATE NAME=$($candidate.Name) PID=$($candidate.ProcessId) PARENT=$($candidate.ParentProcessId) SESSION=$session"
+          }
+          $net=@(Get-NetTCPConnection -LocalPort 8765 -ErrorAction SilentlyContinue)
+          foreach($connection in $net){
+            $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$($connection.OwningProcess)" -ErrorAction SilentlyContinue
+            Write-Host "MODE2_PORT_8765 STATE=$($connection.State) OWNER_PID=$($connection.OwningProcess) OWNER_NAME=$($owner.Name) REMOTE=$($connection.RemoteAddress):$($connection.RemotePort)"
+          }
+          $listeners=@($net | Where-Object {$_.State -eq 'Listen'})
+          $established=@($net | Where-Object {$_.State -eq 'Established'})
+          Write-Host "MODE2_PORT_8765_LISTENERS=$($listeners.Count) ESTABLISHED=$($established.Count)"
+          Write-Host 'MODE2_PORT_SOCKET_NOT_DOCUMENT_OWNERSHIP=True'
+          $uxpConnections=@(Get-NetTCPConnection -LocalPort 8765 -ErrorAction SilentlyContinue)
+          Write-Host "MODE2_XD_PROCESS_COUNT=$($xdProcesses.Count) UXP_CONNECTION_COUNT=$($uxpConnections.Count)"
+          $roots=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $sessionTitles=@($roots | Where-Object {[string]$_.Current.Name -match 'XD|Adobe|Picker|Open|Save'})
+          foreach($window in $sessionTitles){
+            Write-Host "MODE2_SESSION_CANDIDATE TITLE=$([string]$window.Current.Name) PID=$($window.Current.ProcessId)"
+          }
+          if($xdProcesses.Count -eq 0){Write-Host 'MODE2_DIAGNOSIS=NO_XD_PROCESS'}
+          elseif($sessionTitles.Count -eq 0){Write-Host 'MODE2_DIAGNOSIS=XD_PROCESS_WITHOUT_VISIBLE_ADOBE_WINDOW'}
+          else{Write-Host 'MODE2_DIAGNOSIS=INSPECT_CANDIDATE_WINDOWS'}
+
+          $source=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          $test=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\mode2-isolated\Panda_Mode2_Editable_Experiment.xd'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($file in @($source,$test)){
+            if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_NATIVE_HASH_CHANGED'}
+          }
+          Write-Host 'MODE2_NO_REOPEN_NO_CLOSE_NO_MUTATION=True'
+          Write-Host 'MODE2_HOST_NATIVE_PATH_ATTESTED=False'
+          Write-Host 'MODE2_OBSERVATION_READONLY=PASS'

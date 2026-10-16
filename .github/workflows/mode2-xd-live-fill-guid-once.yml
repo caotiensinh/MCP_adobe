@@ -1,0 +1,198 @@
+name: Mode 2 XD apply Fill once to selected saved Rectangle and read back
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-live-fill-guid-once.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  fill:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Attest sole clean native XD copy then queue, Approve Apply once, readback
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){
+            throw 'MODE2_FILL_NOT_MRCAO_SESSION1'
+          }
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $baseline='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          $saved='1E15162107A64E3D7D4CAF8C12B88FE24B64488DA9788854E6D300DDBAE88C2F'
+          $pandas=@('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd')
+          foreach($rel in $pandas){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $baseline){
+              throw 'MODE2_FILL_PROTECTED_PANDA_CHANGED'
+            }
+          }
+          $disposable=Join-Path $root 'mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd'
+          if((Get-FileHash -LiteralPath $disposable -Algorithm SHA256).Hash -ne $saved){
+            throw 'MODE2_FILL_SAVED_RECTANGLE_DISK_CHANGED'
+          }
+          $receipt=Join-Path $root 'mode2-disposable-native\mode2_exact_guid_fill_mutation_receipt.json'
+          $applyMarker=Join-Path $root 'mode2-disposable-native\Mode2_GUID_Fill_Apply_Once.marker'
+          if((Test-Path -LiteralPath $receipt) -or (Test-Path -LiteralPath $applyMarker)){
+            throw 'MODE2_FILL_ATTEMPT_ALREADY_RECORDED_NO_REPLAY'
+          }
+          $created=Get-Content -LiteralPath (Join-Path $root 'mode2-disposable-native\mode2_fill_rect_guid_receipt.json') -Raw -Encoding UTF8|ConvertFrom-Json
+          if($created.state -ne 'applied' -or
+              $created.node_id -ne '9989e92f-7c9b-4721-9cdc-b5b5ea33cdf2' -or
+              $created.document_id -ne '98d6635b-3767-4254-b200-ec8442b69ad2'){
+            throw 'MODE2_FILL_NO_EXACT_CREATION_RECEIPT'
+          }
+          if(@(Get-Process -Name Illustrator,Photoshop,PickerHost -ErrorAction SilentlyContinue).Count -gt 0){
+            throw 'MODE2_FILL_FOREIGN_APP_OR_MODAL'
+          }
+          $develop=Join-Path $env:LOCALAPPDATA 'Packages\Adobe.XD_pc75e8sa7ep4e\LocalState\develop'
+          $exp=Join-Path $develop 'MCPAdobeMode2Experiment\main.js'
+          $prod=Join-Path $develop 'MCPAdobeBridge\main.js'
+          $git=(Get-Command git -ErrorAction Stop).Source
+          if((& $git hash-object -- $exp).Trim() -ne 'd47edb15284ff4653da919513815fe4f9d846a70'){
+            throw 'MODE2_FILL_WRONG_EXPERIMENTAL_UXP_VERSION'
+          }
+          $productionSha=(Get-FileHash -LiteralPath $prod -Algorithm SHA256).Hash
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class Mode2FillOnceForeground { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }'
+          $scope=[System.Windows.Automation.TreeScope]::Children
+          $desc=[System.Windows.Automation.TreeScope]::Descendants
+          $cond=[System.Windows.Automation.Condition]::TrueCondition
+          $aid=[System.Windows.Automation.AutomationElement]::AutomationIdProperty
+          function Window {
+            $tops=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,$cond)
+            $xd=@($tops|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+            $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+            if($xd.Count -ne 1 -or $test.Count -ne 1){throw 'MODE2_FILL_XD_WINDOW_NOT_SOLE_DISPOSABLE'}
+            return $test[0]
+          }
+          $win=Window
+          $pattern=$win.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+          if($pattern.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Minimized){
+            $pattern.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Normal)
+          }
+          try{$win.SetFocus()}catch{}
+          [void][Mode2FillOnceForeground]::SetForegroundWindow([IntPtr]$win.Current.NativeWindowHandle)
+          Start-Sleep -Milliseconds 450
+          $file=$win.FindFirst($desc,(New-Object System.Windows.Automation.PropertyCondition($aid,'AppMenu_File')))
+          if(-not $file){throw 'MODE2_FILL_FILE_MENU_MISSING'}
+          $fx=$file.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+          if($fx.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$fx.Expand()}
+          Start-Sleep -Milliseconds 220
+          $saves=@($win.FindAll($desc,$cond)|Where-Object{
+            [string]$_.Current.AutomationId -eq 'AppMenu_Save' -and
+            [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'
+          })
+          $fx.Collapse()
+          if($saves.Count -ne 1 -or $saves[0].Current.IsEnabled){throw 'MODE2_FILL_DOCUMENT_DIRTY_REFUSE_WRITE'}
+          if(@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue).Count -lt 1){
+            throw 'MODE2_FILL_PRODUCTION_BRIDGE_NOT_CONNECTED'
+          }
+          if(@(Get-NetTCPConnection -LocalPort 8766 -State Listen -ErrorAction SilentlyContinue).Count -gt 0){
+            throw 'MODE2_FILL_UNOWNED_EXPERIMENTAL_LISTENER'
+          }
+          Write-Host 'MODE2_NATIVE_FILL_PRESAFE_DISPOSABLE_CLEAN=PASS'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $uv=(Get-Command uv -ErrorAction Stop).Source
+          & $uv run --python 3.12 python -m py_compile scripts/mode2_live_disposable_fill_once.py
+          if($LASTEXITCODE -ne 0){throw 'MODE2_FILL_DRIVER_PYTHON_COMPILE_FAILED'}
+          $out=Join-Path $env:RUNNER_TEMP 'mode2_exact_guid_fill_stdout.txt'
+          $err=Join-Path $env:RUNNER_TEMP 'mode2_exact_guid_fill_stderr.txt'
+          $child=Start-Process -FilePath $uv -ArgumentList @('run','--python','3.12','python','scripts/mode2_live_disposable_fill_once.py','--wait-seconds','110') -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
+          try{
+            $listen=$false
+            for($i=1;$i -le 50;$i++){
+              Start-Sleep -Milliseconds 350
+              if($child.HasExited){throw 'MODE2_FILL_DRIVER_EARLY_EXIT'}
+              if(@(Get-NetTCPConnection -LocalPort 8766 -State Listen -ErrorAction SilentlyContinue).Count -eq 1){$listen=$true;break}
+            }
+            if(-not $listen){throw 'MODE2_FILL_8766_LISTENER_NOT_READY'}
+            function Open-ExperimentalMenu {
+              $w=Window
+              $plugins=$w.FindFirst($desc,(New-Object System.Windows.Automation.PropertyCondition($aid,'AppMenuBar_Plugins')))
+              if(-not $plugins){throw 'MODE2_FILL_PLUGIN_MENU_MISSING'}
+              $px=$plugins.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+              if($px.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$px.Expand()}
+              Start-Sleep -Milliseconds 220
+              $a=$w.FindAll($desc,$cond)
+              $rootItems=@($a|Where-Object{
+                [string]$_.Current.Name -eq 'MCP Adobe Mode 2 Experimental' -and
+                [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'
+              })
+              if($rootItems.Count -ne 1){throw 'MODE2_FILL_EXPERIMENTAL_MENU_ROOT_NOT_UNIQUE'}
+              $ex=$rootItems[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+              if($ex.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$ex.Expand()}
+              Start-Sleep -Milliseconds 230
+              return @($w.FindAll($desc,$cond))
+            }
+            $list=@(Open-ExperimentalMenu)
+            $connect=@($list|Where-Object{
+              [string]$_.Current.Name -eq 'MCP Adobe Mode 2 Connect' -and
+              [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and $_.Current.IsEnabled
+            })
+            if($connect.Count -ne 1){throw 'MODE2_FILL_CONNECT_MENU_NOT_EXACT'}
+            $connect[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            Write-Host 'MODE2_FILL_EXPERIMENTAL_CONNECT_INVOKED_ONCE'
+            $queueReady=$false
+            for($i=1;$i -le 90;$i++){
+              Start-Sleep -Milliseconds 320
+              if($child.HasExited){throw 'MODE2_FILL_DRIVER_EXITED_BEFORE_QUEUE_PROOF'}
+              if((Test-Path -LiteralPath $out) -and
+                (Select-String -LiteralPath $out -Pattern '^MODE2_FILL_QUEUE_READY_FOR_EXPLICIT_MENU=PASS$' -Quiet)){
+                $queueReady=$true;break
+              }
+            }
+            if(-not $queueReady){throw 'MODE2_FILL_QUEUE_NOT_ATTESTED_DO_NOT_APPLY'}
+            $ticket=Get-Content -LiteralPath $receipt -Raw -Encoding UTF8|ConvertFrom-Json
+            if($ticket.state -ne 'queued' -or $ticket.node_id -ne '9989e92f-7c9b-4721-9cdc-b5b5ea33cdf2' -or
+              $ticket.fill_before -ne '#445566' -or $ticket.fill_requested -ne '#A1B2C3' -or
+              -not $ticket.operation_id){
+              throw 'MODE2_FILL_QUEUE_RECEIPT_NOT_EXACT_DO_NOT_APPLY'
+            }
+            Write-Host "MODE2_FILL_EXACT_OPERATION_READY=$($ticket.operation_id)"
+            $list=@(Open-ExperimentalMenu)
+            $apply=@($list|Where-Object{
+              [string]$_.Current.Name -eq 'MCP Adobe Mode 2 Apply' -and
+              [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and $_.Current.IsEnabled
+            })
+            if($apply.Count -ne 1){throw 'MODE2_FILL_APPLY_EXPERIMENTAL_MENU_NOT_UNIQUE'}
+            "run=$env:GITHUB_RUN_ID op=$($ticket.operation_id) at=$([DateTime]::UtcNow.ToString('o'))" |
+              Set-Content -LiteralPath $applyMarker -Encoding ASCII -NoNewline
+            $apply[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            Write-Host 'MODE2_FILL_EXPERIMENTAL_APPLY_MENU_INVOKED_ONCE'
+            if(-not $child.WaitForExit(120000)){throw 'MODE2_FILL_DRIVER_WAIT_TIMEOUT_NO_REPLAY'}
+            if(Test-Path -LiteralPath $out){Get-Content -LiteralPath $out|ForEach-Object{Write-Host $_}}
+            if(Test-Path -LiteralPath $err){Get-Content -LiteralPath $err -Tail 24|ForEach-Object{Write-Host "MODE2_FILL_STDERR=$_"}}
+            if(-not (Select-String -LiteralPath $out -Pattern '^MODE2_NATIVE_FILL_APPLIED_READBACK_A1B2C3=PASS$' -Quiet)){
+              throw 'MODE2_FILL_NATIVE_READBACK_NOT_VERIFIED'
+            }
+            $done=Get-Content -LiteralPath $receipt -Raw -Encoding UTF8|ConvertFrom-Json
+            if($done.state -ne 'applied_verified' -or $done.operation_id -ne $ticket.operation_id){
+              throw 'MODE2_FILL_APPLIED_RECEIPT_NOT_VERIFIED'
+            }
+            Write-Host 'MODE2_FILL_EXACT_GUID_NATIVE_APPLY_READBACK=PASS'
+          }finally{
+            if(-not $child.HasExited){Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue}
+            if(Test-Path -LiteralPath $out){Get-Content -LiteralPath $out -Tail 18|ForEach-Object{Write-Host "MODE2_FILL_DRIVER_OUT=$_"}}
+            if(Test-Path -LiteralPath $err){Get-Content -LiteralPath $err -Tail 18|ForEach-Object{Write-Host "MODE2_FILL_DRIVER_ERR=$_"}}
+          }
+          foreach($rel in $pandas){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $baseline){
+              throw 'MODE2_PANDA_CHANGED_AFTER_NATIVE_FILL'
+            }
+          }
+          if((Get-FileHash -LiteralPath $disposable -Algorithm SHA256).Hash -ne $saved){
+            throw 'MODE2_DISPOSABLE_DISK_CHANGED_WITHOUT_SAVE'
+          }
+          if((Get-FileHash -LiteralPath $prod -Algorithm SHA256).Hash -ne $productionSha){
+            throw 'MODE2_PRODUCTION_PLUGIN_CHANGED'
+          }
+          Write-Host 'MODE2_NATIVE_FILL_ORIGINAL_AND_PRODUCTION_PROTECTED=PASS'

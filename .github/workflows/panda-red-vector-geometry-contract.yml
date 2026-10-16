@@ -1,0 +1,25 @@
+name: Red Panda editable per-stroke vector geometry contracts
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-red-vector-geometry-contract.yml"
+      - "scripts/panda_red_vector_adapter.py"
+      - "tests/test_panda_red_vector_adapter.py"
+      - "scripts/panda_red_poster_blueprint.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  curves:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate individual 60 XD shapes and Illustrator Bézier anchors
+        run: |
+          python -m py_compile scripts/panda_red_vector_adapter.py tests/test_panda_red_vector_adapter.py
+          python -m unittest tests.test_panda_red_vector_adapter -v

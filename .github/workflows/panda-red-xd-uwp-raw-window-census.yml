@@ -1,0 +1,58 @@
+name: Panda red XD raw UWP window identity read-only census
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-uwp-raw-window-census.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  census:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Inventory only XD-owned and ApplicationFrameHost UWP windows, no UI input
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_RAW_CENSUS_WRONG_SESSION'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})
+          foreach($p in $xd){Write-Host "XD_RAW_PROCESS pid=$($p.Id) mainhwnd=$($p.MainWindowHandle) main_title=$($p.MainWindowTitle)"}
+          $xdPids=@($xd|ForEach-Object{$_.Id})
+          $frames=@(Get-Process -Name ApplicationFrameHost -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})
+          Write-Host "XD_RAW_PROCESS_COUNTS xd=$($xd.Count) applicationFrameHost=$($frames.Count)"
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          Write-Host "XD_RAW_UIA_TOP_LEVEL_COUNT=$($top.Count)"
+          $frameCount=0;$xdChildCount=0;$blankFrameCount=0
+          foreach($w in $top){
+            try{
+              $name=[string]$w.Current.Name
+              $class=[string]$w.Current.ClassName
+              $pidValue=[int]$w.Current.ProcessId
+              $frame=($class -eq 'ApplicationFrameWindow')
+              $isXd=($xdPids -contains $pidValue) -or $name -match 'Adobe XD|MCP_KFP4|MCP_Mode1|Untitled'
+              if(-not($frame -or $isXd)){continue}
+              if($frame){$frameCount++;if(-not $name){$blankFrameCount++}}
+              if($isXd){Write-Host "XD_RAW_MATCH_FRAME name=$name class=$class pid=$pidValue"}
+              else{Write-Host "XD_RAW_OTHER_UWP_FRAME titleMatchesAdobe=$([bool]($name -match 'Adobe XD')) blank=$([bool](-not $name))"}
+              foreach($child in $w.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)){
+                $cName=[string]$child.Current.Name
+                $cClass=[string]$child.Current.ClassName
+                $cPid=[int]$child.Current.ProcessId
+                if(($xdPids -contains $cPid) -or $cName -match 'Adobe XD|MCP_KFP4|MCP_Mode1|Untitled'){
+                  $xdChildCount++
+                  Write-Host "XD_RAW_OWNED_CHILD title=$cName class=$cClass pid=$cPid"
+                }
+              }
+            }catch{Write-Host "XD_RAW_UIA_UNAVAILABLE=$($_.Exception.GetType().Name)"}
+          }
+          Write-Host "XD_RAW_UWP_FRAME_COUNT=$frameCount blankFrameCount=$blankFrameCount xdRelatedChildren=$xdChildCount"
+          $plugin=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "XD_RAW_PLUGIN_ESTABLISHED=$($plugin.Count)"
+          Write-Host 'XD_RAW_PASSIVE=PASS'

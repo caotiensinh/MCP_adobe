@@ -1,0 +1,109 @@
+name: Adobe AI one rectangle measured MCP native E2E isolated
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/adobe-ai-one-rectangle-measured-e2e.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  rectangle:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reuse or persistently start only Illustrator in interactive Session 1
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'AI_RECT_E2E_WRONG_SESSION'}
+          foreach($name in @('Photoshop','XD')){
+            if(@(Get-Process -Name $name -ErrorAction SilentlyContinue).Count -gt 0){throw "AI_RECT_E2E_PARALLEL_ADOBE_$name"}
+          }
+          $ai=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          if($ai.Count -gt 1 -or ($ai.Count -eq 1 -and $ai[0].SessionId -ne 1)){throw 'AI_RECT_E2E_UNOWNED_OR_DUPLICATE_HOST'}
+          $watch=[Diagnostics.Stopwatch]::StartNew()
+          $launched=($ai.Count -eq 0)
+          if($launched){
+            $exe='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
+            if(-not(Test-Path -LiteralPath $exe -PathType Leaf)){throw 'AI_RECT_E2E_EXE_MISSING'}
+            $explorer=@(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Where-Object {$_.SessionId -eq 1})
+            if($explorer.Count -lt 1){throw 'AI_RECT_E2E_NO_INTERACTIVE_DESKTOP'}
+            $user=[Security.Principal.WindowsIdentity]::GetCurrent().Name
+            $taskName='MCPAdobe-Illustrator-Interactive'
+            $task=Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+            if($task){
+              # Existing task is owned by a different Windows identity on this
+              # machine (verified MRCAO run 38249168772). Preserve it.
+              $priorActions=@($task.Actions)
+              if($priorActions.Count -ne 1 -or [string]$priorActions[0].Execute -ine $exe){
+                throw 'AI_RECT_E2E_EXISTING_TASK_UNEXPECTED_ACTION'
+              }
+              $oldPrincipal=[string]$task.Principal.UserId
+              $mySid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+              if($oldPrincipal -ine $user -and $oldPrincipal -ine $mySid){
+                Write-Host 'AI_RECT_E2E_FOREIGN_PRINCIPAL_TASK_PRESERVED=PASS'
+                $taskName='MCPAdobe-Rectangle-Illustrator-Session1'
+                $task=Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+              }
+            }
+            if($task){
+              $taskActions=@($task.Actions)
+              $taskExe=if($taskActions.Count -eq 1){[string]$taskActions[0].Execute}else{''}
+              $taskOwner=[string]$task.Principal.UserId
+              $currentSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+              Write-Host "AI_RECT_TASK_AUDIT action_count=$($taskActions.Count) exe_match=$($taskExe -ieq $exe) owner_name_match=$($taskOwner -ieq $user) owner_sid_match=$($taskOwner -ieq $currentSid) logon=$($task.Principal.LogonType)"
+              if(@($task.Actions).Count -ne 1 -or $task.Actions[0].Execute -ine $exe -or
+                 $task.Principal.UserId -ine $user){
+                throw 'AI_RECT_E2E_PERSISTENT_TASK_COLLISION_NO_START'
+              }
+              Write-Host 'AI_RECT_E2E_PERSISTENT_TASK_REUSED=PASS'
+            }else{
+              $action=New-ScheduledTaskAction -Execute $exe
+              $principal=New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+              $settings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 0)
+              Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null
+              Write-Host 'AI_RECT_E2E_PERSISTENT_TASK_CREATED=PASS'
+            }
+            Start-ScheduledTask -TaskName $taskName
+            Write-Host 'AI_RECT_E2E_COLD_START_REQUESTED=PASS'
+          }else{
+            Write-Host 'AI_RECT_E2E_WARM_HOST_REUSED=PASS'
+          }
+          $deadline=(Get-Date).AddSeconds(150)
+          $i=0
+          do{
+            if(@(Get-Process -Name Photoshop,XD -ErrorAction SilentlyContinue).Count -gt 0){throw 'AI_RECT_E2E_ISOLATION_LOST'}
+            $ai=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+            if($ai.Count -gt 1 -or ($ai.Count -eq 1 -and $ai[0].SessionId -ne 1)){throw 'AI_RECT_E2E_HOST_OWNER_CHANGED'}
+            if($ai.Count -eq 1 -and $ai[0].MainWindowHandle -ne 0){
+              if($ai[0].MainWindowTitle -ne 'Adobe Illustrator 2023'){throw 'AI_RECT_E2E_FOREIGN_DOCUMENT_OR_WINDOW_PRESENT'}
+              break
+            }
+            if(($i++ % 10) -eq 0){Write-Host "AI_RECT_E2E_LAUNCH_POLL_MS=$($watch.ElapsedMilliseconds) count=$($ai.Count)"}
+            Start-Sleep -Seconds 1
+          }until((Get-Date)-ge $deadline)
+          if($ai.Count -ne 1 -or $ai[0].MainWindowHandle -eq 0){throw 'AI_RECT_E2E_GUI_NOT_READY_NO_RELAUNCH'}
+          $watch.Stop()
+          Write-Host "AI_RECT_E2E_GUI_READY=PASS pid=$($ai[0].Id) cold=$launched"
+          Write-Host "AI_RECT_APP_LAUNCH_MS=$($watch.ElapsedMilliseconds)"
+          Write-Host 'AI_RECT_E2E_SAFE_EMPTY_EDITOR=PASS'
+      - name: Create exactly one rectangle via real MCP and save distinct native AI with readback
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run --python 3.12 python scripts/adobe_ai_one_rectangle_measured_once.py
+          if($LASTEXITCODE -ne 0){throw 'AI_RECT_E2E_MCP_READBACK_OR_NATIVE_SAVE_NOT_VERIFIED_NO_REPLAY'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: adobe-serial-ai-one-rectangle-native-and-timings
+          path: ${{ runner.temp }}/single_rectangle_ai_artifact/*
+          retention-days: 14
+          if-no-files-found: warn

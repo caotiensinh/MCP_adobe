@@ -1,0 +1,35 @@
+name: Illustrator upstream trace deployment verification
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-upstream-trace-deployment.yml"]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify upstream instrumentation against installed bridge without touching host
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          $up=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\venv\Scripts\python.exe'
+          if(-not(Test-Path $up)){throw 'Installed upstream Python missing'}
+          $env:PYTHONPATH=(Join-Path (Get-Location) 'src')
+          @'
+          import inspect
+          from illustrator_mcp.websocket_bridge import WebSocketBridge
+          from mcp_adobe.illustrator_upstream_trace import install_trace
+          old=WebSocketBridge.execute_script_async
+          install_trace(WebSocketBridge)
+          assert getattr(WebSocketBridge.execute_script_async,"_mcp_adobe_trace",False)
+          install_trace(WebSocketBridge)
+          print("TRACE_INSTALL_IN_PROCESS=PASS",flush=True)
+          print("TRACE_TARGET="+inspect.getfile(WebSocketBridge),flush=True)
+          print("TRACE_EXISTING_HOST_UNMODIFIED=TRUE",flush=True)
+          '@ | Set-Content -LiteralPath inspect_trace.py -Encoding UTF8
+          & $up inspect_trace.py
+          if($LASTEXITCODE -ne 0){throw 'Trace compatibility failed'}

@@ -1,0 +1,34 @@
+name: PANDA XD guarded recovery of windowless UWP host
+# 2026-10-13 evidence: windowless XD and no established UXP socket; invoke guarded single recovery.
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-guarded-uwp-recovery.yml"
+      - "scripts/panda_xd_recover_headless_uwp.ps1"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  recover:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate recovery AST and safely relaunch orphan XD only if no unsaved GUI/bridge
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $p=Join-Path $PWD 'scripts/panda_xd_recover_headless_uwp.ps1'
+          $tokens=$null;$errors=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($p,[ref]$tokens,[ref]$errors)
+          if(@($errors).Count -gt 0){
+            foreach($e in $errors){Write-Host "XD_RECOVERY_PARSE_ERROR line=$($e.Extent.StartLineNumber) message=$($e.Message)"}
+            throw 'XD_RECOVERY_BAD_SYNTAX'
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File $p
+          if($LASTEXITCODE -ne 0){throw 'XD_RECOVERY_NOT_VERIFIED'}
+          Write-Host 'XD_RECOVERY_E2E_HOST_READY=PASS'

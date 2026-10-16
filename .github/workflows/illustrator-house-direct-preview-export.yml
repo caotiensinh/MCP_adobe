@@ -1,0 +1,86 @@
+name: Illustrator house direct PNG preview 8 items
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  export:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - name: Export actual saved Illustrator document as PNG and verify shape names
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'HOUSE_NOT_MRCAO'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'HOUSE_DEPENDENCIES_FAIL'}
+          @'
+          import asyncio,json,hashlib,os,shutil
+          from pathlib import Path
+          from mcp import Client
+
+          BASE=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"
+          AI=BASE/"Two_Story_Red_Tile_House.ai"
+          EXISTING=BASE/"Two_Story_Red_Tile_House_preview.png"
+          PNG=BASE/"Two_Story_Red_Tile_House_8strokes_verification_20261011.png"
+          NAMES={"08 Second Floor Right Blue Glass"}
+
+          async def call(c,tool,cap,args):
+              r=await c.call_tool(tool,{"application":"illustrator","capability":cap,"arguments":args})
+              p=r.structured_content
+              if r.is_error or not isinstance(p,dict) or not p.get("ok"):
+                  raise RuntimeError("HOUSE_EXPORT_RESPONSE_UNKNOWN_"+cap)
+              result=p.get("result") or {}
+              if cap=="creative.health":
+                  execution=(result.get("connection") or {}).get("execution")
+              else:
+                  execution=result.get("execution")
+              if execution!="succeeded":raise RuntimeError("HOUSE_EXPORT_EXECUTION_NOT_SUCCEEDED_"+cap)
+              return p
+
+          async def main():
+              if not AI.is_file() or AI.stat().st_size < 1024: raise RuntimeError("HOUSE_AI_CHECKPOINT_MISSING")
+              if EXISTING.exists():
+                  print("HOUSE_EXISTING_PREVIEW_PRESERVED="+json.dumps({"bytes":EXISTING.stat().st_size,"modified":EXISTING.stat().st_mtime}),flush=True)
+              if PNG.exists(): raise RuntimeError("HOUSE_VERSIONED_PNG_ALREADY_EXISTS_DO_NOT_OVERWRITE")
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  h=await call(c,"creative_read","creative.health",{"probe":False,"timeout":5})
+                  d=h["result"]["connection"]["data"]
+                  e=d.get("execution") or {}
+                  panel=(d.get("layers") or {}).get("panel") or {}
+                  if e.get("unresolvedJobs") or e.get("activeJob") is not None or e.get("waiting")!=0 or d.get("blocking"):
+                      raise RuntimeError("HOUSE_HOST_NOT_IDLE")
+                  if panel.get("status")!="ok" or panel.get("busy") is not False or panel.get("activeRequestId") is not None:
+                      raise RuntimeError("HOUSE_PANEL_NOT_IDLE")
+                  state=await call(c,"creative_read","creative.document.info",{})
+                  data=state["result"]["data"]
+                  doc=data.get("document") or {}
+                  layers=data.get("layers") or []
+                  count=sum(int(l.get("itemCount",0)) for l in layers)
+                  names={str(i.get("name")) for l in layers for i in l.get("items") or []}
+                  print("HOUSE_EXPORT_READBACK="+json.dumps({"document":doc.get("name"),"saved":doc.get("saved"),"itemCount":count,"lastStrokeFound":"08 Second Floor Right Blue Glass" in names,"names":sorted(names),"missingExpectedNames":sorted(NAMES-names)}),flush=True)
+                  if doc.get("name")!="Two_Story_Red_Tile_House.ai" or doc.get("saved") is not True or count!=8 or "08 Second Floor Right Blue Glass" not in names:
+                      raise RuntimeError("HOUSE_EXPORT_BAD_DOCUMENT_OR_SHAPE_COUNT")
+                  output=await call(c,"creative_write","creative.document.export",{"output_path":str(PNG),"format":"png","overwrite":False,"scale":1})
+                  print("HOUSE_EXPORT_MCP_EXECUTION="+str(output["result"].get("execution")),flush=True)
+                  if not PNG.is_file() or PNG.stat().st_size < 1000:
+                      raise RuntimeError("HOUSE_EXPORT_PNG_MISSING_OR_TOO_SMALL")
+                  shutil.copyfile(PNG,Path.cwd()/"house_actual_preview.png")
+                  print("HOUSE_EXPORT_REAL_PNG=PASS bytes="+str(PNG.stat().st_size)+" sha256="+hashlib.sha256(PNG.read_bytes()).hexdigest(),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath export_house_preview.py -Encoding UTF8
+          uv run python export_house_preview.py
+          if($LASTEXITCODE -ne 0){throw 'HOUSE_DIRECT_EXPORT_FAILED'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: illustrator-house-8-items-real-png
+          path: house_actual_preview.png
+          if-no-files-found: ignore
+          retention-days: 14

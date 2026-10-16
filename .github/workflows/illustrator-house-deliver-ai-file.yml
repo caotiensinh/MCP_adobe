@@ -1,0 +1,30 @@
+name: Illustrator deliver final editable house AI file
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  deliver:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Verify and package existing house without modifying it
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'WRONG_HOST'}
+          $source=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\Two_Story_Red_Tile_House.ai'
+          if(-not(Test-Path -LiteralPath $source)){throw 'HOUSE_AI_NOT_FOUND'}
+          $file=Get-Item -LiteralPath $source
+          if($file.Length -lt 200000){throw 'HOUSE_AI_FILE_TOO_SMALL'}
+          $before=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+          Copy-Item -LiteralPath $source -Destination (Join-Path (Get-Location) 'Two_Story_Red_Tile_House.ai') -ErrorAction Stop
+          $after=(Get-FileHash -LiteralPath (Join-Path (Get-Location) 'Two_Story_Red_Tile_House.ai') -Algorithm SHA256).Hash
+          if($before -ne $after){throw 'HOUSE_ARTIFACT_HASH_MISMATCH'}
+          Write-Output "HOUSE_FINAL_AI_ARTIFACT=PASS bytes=$($file.Length) sha256=$after"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: illustrator-house-final-editable-ai
+          path: Two_Story_Red_Tile_House.ai
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,41 @@
+name: Illustrator CEP host ownership diagnostic
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-cep-host-ownership.yml"]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Read-only process socket and CEP panel ownership
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $session=[Diagnostics.Process]::GetCurrentProcess().SessionId
+          Write-Output "RUNNER_SESSION=$session"
+          $ai=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'")
+          foreach($p in $ai){Write-Output "ILLUSTRATOR pid=$($p.ProcessId) session=$($p.SessionId)"}
+          $connections=@(Get-NetTCPConnection -LocalPort 8081 -ErrorAction SilentlyContinue)
+          foreach($c in $connections){
+            $p=Get-CimInstance Win32_Process -Filter "ProcessId=$($c.OwningProcess)" -ErrorAction SilentlyContinue
+            $name=if($p){$p.Name}else{'missing'}
+            Write-Output "CEP_TCP state=$($c.State) owner=$name pid=$($c.OwningProcess) session=$($p.SessionId) remoteport=$($c.RemotePort)"
+          }
+          $clients=@(Get-NetTCPConnection -RemotePort 8081 -ErrorAction SilentlyContinue)
+          foreach($c in $clients){
+            $p=Get-CimInstance Win32_Process -Filter "ProcessId=$($c.OwningProcess)" -ErrorAction SilentlyContinue
+            $name=if($p){$p.Name}else{'missing'}
+            Write-Output "CEP_CLIENT state=$($c.State) owner=$name pid=$($c.OwningProcess) session=$($p.SessionId)"
+          }
+          $panel=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel'
+          foreach($relative in @('CSXS\manifest.xml','dist\CSInterface.js','bootstrap\index.html')){
+            $path=Join-Path $panel $relative
+            Write-Output "CEP_FILE $relative exists=$(Test-Path -LiteralPath $path)"
+          }
+          $fontPaths=@(Get-ChildItem 'HKCU:\Software\Adobe\CSXS.*' -ErrorAction SilentlyContinue)
+          Write-Output "CEP_DEBUG_REGISTRY_KEYS=$($fontPaths.Count)"
+          if($ai.Count -eq 0){throw 'Illustrator not running'}
+          if(@($connections|Where-Object State -eq Established).Count -eq 0){throw 'CEP no established connections'}

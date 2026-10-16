@@ -1,0 +1,97 @@
+name: Mode1 PANDA restore real Illustrator host
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  start-host:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore Illustrator desktop without closing or overwriting any document
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'PANDA_NOT_MRCAO'}
+          $session=[System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          $shells=@(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq $session})
+          Write-Output "PANDA_INTERACTIVE_SESSION=$session explorerCount=$($shells.Count)"
+          if($session -eq 0 -or $shells.Count -eq 0){throw 'PANDA_NO_INTERACTIVE_USER_DESKTOP'}
+          $previous=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" -ErrorAction SilentlyContinue)
+          foreach($p in $previous){Write-Output "PANDA_ILLUSTRATOR_EXISTING pid=$($p.ProcessId) session=$($p.SessionId)"}
+          if($previous.Count -eq 0){
+            $candidates=@(
+              'D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe',
+              'C:\Program Files\Adobe\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe',
+              'D:\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
+            )
+            $exe=$candidates|Where-Object {Test-Path -LiteralPath $_}|Select-Object -First 1
+            if(-not $exe){
+              $candidates|ForEach-Object {Write-Output "PANDA_ILLUSTRATOR_CANDIDATE=$_ EXISTS=$(Test-Path -LiteralPath $_)"}
+              throw 'PANDA_ILLUSTRATOR_EXE_NOT_FOUND'
+            }
+            $tracking=$env:RUNNER_TRACKING_ID
+            try {
+              Remove-Item Env:RUNNER_TRACKING_ID -ErrorAction SilentlyContinue
+              $started=Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe) -PassThru
+              Write-Output "PANDA_ILLUSTRATOR_START_REQUESTED pid=$($started.Id) path=$exe"
+            } finally {
+              if($null -ne $tracking){$env:RUNNER_TRACKING_ID=$tracking}
+            }
+          }
+          $deadline=(Get-Date).AddSeconds(100)
+          do {
+            $ai=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq $session})
+            $cep=@(Get-NetTCPConnection -RemotePort 8081 -State Established -ErrorAction SilentlyContinue)
+            if($ai.Count -gt 0 -and $cep.Count -gt 0){break}
+            Start-Sleep -Seconds 3
+          }until((Get-Date)-ge $deadline)
+          Write-Output "PANDA_ILLUSTRATOR_RUNNING=$($ai.Count)"
+          Write-Output "PANDA_CEP_ESTABLISHED_COUNT=$($cep.Count)"
+          foreach($p in $ai){Write-Output "PANDA_ILLUSTRATOR_LIVE_PID=$($p.ProcessId)"}
+          if($ai.Count -eq 0){throw 'PANDA_ILLUSTRATOR_LAUNCH_NOT_PERSISTED'}
+          if($cep.Count -eq 0){throw 'PANDA_CEP_PANEL_NOT_RECONNECTED_NO_DRAW'}
+          Write-Output 'PANDA_ILLUSTRATOR_CEP_TCP=PASS'
+      - name: Verify trusted host callback before permitting panda strokes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'PANDA_DEPS_FAILED'}
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  for probe in (False,True):
+                      r=await c.call_tool("creative_read",{
+                          "application":"illustrator","capability":"creative.health",
+                          "arguments":{"probe":probe,"timeout":20 if probe else 5}
+                      })
+                      if r.is_error or not isinstance(r.structured_content,dict):
+                          raise RuntimeError("PANDA_ILLUSTRATOR_HEALTH_FAILED")
+                      d=r.structured_content.get("result",{}).get("connection",{}).get("data",{})
+                      print("PANDA_ILLUSTRATOR_HEALTH="+json.dumps({
+                          "probe":probe,"blockedAt":d.get("blockedAt"),
+                          "unresolved":(d.get("execution") or {}).get("unresolvedJobs"),
+                          "panel":(d.get("layers") or {}).get("panel"),
+                          "illustrator":(d.get("layers") or {}).get("illustrator"),
+                          "document":(d.get("layers") or {}).get("document"),
+                          "probed":d.get("probed")
+                      },default=str)[:4000],flush=True)
+                      if (d.get("execution") or {}).get("unresolvedJobs"):
+                          raise RuntimeError("PANDA_UNRESOLVED_JOBS_PRESENT")
+                      if (d.get("layers") or {}).get("panel",{}).get("status")!="ok":
+                          raise RuntimeError("PANDA_PANEL_NOT_CONNECTED")
+                      if probe and (d.get("probed") is not True or (d.get("layers") or {}).get("illustrator",{}).get("status")!="ok"):
+                          raise RuntimeError("PANDA_HOST_CALLBACK_NOT_PROVEN")
+                  print("PANDA_ILLUSTRATOR_HOST_READY=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath panda_recover_check.py -Encoding UTF8
+          uv run python panda_recover_check.py
+          if($LASTEXITCODE -ne 0){throw 'PANDA_HOST_RECOVERY_ACCEPTANCE_FAILED'}

@@ -1,0 +1,109 @@
+name: Panda red Illustrator one real editable vector on fresh AI native artboard
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-illustrator-first-verified-new-native.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  first:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prove exact desktop session and native source ownership without loading old Illustrator document
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){
+            throw 'PAN_AI_NEW_VECTOR_WRONG_DESKTOP'
+          }
+          $all=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          if($all.Count -gt 1){throw 'PAN_AI_NEW_VECTOR_MULTIPLE_PROCESS_UNSAFE'}
+          if($all.Count -eq 1 -and ($all[0].SessionId -ne 1 -or $all[0].MainWindowHandle -eq 0)){
+            throw 'PAN_AI_NEW_VECTOR_HEADLESS_EXISTING_PROCESS_NO_DUPLICATE'
+          }
+          if($all.Count -eq 0){
+            $inventory=@(& "$PWD/scripts/adobe_inventory.ps1")
+            $entry=@($inventory|Where-Object {$_.PSObject.Properties.Name -contains 'Illustrator'}|Select-Object -Last 1)
+            if($entry.Count -ne 1){throw 'PAN_AI_NEW_VECTOR_ADOBE_INVENTORY_MISSING'}
+            $exe=[string]$entry[0].Illustrator
+            if(-not(Test-Path -LiteralPath $exe -PathType Leaf) -or (Split-Path -Leaf $exe) -ine 'Illustrator.exe'){
+              throw 'PAN_AI_NEW_VECTOR_EXE_NOT_VERIFIED'
+            }
+            $originalTracker=$env:RUNNER_TRACKING_ID
+            $cold=[System.Diagnostics.Stopwatch]::StartNew()
+            try{
+              $env:RUNNER_TRACKING_ID=''
+              $started=Start-Process -FilePath $exe -PassThru -ErrorAction Stop
+            }finally{$env:RUNNER_TRACKING_ID=$originalTracker}
+            Write-Host "PAN_AI_NEW_VECTOR_START_REQUESTED_ONCE=PASS pid=$($started.Id)"
+          }else{$cold=$null;Write-Host 'PAN_AI_NEW_VECTOR_ALREADY_OPEN=PASS'}
+          $deadline=(Get-Date).AddSeconds(150);$ai=@()
+          do{
+            $ai=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+            if($ai.Count -eq 1 -and $ai[0].Responding){break}
+            if($ai.Count -gt 1){throw 'PAN_AI_NEW_VECTOR_MULTIPLE_GUI_OWNERS'}
+            Start-Sleep -Seconds 2
+          }until((Get-Date)-ge $deadline)
+          if($ai.Count -ne 1 -or -not $ai[0].Responding){
+            throw 'PAN_AI_NEW_VECTOR_GUI_TIMEOUT_NO_RELAUNCH'
+          }
+          if($cold){$cold.Stop();Write-Host "PAN_AI_NEW_VECTOR_COLD_LAUNCH_MS=$($cold.ElapsedMilliseconds)"}
+          Write-Host "PAN_AI_NEW_VECTOR_REAL_GUI=PASS pid=$($ai[0].Id) title=$($ai[0].MainWindowTitle)"
+          $original=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_KFP4_Red_AI_38146162392.ai'
+          if(-not(Test-Path -LiteralPath $original -PathType Leaf) -or
+             (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash -ne 'A44991466F8E3E17EBC92A03BD168B917EFACA04001655CB8932091ACE085091'){
+            throw 'PAN_AI_NEW_VECTOR_ORIGINAL_CHANGED_STOP'
+          }
+          Write-Host "PAN_AI_NEW_NATIVE_PRECHECK=PASS pid=$($ai[0].Id) original_preserved=1"
+      - name: Run true new AI document, native vector rectangle, host snapshot, AI save and PNG export
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run --python 3.12 python -m py_compile scripts/panda_red_illustrator_one_native_shape_fast_snapshot.py scripts/panda_red_poster_blueprint.py
+          if($LASTEXITCODE -ne 0){throw 'PAN_AI_NEW_VECTOR_PYTHON_SYNTAX_FAIL'}
+          $sw=[System.Diagnostics.Stopwatch]::StartNew()
+          uv run --python 3.12 python scripts/panda_red_illustrator_one_native_shape_fast_snapshot.py
+          $rc=$LASTEXITCODE
+          $sw.Stop()
+          Write-Host "PAN_AI_NEW_NATIVE_E2E_WALL_MS=$($sw.ElapsedMilliseconds) rc=$rc"
+          if($rc -ne 0){throw 'PAN_AI_NEW_VECTOR_RESULT_UNKNOWN_CHECK_LOGS_AND_NATIVE_FILES_NO_REPLAY'}
+      - name: Collect only original Illustrator exported files with matching hashes; never rerun host writes
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $dest=Join-Path $PWD 'red_ai_first_verified'
+          New-Item -ItemType Directory -Path $dest -Force|Out-Null
+          foreach($ext in @('ai','png')){
+            $name="MCP_KFP4_Red_AI_Fresh_{0}.{1}" -f $env:GITHUB_RUN_ID,$ext
+            $src=Join-Path $root $name
+            if(Test-Path -LiteralPath $src -PathType Leaf){
+              $dst=Join-Path $dest ("kung_fu_red_illustrator_first.{0}" -f $ext)
+              Copy-Item -LiteralPath $src -Destination $dst -ErrorAction Stop
+              $sha=(Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+              if((Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -ne $sha){
+                throw 'PAN_AI_NEW_NATIVE_COPY_SHA_MISMATCH'
+              }
+              Write-Host "PAN_AI_NEW_NATIVE_ARTIFACT=PASS ext=$ext bytes=$((Get-Item $src).Length) sha256=$sha"
+            }else{
+              Write-Host "PAN_AI_NEW_NATIVE_ARTIFACT_NOT_PRESENT=$ext"
+            }
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-red-illustrator-new-first-vector-native-evidence
+          path: red_ai_first_verified/*
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,70 @@
+name: Panda Illustrator launch real empty interactive host without opening changed AI file
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-illustrator-host-gui-recover-once.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  open:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm missing Illustrator, record red .ai hash without opening it, start empty native GUI
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){
+            throw 'PANDA_AI_START_WRONG_DESKTOP'
+          }
+          $ps=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          $cim=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" -ErrorAction SilentlyContinue)
+          Write-Host "PANDA_AI_START_CURRENT_PROCESSES=GetProcess:$($ps.Count) CIM:$($cim.Count)"
+          if($ps.Count -ne $cim.Count){throw 'PANDA_AI_START_OS_PROCESS_VIEWS_DISAGREE_NO_LAUNCH'}
+          if($ps.Count -gt 1){throw 'PANDA_AI_START_MULTIPLE_EXISTING_PROCESSES_NO_LAUNCH'}
+          $native=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_KFP4_Red_AI_38146162392.ai'
+          if(-not(Test-Path -LiteralPath $native -PathType Leaf)){throw 'PANDA_AI_START_NATIVE_MISSING'}
+          $sha=(Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash
+          if($sha -ne '0EAF49CA76244CD9D19502E2EDF4E8D8B341633862CD650934ACB9C7DFF073A3'){
+            Write-Host "PANDA_AI_NATIVE_DIVERGED_FROM_PRIOR_CHECKPOINT=TRUE actual_sha256=$sha"
+            Write-Host 'PANDA_AI_NATIVE_SOURCE_UNTRUSTED=DO_NOT_OPEN_OR_MODIFY'
+          }
+          $inventory=@(& "$PWD/scripts/adobe_inventory.ps1")
+          $apps=@($inventory|Where-Object {$_.PSObject.Properties.Name -contains 'Illustrator'})
+          if($apps.Count -ne 1){throw 'PANDA_AI_START_DISCOVERY_AMBIGUOUS'}
+          $exe=[string]$apps[0].Illustrator
+          if(-not $exe -or -not(Test-Path -LiteralPath $exe -PathType Leaf)){throw 'PANDA_AI_START_EXE_MISSING'}
+          Write-Host "PANDA_AI_START_VERIFIED_SOURCE=PASS bytes=$((Get-Item $native).Length) sha256=$sha"
+          if($ps.Count -eq 0){
+            $oldTracking=$env:RUNNER_TRACKING_ID
+            try{
+              Remove-Item Env:RUNNER_TRACKING_ID -ErrorAction SilentlyContinue
+              $proc=Start-Process -FilePath $exe -PassThru
+              Write-Host "PANDA_AI_START_LAUNCHED_ONCE=PASS pid=$($proc.Id)"
+            }finally{
+              if($null -ne $oldTracking){$env:RUNNER_TRACKING_ID=$oldTracking}
+            }
+          }else{
+            Write-Host "PANDA_AI_START_EXISTING_PROCESS=PASS pid=$($ps[0].Id) no_relaunch"
+          }
+          $deadline=(Get-Date).AddSeconds(155)
+          do{
+            $live=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+            if($live.Count -eq 1){break}
+            if($live.Count -gt 1){throw 'PANDA_AI_START_MULTIPLE_WINDOWS_AMBIGUOUS'}
+            Start-Sleep -Seconds 3
+          }until((Get-Date)-ge $deadline)
+          if($live.Count -ne 1){throw 'PANDA_AI_START_GUI_NOT_READY_NO_SECOND_LAUNCH'}
+          Write-Host "PANDA_AI_START_INTERACTIVE_GUI=PASS pid=$($live[0].Id) title=$($live[0].MainWindowTitle)"
+          if((Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash -ne $sha){
+            throw 'PANDA_AI_START_ORIGINAL_NATIVE_CHANGED'
+          }
+          $p=@(Get-Process -Name Photoshop -ErrorAction SilentlyContinue)
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue)
+          Write-Host "PANDA_AI_START_PRESERVED_DESKTOP=PASS photoshop=$($p.Count) xd=$($xd.Count)"
+          Write-Host 'PANDA_AI_START_HOST_GUI_READY=PASS no_gateway_replay no_write_to_existing_ai'

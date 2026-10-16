@@ -15,6 +15,7 @@ SUPPORTED_LEGACY_TOOLS = frozenset(
     {
         "list_fonts",
         "get_document_info",
+        "fast_document_snapshot",
         "get_document_structure",
         "get_selection",
         "get_artboards",
@@ -176,15 +177,20 @@ def _task(
     params: Mapping[str, Any] | None = None,
     *,
     targets: Mapping[str, Any] | None = None,
+    suppress_auto_preview: bool = False,
 ) -> Mapping[str, Any]:
     operation: dict[str, Any] = {"task": task, "params": dict(params or {})}
     if targets is not None:
         operation["targets"] = dict(targets)
-    return _call(
-        raw,
-        "illustrator_execute_task",
-        {"batch": {"operations": [operation], "stopOnError": True}},
-    )
+    request: dict[str, Any] = {"batch": {"operations": [operation], "stopOnError": True}}
+    if suppress_auto_preview:
+        # The upstream evidence cadence can issue z_telemetry/preview_export
+        # AFTER a successfully committed shape and can timeout, misreporting the
+        # completed write as C014/unknown. Our caller verifies each individual
+        # vector with creative.document.fast_snapshot and a separate native save.
+        # Do not perform the hidden post-mutation host round trip here.
+        request["return_preview"] = False
+    return _call(raw, "illustrator_execute_task", request)
 
 
 def _query(raw: RawToolCaller, targets: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -246,7 +252,7 @@ def _create_element(raw: RawToolCaller, element_type: str, arguments: Mapping[st
     params = dict(arguments)
     params.pop("coordinate_system", None)
     params["type"] = element_type
-    return _task(raw, "element_create", params)
+    return _task(raw, "element_create", params, suppress_auto_preview=True)
 
 
 def _select_objects(raw: RawToolCaller, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -380,6 +386,30 @@ def call_legacy_tool(raw: RawToolCaller, name: str, arguments: Mapping[str, Any]
             "connection": status,
         }
 
+    if name == "fast_document_snapshot":
+        # The C014 illustrator_get_document path can enqueue a descriptor-unknown
+        # get_document after an execute_script round-trip, indefinitely fencing
+        # future readback. This is ONE explicitly read-only host call, never
+        # nested get_document and never a native-document mutation.
+        script = (
+            "(function(){"
+            "if(app.documents.length===0){return JSON.stringify({hasDocument:false,items:[]});}"
+            "var d=app.activeDocument;var a=[];"
+            "var n=Math.min(d.pageItems.length,500);"
+            "for(var i=0;i<n;i++){var p=d.pageItems[i];"
+            "a.push({name:String(p.name),typename:String(p.typename),"
+            "hidden:!!p.hidden,locked:!!p.locked,"
+            "left:Number(p.left),top:Number(p.top),"
+            "width:Number(p.width),height:Number(p.height)});}"
+            "return JSON.stringify({hasDocument:true,name:String(d.name),"
+            "width:Number(d.width),height:Number(d.height),"
+            "pageItemCount:d.pageItems.length,returnedItemCount:a.length,"
+            "truncated:d.pageItems.length>n,items:a});"
+            "})()"
+        )
+        return _call(raw, "illustrator_execute_script",
+                     {"script": script, "read_only": True})
+
     if name == "get_document_info":
         # Upstream scope="both" composes two nested canonical calls and can
         # misclassify their CallToolResult envelopes as failures. The gateway
@@ -478,7 +508,7 @@ def call_legacy_tool(raw: RawToolCaller, name: str, arguments: Mapping[str, Any]
         params = dict(args)
         if "text" in params and "contents" not in params:
             params["contents"] = params.pop("text")
-        return _task(raw, "text_create", params)
+        return _task(raw, "text_create", params, suppress_auto_preview=True)
 
     if name == "modify_object":
         tokens = _tokens_from_arguments(args)

@@ -1,0 +1,87 @@
+name: Panda red XD native Open dialog bounded Win32 Edit ComboBox census
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-open-picker-win32-edit-census.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Enumerate bounded Win32 child hierarchy of exact existing XD Open dialog
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_EDIT_CENSUS_WRONG_SESSION'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;using System.Runtime.InteropServices;using System.Text;
+          public static class XdPickerNativeEdit {
+            public delegate bool Callback(IntPtr hwnd,IntPtr lp);
+            [DllImport("user32.dll")] public static extern bool EnumChildWindows(IntPtr h,Callback cb,IntPtr p);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h,StringBuilder s,int n);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h,StringBuilder s,int n);
+            [DllImport("user32.dll")] public static extern int GetDlgCtrlID(IntPtr h);
+            [DllImport("user32.dll")] public static extern IntPtr GetParent(IntPtr h);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+          }
+          '@
+          function ClassOf([IntPtr]$h) {
+            $buffer=New-Object System.Text.StringBuilder(130)
+            [void][XdPickerNativeEdit]::GetClassName($h,$buffer,130)
+            return $buffer.ToString()
+          }
+          function TextOf([IntPtr]$h) {
+            $buffer=New-Object System.Text.StringBuilder(200)
+            [void][XdPickerNativeEdit]::GetWindowText($h,$buffer,200)
+            return $buffer.ToString()
+          }
+          $native=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_KFP4_Red_XD_38205166138.xd'
+          if((Get-FileHash $native -Algorithm SHA256).Hash -ne '58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'){throw 'XD_EDIT_CENSUS_FILE_CHANGED'}
+          $pickers=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1})
+          if($pickers.Count -ne 1){throw 'XD_EDIT_CENSUS_PICKER_AMBIGUOUS'}
+          $targetPid=[uint32]$pickers[0].Id
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $tops=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $frames=@($tops|Where-Object{[string]$_.Current.Name -eq 'Adobe XD' -and [string]$_.Current.ClassName -eq 'ApplicationFrameWindow'})
+          if($frames.Count -ne 1){throw 'XD_EDIT_CENSUS_PARENT_FRAME_MISSING'}
+          $nodes=$frames[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $dialogs=@($nodes|Where-Object{[uint32]$_.Current.ProcessId -eq $targetPid -and [string]$_.Current.Name -eq 'Open' -and $_.Current.ControlType.ProgrammaticName -eq 'ControlType.Window'})
+          if($dialogs.Count -ne 1){throw 'XD_EDIT_CENSUS_OPEN_DIALOG_AMBIGUOUS'}
+          $dialogH=[IntPtr]$dialogs[0].Current.NativeWindowHandle
+          $handles=New-Object System.Collections.Generic.List[System.IntPtr]
+          $cb=[XdPickerNativeEdit+Callback]{
+            param([IntPtr]$h,[IntPtr]$unused)
+            $handles.Add($h)
+            return $true
+          }
+          [void][XdPickerNativeEdit]::EnumChildWindows($dialogH,$cb,[IntPtr]::Zero)
+          Write-Host "XD_EDIT_CENSUS_DIALOG_HWND=$dialogH childCount=$($handles.Count) pickerPid=$targetPid"
+          $edited=0;$combos=0
+          foreach($h in @($handles|Select-Object -First 260)){
+            $cls=ClassOf $h
+            $id=[XdPickerNativeEdit]::GetDlgCtrlID($h)
+            $p=[XdPickerNativeEdit]::GetParent($h)
+            $pClass=ClassOf $p
+            $parentControlId=[XdPickerNativeEdit]::GetDlgCtrlID($p)
+            $owner=[uint32]0
+            [void][XdPickerNativeEdit]::GetWindowThreadProcessId($h,[ref]$owner)
+            if($owner -ne $targetPid){continue}
+            if($cls -eq 'Edit'){$edited++}
+            if($cls -match 'ComboBox'){$combos++}
+            if($cls -match 'Edit|ComboBox|Button|Static' -or $id -in @(1,1090,1148,1152,1001)){
+              $value=TextOf $h
+              if($cls -notmatch 'Edit|ComboBox' -and $value.Length -gt 60){$value=$value.Substring(0,60)}
+              Write-Host "XD_EDIT_CENSUS_ITEM hwnd=$h id=$id class=$cls parent=$p parent_class=$pClass parent_id=$parentControlId text=$value visible=$([XdPickerNativeEdit]::IsWindowVisible($h))"
+            }
+          }
+          Write-Host "XD_EDIT_CENSUS_SUMMARY editCount=$edited comboCount=$combos"
+          Write-Host 'XD_EDIT_CENSUS_NO_WRITE=PASS'

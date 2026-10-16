@@ -1,0 +1,69 @@
+name: AI XD PS serial rectangle stage AI strict host fence read-only gate
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/adobe-ai-one-rectangle-c014-safe-gate.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  ai_gate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Validate all three Adobe apps stopped and Illustrator C014 coordinator state without probing host
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'AI_RECT_WRONG_SESSION'}
+          $apps=@()
+          foreach($name in @('Illustrator','XD','Photoshop')){
+            $ps=@(Get-Process -Name $name -ErrorAction SilentlyContinue)
+            Write-Host "AI_RECT_PRECHECK_APPLICATION name=$name count=$($ps.Count)"
+            if($ps.Count -gt 0){$apps+=,$name}
+          }
+          if($apps.Count -gt 0){throw "AI_RECT_NONEMPTY_ADOBE_HOSTS_NO_NEW_APP $($apps -join ',')"}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $py=Join-Path $env:RUNNER_TEMP 'ai_rect_c014_gate.py'
+          @'
+          import asyncio,json,time
+          from mcp import Client
+          async def main():
+              begin=time.perf_counter()
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  started=time.perf_counter()
+                  r=await asyncio.wait_for(c.call_tool("creative_read",{
+                      "application":"illustrator","capability":"creative.health",
+                      "arguments":{"probe":False,"timeout":5}}),timeout=12)
+                  p=r.structured_content or {}
+                  result=p.get("result") or {}
+                  data=(result.get("connection") or {}).get("data") or {}
+                  execution=data.get("execution") or {}
+                  panel=(data.get("layers") or {}).get("panel") or {}
+                  print("AI_RECT_C014_GATE="+json.dumps({
+                      "transport_ms":round((time.perf_counter()-started)*1000,2),
+                      "is_error":r.is_error,"ok":p.get("ok"),"blocked_at":data.get("blockedAt"),
+                      "unresolved":execution.get("unresolvedJobs"),
+                      "panel_status":panel.get("status"),"panel_busy":panel.get("busy"),
+                      "active_request":panel.get("activeRequestId"),"host_ready":data.get("ready"),
+                      "total_ms":round((time.perf_counter()-begin)*1000,2)
+                  },default=str),flush=True)
+                  # No active process and/or ANY UNKNOWN fence prevents write.
+                  if r.is_error or p.get("ok") is not True:
+                      print("AI_RECT_C014_WRITE_BLOCKED=GATEWAY_UNVERIFIED",flush=True)
+                  elif execution.get("unresolvedJobs") or data.get("blocking"):
+                      print("AI_RECT_C014_WRITE_BLOCKED=UNRESOLVED_OR_FENCED",flush=True)
+                  else:
+                      print("AI_RECT_C014_GATE=NO_UNRESOLVED_JOBS_REPORTED; host still not opened",flush=True)
+          try:asyncio.run(main())
+          except BaseException as e:
+              print("AI_RECT_C014_PROBE_EXCEPTION="+type(e).__name__+":"+str(e)[:300],flush=True)
+          '@|Set-Content -LiteralPath $py -Encoding UTF8
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python $py
+          if($LASTEXITCODE -ne 0){throw 'AI_RECT_GATE_PYTHON_FAILED'}
+          Write-Host 'AI_RECT_NO_MUTATIONS=PASS'

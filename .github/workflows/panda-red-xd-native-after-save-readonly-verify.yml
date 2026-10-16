@@ -1,0 +1,82 @@
+name: Panda red XD native after Save read-only exact disk verification
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-native-after-save-readonly-verify.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Verify after prior Save job without touching Adobe or replaying buttons
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_DISK_WRONG_DESKTOP'}
+          $folder=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $source=Join-Path $folder 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $target=Join-Path $folder 'MCP_KFP4_Red_XD_38205166138.xd'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          $dir=Join-Path $env:RUNNER_TEMP 'panda_red_xd_after_save_readonly'
+          New-Item -ItemType Directory -Path $dir -Force|Out-Null
+          $report=@{run=$env:GITHUB_RUN_ID;source=$source;target=$target;readOnly=$true;exists=$false;sourceOk=$false;zipOk=$false;bytes=0;sha256=$null;entries=0;uiWindows=@()}
+          try{
+            if(-not(Test-Path -LiteralPath $source -PathType Leaf)){throw 'XD_DISK_ORIGINAL_MISSING'}
+            $origHash=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+            $report.sourceOk=($origHash -eq $expected)
+            Write-Host "XD_DISK_SOURCE_MATCH=$($report.sourceOk)"
+            if(-not $report.sourceOk){throw 'XD_DISK_SOURCE_HASH_CHANGED'}
+            $report.exists=Test-Path -LiteralPath $target -PathType Leaf
+            Write-Host "XD_DISK_NEW_FILE_EXISTS=$($report.exists)"
+            if(-not $report.exists){throw 'XD_DISK_NEW_FILE_ABSENT_NO_REPLAY'}
+            $file=Get-Item -LiteralPath $target
+            Start-Sleep -Seconds 2
+            $after=Get-Item -LiteralPath $target
+            if($after.Length -ne $file.Length -or $file.Length -lt 1000){throw 'XD_DISK_NATIVE_UNSTABLE_OR_TOO_SMALL'}
+            $report.bytes=$after.Length
+            $report.sha256=(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $zip=[System.IO.Compression.ZipFile]::OpenRead($target)
+            try{
+              $report.entries=$zip.Entries.Count
+              if($zip.Entries.Count -lt 3){throw 'XD_DISK_ARCHIVE_TOO_FEW_ENTRIES'}
+              foreach($item in $zip.Entries){
+                if($item.Length -gt 0){
+                  $stream=$item.Open()
+                  try{
+                    $buffer=New-Object byte[] 8192
+                    while($stream.Read($buffer,0,$buffer.Length) -gt 0){}
+                  }finally{$stream.Dispose()}
+                }
+              }
+            }finally{$zip.Dispose()}
+            $report.zipOk=$true
+            Add-Type -AssemblyName UIAutomationClient
+            Add-Type -AssemblyName UIAutomationTypes
+            $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+            $windows=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+            foreach($w in $windows){
+              $name=[string]$w.Current.Name
+              if($name -match 'Adobe XD'){
+                $report.uiWindows+=@{name=$name;pid=$w.Current.ProcessId}
+                Write-Host "XD_DISK_WINDOW name=$name"
+              }
+            }
+            if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $expected){throw 'XD_DISK_ORIGINAL_CHANGED_AFTER_READ'}
+            Write-Host "XD_DISK_NATIVE_VERIFIED=PASS bytes=$($report.bytes) sha256=$($report.sha256) zipEntries=$($report.entries) originalUnchanged=1"
+          }finally{
+            $report|ConvertTo-Json -Depth 5|Set-Content -LiteralPath (Join-Path $dir 'xd_after_save_readonly.json') -Encoding UTF8
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-red-xd-after-save-disk-evidence
+          path: ${{ runner.temp }}/panda_red_xd_after_save_readonly/xd_after_save_readonly.json
+          if-no-files-found: warn
+          retention-days: 14

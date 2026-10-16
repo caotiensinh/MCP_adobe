@@ -1,0 +1,41 @@
+name: Illustrator house document reconciliation after trace
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-house-document-reconcile-after-trace.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify actual document list and host before any house drawing
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  for cap,args in [("creative.health",{"probe":True,"timeout":7}),("creative.document.info",{})]:
+                      r=await c.call_tool("creative_read",{"application":"illustrator","capability":cap,"arguments":args})
+                      p=r.structured_content
+                      print("HOUSE_RECON_"+cap+"="+json.dumps({"error":r.is_error,"payload":p},default=str)[:8500],flush=True)
+                      if cap=="creative.health" and isinstance(p,dict):
+                          d=p.get("result",{}).get("connection",{}).get("data",{})
+                          print("HOUSE_RECON_STATE="+json.dumps({"blockedAt":d.get("blockedAt"),"document":d.get("layers",{}).get("document"),"illustrator":d.get("layers",{}).get("illustrator"),"execution":d.get("execution")},default=str),flush=True)
+                      if cap=="creative.document.info" and isinstance(p,dict):
+                          data=p.get("result",{}).get("data",{})
+                          print("HOUSE_RECON_NAME="+str(data.get("document",{}).get("name")),flush=True)
+                          print("HOUSE_RECON_OBJECTS="+json.dumps([{"name":l.get("name"),"count":l.get("itemCount"),"items":l.get("items")} for l in data.get("layers",[])],default=str)[:4800],flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath reconcile_document.py -Encoding UTF8
+          uv run python reconcile_document.py

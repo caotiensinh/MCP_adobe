@@ -1,0 +1,78 @@
+name: Panda XD enumerate all CoreWindows and find actual Home Create button
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-20261012-xd-home-corewindow-discovery.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Enumerate all Win32 top windows owned by XD.exe and inspect exact Create accessibility
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_DISCOVERY_WRONG_DESKTOP'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;using System.Runtime.InteropServices;using System.Text;
+          public class XdCoreWindows {
+            public delegate bool EnumProc(IntPtr hwnd,IntPtr unused);
+            [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback,IntPtr unused);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd,out uint pid);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd,StringBuilder text,int limit);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd,StringBuilder text,int limit);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+          }
+          '@
+          $source=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $sha){throw 'XD_DISCOVERY_ORIGINAL_CHANGED'}
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          if($xd.Count -ne 1){throw 'XD_DISCOVERY_XD_PROCESS_AMBIGUOUS'}
+          $xdPid=[uint32]$xd[0].Id
+          $windows=New-Object System.Collections.Generic.List[System.IntPtr]
+          $callback=[XdCoreWindows+EnumProc]{
+            param([IntPtr]$hwnd,[IntPtr]$ignored)
+            $pidValue=[uint32]0
+            [void][XdCoreWindows]::GetWindowThreadProcessId($hwnd,[ref]$pidValue)
+            if($pidValue -eq $xdPid){$windows.Add($hwnd)}
+            return $true
+          }
+          [void][XdCoreWindows]::EnumWindows($callback,[IntPtr]::Zero)
+          Write-Host "XD_DISCOVERY_WINDOWS_COUNT=$($windows.Count) XD_PID=$xdPid"
+          foreach($hwnd in $windows){
+            $cls=New-Object System.Text.StringBuilder(200)
+            $txt=New-Object System.Text.StringBuilder(200)
+            [void][XdCoreWindows]::GetClassName($hwnd,$cls,200)
+            [void][XdCoreWindows]::GetWindowText($hwnd,$txt,200)
+            Write-Host "XD_DISCOVERY_WINDOW hwnd=$hwnd class=$($cls.ToString()) title=$($txt.ToString()) visible=$([XdCoreWindows]::IsWindowVisible($hwnd))"
+            try{
+              $core=[System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+              $controls=$core.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+              Write-Host "XD_DISCOVERY_UIA hwnd=$hwnd descendants=$($controls.Count)"
+              if($cls.ToString() -eq 'Xaml_WindowedPopupClass'){
+                foreach($node in $controls){
+                  $name=[string]$node.Current.Name
+                  $id=[string]$node.Current.AutomationId
+                  Write-Host "XD_DISCOVERY_POPUP_CONTROL name=$($name.Substring(0,[Math]::Min(100,$name.Length))) id=$id type=$($node.Current.ControlType.ProgrammaticName) enabled=$($node.Current.IsEnabled)"
+                }
+              }
+
+              foreach($id in @('sidebar-work--create','titlebarHomeButton','AppMenu_File')){
+                $cond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,$id)
+                $matches=$core.FindAll([System.Windows.Automation.TreeScope]::Descendants,$cond)
+                Write-Host "XD_DISCOVERY_CONTROL hwnd=$hwnd id=$id count=$($matches.Count)"
+                foreach($item in $matches){Write-Host "XD_DISCOVERY_CONTROL_DETAIL hwnd=$hwnd id=$id name=$($item.Current.Name) enabled=$($item.Current.IsEnabled)"}
+              }
+            }catch{Write-Host "XD_DISCOVERY_UIA_ERROR hwnd=$hwnd class=$($_.Exception.GetType().Name)"}
+          }
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $sha){throw 'XD_DISCOVERY_SOURCE_DIVERGED'}
+          Write-Host 'XD_DISCOVERY_READONLY=PASS'

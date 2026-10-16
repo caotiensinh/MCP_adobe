@@ -1,0 +1,183 @@
+name: Mode 2 XD activate staged Fill inspector and read real rectangle color once
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-fill-inspector-activate-readonly-once.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  activate-and-read:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Guard clean saved XD file and invoke experimental plugin Reload exactly once
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1) {
+            throw 'MODE2_WRONG_HOST_OR_DESKTOP_SESSION'
+          }
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $baseline='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          $saved='1E15162107A64E3D7D4CAF8C12B88FE24B64488DA9788854E6D300DDBAE88C2F'
+          $pandas=@('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd')
+          foreach($rel in $pandas){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $baseline) {
+              throw 'MODE2_PROTECTED_PANDA_HASH_CHANGED'
+            }
+          }
+          $file=Join-Path $root 'mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd'
+          if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $saved) {
+            throw 'MODE2_DISPOSABLE_SAVED_SHA_CHANGED'
+          }
+          $receipt=Get-Content -LiteralPath (Join-Path $root 'mode2-disposable-native\mode2_fill_rect_guid_receipt.json') -Raw -Encoding UTF8|ConvertFrom-Json
+          if($receipt.state -ne 'applied' -or
+              $receipt.node_id -ne '9989e92f-7c9b-4721-9cdc-b5b5ea33cdf2') {
+            throw 'MODE2_RECTANGLE_RECEIPT_NOT_EXACT'
+          }
+          $marker=Join-Path $root 'mode2-disposable-native\Mode2_FillInspector_Reload_Once.marker'
+          if(Test-Path -LiteralPath $marker){throw 'MODE2_FILL_INSPECTOR_RELOAD_ALREADY_INVOKED_NO_REPLAY'}
+          $develop=Join-Path $env:LOCALAPPDATA 'Packages\Adobe.XD_pc75e8sa7ep4e\LocalState\develop'
+          $installed=Join-Path $develop 'MCPAdobeMode2Experiment\main.js'
+          $manifest=Join-Path $develop 'MCPAdobeMode2Experiment\manifest.json'
+          $production=Join-Path $develop 'MCPAdobeBridge\main.js'
+          $git=(Get-Command git -ErrorAction Stop).Source
+          if((& $git hash-object -- $installed).Trim() -ne 'd47edb15284ff4653da919513815fe4f9d846a70' -or
+             (& $git hash-object -- $manifest).Trim() -ne
+             (& $git hash-object -- 'experimental/mode2-xd-uxp/manifest.json').Trim()){
+            throw 'MODE2_EXPERIMENTAL_READBACK_UXP_NOT_PINNED'
+          }
+          $prodSha=(Get-FileHash -LiteralPath $production -Algorithm SHA256).Hash
+          if(@(Get-Process -Name Illustrator,Photoshop,PickerHost -ErrorAction SilentlyContinue).Count -gt 0){
+            throw 'MODE2_FOREIGN_ADOBE_APP_OR_DIALOG'
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class Mode2FillForeground { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }'
+          $scope=[System.Windows.Automation.TreeScope]::Children
+          $desc=[System.Windows.Automation.TreeScope]::Descendants
+          $condition=[System.Windows.Automation.Condition]::TrueCondition
+          $aid=[System.Windows.Automation.AutomationElement]::AutomationIdProperty
+          function Read-TestWindow {
+            $all=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,$condition)
+            $xd=@($all|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+            $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+            if($xd.Count -ne 1 -or $test.Count -ne 1){throw 'MODE2_EXPECTED_SOLE_SAVED_DISPOSABLE_XD_WINDOW'}
+            return $test[0]
+          }
+          $win=Read-TestWindow
+          $wp=$win.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+          if($wp.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Minimized){
+            $wp.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Normal)
+          }
+          try{$win.SetFocus()}catch{}
+          [void][Mode2FillForeground]::SetForegroundWindow([IntPtr]$win.Current.NativeWindowHandle)
+          Start-Sleep -Milliseconds 600
+          function Menu([string]$id) {
+            for($attempt=1;$attempt -le 15;$attempt++) {
+              $w=Read-TestWindow
+              $item=$w.FindFirst($desc,(New-Object System.Windows.Automation.PropertyCondition($aid,$id)))
+              if($item){return $item}
+              Start-Sleep -Milliseconds 300
+            }
+            throw "MODE2_MENU_NOT_PRESENT_$id"
+          }
+          $fileMenu=Menu 'AppMenu_File'
+          $fx=$fileMenu.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+          if($fx.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$fx.Expand()}
+          Start-Sleep -Milliseconds 260
+          $items=(Read-TestWindow).FindAll($desc,$condition)
+          $save=@($items|Where-Object{
+            [string]$_.Current.AutomationId -eq 'AppMenu_Save' -and
+            [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'
+          })
+          $fx.Collapse()
+          if($save.Count -ne 1 -or $save[0].Current.IsEnabled){throw 'MODE2_UNSAVED_NATIVE_DOCUMENT_NO_RELOAD'}
+          Write-Host 'MODE2_FILL_RELOAD_CLEAN_DISPOSABLE=PASS'
+          if(@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue).Count -lt 1){
+            throw 'MODE2_PRODUCTION_8765_NOT_CONNECTED_NO_RELOAD'
+          }
+          if(@(Get-NetTCPConnection -LocalPort 8766 -State Listen -ErrorAction SilentlyContinue).Count -gt 0){
+            throw 'MODE2_8766_LISTENER_OWNERSHIP_AMBIGUOUS'
+          }
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $uv=(Get-Command uv -ErrorAction Stop).Source
+          & $uv run --python 3.12 python -m py_compile scripts/mode2_saved_rect_color_probe.py
+          if($LASTEXITCODE -ne 0){throw 'MODE2_READONLY_PROBE_SYNTAX_INVALID'}
+          $out=Join-Path $env:RUNNER_TEMP 'mode2_fill_real_readonly_stdout.txt'
+          $err=Join-Path $env:RUNNER_TEMP 'mode2_fill_real_readonly_stderr.txt'
+          $child=Start-Process -FilePath $uv -ArgumentList @('run','--python','3.12','python','scripts/mode2_saved_rect_color_probe.py','--wait-seconds','80') -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
+          try {
+            $listen=$false
+            for($i=1;$i -le 40;$i++){
+              Start-Sleep -Milliseconds 350
+              if($child.HasExited){throw "MODE2_READONLY_LISTENER_EXITED_EARLY_$($child.ExitCode)"}
+              if(@(Get-NetTCPConnection -LocalPort 8766 -State Listen -ErrorAction SilentlyContinue).Count -eq 1){$listen=$true;break}
+            }
+            if(-not $listen){throw 'MODE2_READONLY_8766_NOT_LISTENING'}
+            $plugins=Menu 'AppMenuBar_Plugins'
+            $px=$plugins.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+            if($px.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$px.Expand()}
+            Start-Sleep -Milliseconds 200
+            $dev=Menu 'PluginsMenu_Development'
+            $dx=$dev.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+            if($dx.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$dx.Expand()}
+            Start-Sleep -Milliseconds 240
+            $reload=Menu 'PluginsMenu_Development_Reload'
+            if([string]$reload.Current.Name -ne 'Reload Plugins (Legacy)' -or -not $reload.Current.IsEnabled){
+              throw 'MODE2_LEGACY_RELOAD_CONTROL_NOT_EXACT'
+            }
+            "run=$env:GITHUB_RUN_ID at=$([DateTime]::UtcNow.ToString('o'))"|
+              Set-Content -LiteralPath $marker -Encoding ASCII -NoNewline
+            $reload.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            Write-Host 'MODE2_FILL_INSPECTOR_NATIVE_RELOAD_INVOKED_ONCE'
+            Start-Sleep -Seconds 2
+            $plugins=Menu 'AppMenuBar_Plugins'
+            $px=$plugins.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+            if($px.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$px.Expand()}
+            Start-Sleep -Milliseconds 260
+            $nodes=(Read-TestWindow).FindAll($desc,$condition)
+            $experimental=@($nodes|Where-Object{
+              [string]$_.Current.Name -eq 'MCP Adobe Mode 2 Experimental' -and
+              [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'
+            })
+            if($experimental.Count -ne 1){throw 'MODE2_FILL_EXPERIMENTAL_MENU_NOT_EXACT'}
+            $ex=$experimental[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+            if($ex.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$ex.Expand()}
+            Start-Sleep -Milliseconds 240
+            $nodes=(Read-TestWindow).FindAll($desc,$condition)
+            $connect=@($nodes|Where-Object{
+              [string]$_.Current.Name -eq 'MCP Adobe Mode 2 Connect' -and
+              [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and $_.Current.IsEnabled
+            })
+            if($connect.Count -ne 1){throw 'MODE2_FILL_EXPERIMENTAL_CONNECT_MENU_NOT_EXACT'}
+            $connect[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+            Write-Host 'MODE2_FILL_INSPECTOR_8766_CONNECT_INVOKED_ONCE'
+            if(-not $child.WaitForExit(90000)){throw 'MODE2_FILL_COLOR_READONLY_PROBE_TIMED_OUT'}
+            if(Test-Path -LiteralPath $out){Get-Content -LiteralPath $out|ForEach-Object{Write-Host $_}}
+            if(Test-Path -LiteralPath $err){Get-Content -LiteralPath $err -Tail 25|ForEach-Object{Write-Host "MODE2_FILL_PROBE_STDERR=$_"}}
+            if($child.ExitCode -ne 0){throw "MODE2_FILL_READONLY_PROBE_FAILED_EXIT_$($child.ExitCode)"}
+            if(-not (Select-String -LiteralPath $out -Pattern '^MODE2_REAL_XD_FILL_INITIAL_READBACK=PASS$' -Quiet)){
+              throw 'MODE2_COLOR_NOT_ATTESTED_ON_REAL_XD'
+            }
+            Write-Host 'MODE2_FILL_READ_REAL_XD_NATIVE=PASS'
+          } finally {
+            if(-not $child.HasExited){Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue}
+            if(Test-Path -LiteralPath $out){Get-Content -LiteralPath $out -Tail 18|ForEach-Object{Write-Host "MODE2_PROBE_OUTPUT=$_"}}
+            if(Test-Path -LiteralPath $err){Get-Content -LiteralPath $err -Tail 20|ForEach-Object{Write-Host "MODE2_PROBE_ERROR=$_"}}
+          }
+          foreach($rel in $pandas) {
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $baseline){throw 'MODE2_PROTECTED_SHA_CHANGED_AFTER_RELOAD'}
+          }
+          if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $saved){throw 'MODE2_DISPOSABLE_SHA_CHANGED_AFTER_READ'}
+          if((Get-FileHash -LiteralPath $production -Algorithm SHA256).Hash -ne $prodSha){throw 'MODE2_PRODUCTION_UXP_CHANGED_AFTER_RELOAD'}
+          Write-Host 'MODE2_FILL_REAL_READ_PRODUCTION_AND_NATIVE_PRESERVED=PASS'
+          Write-Host 'MODE2_FILL_WRITE_ATTEMPTED=False'

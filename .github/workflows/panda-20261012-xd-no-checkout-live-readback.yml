@@ -1,0 +1,86 @@
+name: Panda XD fast real MCP readback without Git checkout
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-20261012-xd-no-checkout-live-readback.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  readback:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Verify exact MRCAO desktop native checkpoint and open document
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_FAST_WRONG_DESKTOP'}
+          $file=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if(-not(Test-Path -LiteralPath $file -PathType Leaf)){throw 'XD_FAST_SOURCE_ABSENT'}
+          if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $expected){throw 'XD_FAST_SOURCE_CHANGED'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $matches=@($top | Where-Object {[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+          Write-Host "XD_FAST_NATIVE_SOURCE=PASS document_windows=$($matches.Count) source_sha256=$expected"
+          if($matches.Count -ne 1){throw 'XD_FAST_DOCUMENT_NOT_UNIQUELY_VISIBLE'}
+          $bridge=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "XD_FAST_BRIDGE_ESTABLISHED=$($bridge.Count)"
+      - name: Measure real XD MCP health and 32 editable scene objects with read-only transport
+        shell: powershell
+        env:
+          UV_LINK_MODE: copy
+          PYTHONUTF8: '1'
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $pythonFile=Join-Path $env:RUNNER_TEMP 'panda_xd_fast_readonly.py'
+          @'
+          import asyncio,hashlib,json,os,time
+          from pathlib import Path
+          from mcp import Client
+          SOURCE=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"/"MCP_Mode1_Panda_XD_38136531800.xd"
+          EXPECTED="3a10e1510abc41eccd4485d6f852ea6ced7acc2cf50109e7c1bd123353589ed1"
+          def verify_sha():
+              actual=hashlib.sha256(SOURCE.read_bytes()).hexdigest()
+              if actual != EXPECTED: raise RuntimeError("XD_FAST_NATIVE_SHA_DIVERGED "+actual)
+          async def main():
+              verify_sha()
+              total=time.perf_counter()
+              async with Client("http://127.0.0.1:8787/mcp") as client:
+                  async def read(capability):
+                      t=time.perf_counter()
+                      result=await asyncio.wait_for(client.call_tool("creative_read",{
+                        "application":"xd","capability":capability,"arguments":{}}),timeout=14)
+                      latency_ms=round((time.perf_counter()-t)*1000,2)
+                      payload=result.structured_content or {}
+                      print("XD_FAST_READ="+json.dumps({"capability":capability,"latency_ms":latency_ms,
+                         "is_error":result.is_error,"ok":payload.get("ok")},default=str),flush=True)
+                      if result.is_error or payload.get("ok") is not True:
+                          raise RuntimeError("XD_FAST_READ_FAILED "+capability+" "+str(result.content)[:400])
+                      return payload["result"]
+                  health=await read("creative.health")
+                  if health.get("bridge")!="connected" or health.get("pending_count")!=0:
+                      raise RuntimeError("XD_FAST_BRIDGE_NOT_IDLE "+str(health)[:400])
+                  graph=await read("creative.scenegraph.list")
+                  if graph.get("document_id")!="98d6635b-3767-4254-b200-ec8442b69ad2":
+                      raise RuntimeError("XD_FAST_WRONG_DOCUMENT")
+                  boards=graph.get("nodes") or []
+                  if len(boards)!=1 or len(boards[0].get("children") or [])!=32:
+                      raise RuntimeError("XD_FAST_32_SHAPES_NOT_PRESENT")
+                  bad=[x.get("name") for x in boards[0]["children"] if not x.get("bounds") or
+                    x["bounds"]["right"]<=x["bounds"]["left"] or x["bounds"]["bottom"]<=x["bounds"]["top"]]
+                  if bad:raise RuntimeError("XD_FAST_INVALID_GEOMETRY "+repr(bad))
+              verify_sha()
+              print("XD_FAST_LIVE_MCP_32_READBACK=PASS "+json.dumps({"document_id":graph["document_id"],
+                  "objects":32,"native_sha256":EXPECTED,"elapsed_ms":round((time.perf_counter()-total)*1000,2)}),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath $pythonFile -Encoding UTF8
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python "$pythonFile"
+          if($LASTEXITCODE -ne 0){throw 'XD_FAST_LIVE_MCP_READBACK_FAILED'}

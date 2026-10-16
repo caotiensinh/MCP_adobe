@@ -1,0 +1,25 @@
+name: Red Panda Photoshop editable title layout safety regression
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-red-title-layout-unit.yml"
+      - "scripts/panda_red_photoshop_title_layout.py"
+      - "tests/test_panda_red_photoshop_title_layout.py"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.17"
+      - run: uv sync --python 3.12
+      - name: Execute live-command mock constraints without touching Adobe
+        run: |
+          uv run python -m py_compile scripts/panda_red_photoshop_title_layout.py
+          uv run python -m unittest tests.test_panda_red_photoshop_title_layout -v

@@ -4,6 +4,23 @@ on:
   push:
     branches:
       - "feat/**"
+    paths:
+      - "src/mcp_adobe/**"
+      - "tests/test_photoshop.py"
+      - "tests/test_illustrator.py"
+      - "tests/test_xd.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/interactive-surface-unit.yml"
+  pull_request:
+    paths:
+      - "src/mcp_adobe/**"
+      - "tests/test_photoshop.py"
+      - "tests/test_illustrator.py"
+      - "tests/test_xd.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/interactive-surface-unit.yml"
 
 permissions:
   contents: read

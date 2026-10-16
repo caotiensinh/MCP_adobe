@@ -1,0 +1,39 @@
+name: Illustrator MRCAO host recovery
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-mrcao-host-recovery.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  recover:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Resolve GUI session and start Illustrator only if safe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Output "HOST=$env:COMPUTERNAME RUNNER=$env:RUNNER_NAME SESSION=$([System.Diagnostics.Process]::GetCurrentProcess().SessionId)"
+          $ai=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'")
+          Write-Output "ILLUSTRATOR_BEFORE=$($ai.Count)"
+          $explorer=@(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'")
+          foreach($e in $explorer){Write-Output "EXPLORER_SESSION=$($e.SessionId) PID=$($e.ProcessId)"}
+          $exe='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
+          Write-Output "ILLUSTRATOR_EXE_PRESENT=$(Test-Path $exe)"
+          if($ai.Count -gt 0){Write-Output 'HOST_ALREADY_RUNNING=YES';exit 0}
+          $runnerSession=[System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          if($runnerSession -eq 0 -or -not @($explorer|Where-Object {$_.SessionId -eq $runnerSession}).Count){
+            Write-Output 'START_SKIPPED=RUNNER_NOT_IN_INTERACTIVE_DESKTOP'
+            exit 0
+          }
+          if(-not(Test-Path $exe)){throw 'Illustrator executable missing'}
+          $p=Start-Process -FilePath $exe -PassThru
+          Write-Output "LAUNCHED_ILLUSTRATOR_PID=$($p.Id)"
+          Start-Sleep -Seconds 18
+          $after=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'")
+          Write-Output "ILLUSTRATOR_AFTER=$($after.Count)"
+          if($after.Count -eq 0){throw 'Illustrator exited on launch'}

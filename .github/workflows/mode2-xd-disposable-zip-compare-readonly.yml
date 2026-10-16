@@ -1,0 +1,29 @@
+name: Mode 2 XD saved-disposable archive comparison read-only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-disposable-zip-compare-readonly.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  compare:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read-only ZIP entries and saved new Rectangle GUID
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_ARCHIVE_WRONG_HOST'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run --python 3.12 python scripts/mode2_native_archive_receipt_diagnostic.py
+          if($LASTEXITCODE -ne 0){throw 'MODE2_ARCHIVE_INSPECTION_FAILED'}
+          Write-Host 'MODE2_XD_ZIP_DIAGNOSTIC_NO_MUTATION=PASS'

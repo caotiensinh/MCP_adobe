@@ -1,0 +1,93 @@
+name: PANDA XD refresh stale runtime against saved original
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-refresh-saved-gateway.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  upgrade:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 18
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify saved artboard and record missing XD capabilities before mutation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_RUNTIME_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_RUNTIME_WRONG_SESSION'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'XD_RUNTIME_UV_SYNC_FAILED'}
+          uv run python scripts/panda_xd_saved_source_gateway_gate.py before
+          if($LASTEXITCODE -ne 0){throw 'XD_RUNTIME_PRE_UPGRADE_GUARD_FAILED'}
+      - name: Preserve existing installer backup and upgrade only MCP gateway
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $flag=Join-Path $env:RUNNER_TEMP 'panda_xd_saved_source_gateway_refresh.flag'
+          if(-not (Test-Path -LiteralPath $flag)){
+            Write-Host 'XD_RUNTIME_REFRESH=SKIPPED_CURRENT'
+            exit 0
+          }
+          $root=Join-Path $env:LOCALAPPDATA 'MCPAdobe'
+          $backup=Join-Path $root 'gateway.previous'
+          if(Test-Path -LiteralPath $backup){
+            $exe=Join-Path $backup 'venv\Scripts\mcp-adobe.exe'
+            $metaPath=Join-Path $backup 'install-metadata.json'
+            if(-not (Test-Path -LiteralPath $exe) -or -not (Test-Path -LiteralPath $metaPath)){
+              throw 'XD_RUNTIME_UNKNOWN_BACKUP_NO_WRITE'
+            }
+            $meta=Get-Content -LiteralPath $metaPath -Raw | ConvertFrom-Json
+            if($meta.gateway_port -ne 8787 -or $meta.xd_port -ne 8765){
+              throw 'XD_RUNTIME_BACKUP_PORT_MISMATCH'
+            }
+            foreach($proc in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)){
+              if(([string]$proc.ExecutablePath).StartsWith($backup,[StringComparison]::OrdinalIgnoreCase)){
+                throw "XD_RUNTIME_BACKUP_EXECUTING_PID_$($proc.ProcessId)"
+              }
+            }
+            $archive=Join-Path $root "gateway.previous.safe-archive-$env:GITHUB_RUN_ID"
+            if(Test-Path -LiteralPath $archive){throw 'XD_RUNTIME_ARCHIVE_ALREADY_EXISTS'}
+            Move-Item -LiteralPath $backup -Destination $archive -ErrorAction Stop
+            if(-not (Test-Path -LiteralPath (Join-Path $archive 'install-metadata.json'))){throw 'XD_RUNTIME_ARCHIVE_NOT_VERIFIED'}
+            Write-Host "XD_RUNTIME_OLD_BACKUP_PRESERVED=$archive"
+          }
+          foreach($port in @(8787,8081,8765)){
+            foreach($listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)){
+              $proc=Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
+              Write-Host "XD_RUNTIME_PREINSTALL_PORT port=$port pid=$($listener.OwningProcess) exe=$($proc.ExecutablePath) command=$($proc.CommandLine)"
+              if($port -in @(8787,8765) -and
+                -not ([string]$proc.ExecutablePath).StartsWith((Join-Path $root 'gateway'),[StringComparison]::OrdinalIgnoreCase) -and
+                -not ([string]$proc.CommandLine).Contains('mcp-adobe')){
+                throw "XD_RUNTIME_UNOWNED_PORT_$port"
+              }
+            }
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_local_host.ps1 -SkipStartupRegistration
+          if($LASTEXITCODE -ne 0){throw 'XD_RUNTIME_INSTALL_FAILED_READ_ROLLBACK_LOG'}
+          Write-Host 'XD_RUNTIME_VERSIONED_UPGRADE_APPLIED=PASS'
+      - name: Verify loaded ellipse and export features plus preserved document
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $ok=$false
+          for($i=1;$i -le 8;$i++){
+            uv run python scripts/panda_xd_saved_source_gateway_gate.py after
+            if($LASTEXITCODE -eq 0){$ok=$true;break}
+            Write-Host "XD_RUNTIME_POSTCHECK_ATTEMPT=$i/8"
+            Start-Sleep -Seconds 3
+          }
+          if(-not $ok){throw 'XD_RUNTIME_ADAPTER_OR_UXP_NOT_READY_NO_E2E_DRAW'}
+          Write-Host 'XD_RUNTIME_SAVED_SOURCE_E2E_READY=PASS'

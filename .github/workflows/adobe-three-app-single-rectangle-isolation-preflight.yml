@@ -1,0 +1,82 @@
+name: Adobe AI XD PS single rectangle serial isolation preflight
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/adobe-three-app-single-rectangle-isolation-preflight.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  preflight:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Inventory Session 1 PS XD Illustrator without stopping or starting applications
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'SERIAL_RECT_WRONG_HOST_OR_SESSION'}
+          $out=Join-Path $env:RUNNER_TEMP 'adobe_serial_rect_preflight'
+          New-Item -ItemType Directory -Force -Path $out|Out-Null
+          $nameMap=[ordered]@{AI='Illustrator';XD='XD';PS='Photoshop'}
+          $evidence=[ordered]@{
+            at_utc=[DateTime]::UtcNow.ToString('o')
+            host='MRCAO'
+            session=1
+            unit='ms'
+            test='AI > XD > PS, one rectangle per app, no overlapping running apps'
+            active=@()
+            process_counts=[ordered]@{}
+            safe_to_start_next=$false
+            instructions='Never terminate, restart, or launch an Adobe app with another app process still present. Save/readback native first. C014 UNKNOWN never auto-clear.'
+          }
+          foreach($k in $nameMap.Keys){
+            $name=$nameMap[$k]
+            $found=@(Get-Process -Name $name -ErrorAction SilentlyContinue)
+            $evidence.process_counts[$k]=$found.Count
+            foreach($p in $found){
+              $evidence.active+=,[ordered]@{
+                application=$k
+                process_id=$p.Id
+                session=$p.SessionId
+                main_window_present=($p.MainWindowHandle -ne 0)
+                title=$p.MainWindowTitle
+                started_utc=$p.StartTime.ToUniversalTime().ToString('o')
+              }
+              Write-Host "SERIAL_RECT_PROCESS app=$k pid=$($p.Id) session=$($p.SessionId) hwnd=$($p.MainWindowHandle) title=$($p.MainWindowTitle)"
+            }
+          }
+          $activeKinds=@($nameMap.Keys|Where-Object{$evidence.process_counts[$_] -gt 0})
+          $xdNow=@(Get-Process -Name XD -ErrorAction SilentlyContinue)
+          $frames=@(Get-Process -Name ApplicationFrameHost -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})
+          Write-Host "SERIAL_RECT_CURRENT_XD_COUNT=$($xdNow.Count) FRAMEHOST_COUNT=$($frames.Count)"
+          $evidence.xd_process_count=$xdNow.Count
+          $evidence.application_frame_host_session1=$frames.Count
+          $evidence.active_app_kinds=$activeKinds
+          if($activeKinds.Count -gt 1){
+            $evidence.blocker='MULTIPLE_ADOBE_APPLICATIONS_ALREADY_RUNNING'
+            Write-Host "SERIAL_RECT_ISOLATION=BLOCKED simultaneous=$($activeKinds -join ',')"
+          }else{
+            $evidence.safe_to_start_next=($activeKinds.Count -eq 0)
+            $evidence.blocker=if($activeKinds.Count -eq 1){'ONE_ADOBE_ALREADY_RUNNING_INSPECT_BEFORE_SWITCH'}else{'NONE'}
+            Write-Host "SERIAL_RECT_ISOLATION=$($evidence.blocker)"
+          }
+          foreach($port in @(8787,8765,8081)){
+            $listen=@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+            $connected=@(Get-NetTCPConnection -LocalPort $port -State Established -ErrorAction SilentlyContinue)
+            Write-Host "SERIAL_RECT_PORT port=$port listeners=$($listen.Count) established=$($connected.Count)"
+          }
+          $f=Join-Path $out 'preflight.json'
+          $evidence|ConvertTo-Json -Depth 8|Set-Content -LiteralPath $f -Encoding UTF8
+          Write-Host "SERIAL_RECT_EVIDENCE=$f"
+          Write-Host 'SERIAL_RECT_APP_MUTATIONS=0'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: adobe-ai-xd-ps-one-rectangle-isolation-preflight
+          path: ${{ runner.temp }}/adobe_serial_rect_preflight/preflight.json
+          if-no-files-found: warn
+          retention-days: 14

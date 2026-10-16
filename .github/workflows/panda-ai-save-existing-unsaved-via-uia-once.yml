@@ -1,0 +1,119 @@
+name: Panda Illustrator recover unsaved existing shape with one gated native Ctrl S
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-ai-save-existing-unsaved-via-uia-once.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  persist:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    steps:
+      - name: Preserve source and exact target, validate GUI, save unsaved native Illustrator once without MCP
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){
+            throw 'RECT2_UI_SAVE_WRONG_INTERACTIVE_DESKTOP'
+          }
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $source=Join-Path $root 'MCP_KFP4_Red_AI_Fresh_38157335430.ai'
+          $target=Join-Path $root 'MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai'
+          $originalHash='25D46AAACC766759D11C920872D9EE1CC26861A145826143161698E97CA14B77'
+          if(-not(Test-Path -LiteralPath $source -PathType Leaf) -or -not(Test-Path -LiteralPath $target -PathType Leaf)){
+            throw 'RECT2_UI_SAVE_NATIVE_FILES_ABSENT_NO_ACTION'
+          }
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $originalHash){
+            throw 'RECT2_UI_SAVE_BASELINE_SOURCE_CHANGED_NO_ACTION'
+          }
+          $prior=(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+          if($prior -ne $originalHash){
+            Write-Host "RECT2_UI_SAVE_ALREADY_PERSISTED_OR_CHANGED=TRUE targetSha=$prior; no keyboard action"
+            throw 'RECT2_UI_SAVE_TARGET_ALREADY_CHANGED_DO_NOT_REPEAT'
+          }
+          $ai=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+          if($ai.Count -ne 1){throw 'RECT2_UI_SAVE_AMBIGUOUS_ILLUSTRATOR_NO_ACTION'}
+          $p=$ai[0]
+          $title=[string]$p.MainWindowTitle
+          if(-not $p.Responding -or $title -notmatch '^MCP_KFP4_Red_AI_Fresh_38157628243_5shapes\.ai\*\s+@'){
+            Write-Host "RECT2_UI_SAVE_UNEXPECTED_ACTIVE_TITLE=$title"
+            throw 'RECT2_UI_SAVE_TARGET_UNSAVED_DOCUMENT_NOT_PROVEN'
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $windowCount=0
+          for($i=0;$i -lt $top.Count;$i++){
+            $w=$top.Item($i)
+            try{
+              if($w.Current.ProcessId -ne $p.Id){continue}
+              $windowCount++
+              $pat=$null
+              if($w.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern,[ref]$pat) -and $null -ne $pat){
+                if($pat.Current.IsModal){throw 'RECT2_UI_SAVE_ILLUSTRATOR_MODAL_DIALOG_PRESENT'}
+              }
+              if(-not $w.Current.IsEnabled){throw 'RECT2_UI_SAVE_DISABLED_WINDOW'}
+            }catch [System.Windows.Automation.ElementNotAvailableException]{
+              throw 'RECT2_UI_SAVE_WINDOW_VANISHED'
+            }
+          }
+          if($windowCount -ne 1){throw "RECT2_UI_SAVE_TOP_WINDOWS_UNEXPECTED count=$windowCount"}
+          $checkpoint=Join-Path $root ("rect2_before_uia_save_{0}" -f $env:GITHUB_RUN_ID)
+          if(Test-Path -LiteralPath $checkpoint){throw 'RECT2_UI_SAVE_CHECKPOINT_COLLISION'}
+          New-Item -ItemType Directory -Path $checkpoint -ErrorAction Stop|Out-Null
+          Copy-Item -LiteralPath $target -Destination (Join-Path $checkpoint 'target_before.ai') -ErrorAction Stop
+          Copy-Item -LiteralPath $source -Destination (Join-Path $checkpoint 'source_before.ai') -ErrorAction Stop
+          foreach($entry in @('target_before.ai','source_before.ai')){
+            if((Get-FileHash -LiteralPath (Join-Path $checkpoint $entry) -Algorithm SHA256).Hash -ne $originalHash){
+              throw 'RECT2_UI_SAVE_BACKUP_CHECKSUM_BAD'
+            }
+          }
+          Write-Host "RECT2_UI_SAVE_PREFLIGHT=PASS illustratorPid=$($p.Id) activeDocument=$title checkpoint=$checkpoint"
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class IllustratorNativeSave {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint id);
+            [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extraInfo);
+          }
+          '@
+          [void][IllustratorNativeSave]::ShowWindow($p.MainWindowHandle,9)
+          [void][IllustratorNativeSave]::SetForegroundWindow($p.MainWindowHandle)
+          Start-Sleep -Milliseconds 450
+          $front=[IllustratorNativeSave]::GetForegroundWindow()
+          [uint32]$frontPid=0
+          [void][IllustratorNativeSave]::GetWindowThreadProcessId($front,[ref]$frontPid)
+          if($frontPid -ne $p.Id -or $front -ne $p.MainWindowHandle){
+            throw "RECT2_UI_SAVE_FOREGROUND_NOT_TARGET expected=$($p.Id) actual=$frontPid"
+          }
+          # The first and ONLY native document-changing input in this run.
+          [IllustratorNativeSave]::keybd_event(0x11,0,0,[UIntPtr]::Zero)
+          [IllustratorNativeSave]::keybd_event(0x53,0,0,[UIntPtr]::Zero)
+          [IllustratorNativeSave]::keybd_event(0x53,0,2,[UIntPtr]::Zero)
+          [IllustratorNativeSave]::keybd_event(0x11,0,2,[UIntPtr]::Zero)
+          Write-Host 'RECT2_UI_SAVE_CTRL_S_DISPATCHED=ONCE'
+          $deadline=(Get-Date).AddSeconds(45)
+          $after=$prior
+          do{
+            Start-Sleep -Milliseconds 900
+            $after=(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+            if($after -ne $prior){break}
+          }until((Get-Date) -ge $deadline)
+          $sourceAfter=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+          if($sourceAfter -ne $originalHash){throw 'RECT2_UI_SAVE_IMMUTABLE_SOURCE_CHANGED_STOP'}
+          if($after -eq $prior){
+            Write-Host "RECT2_UI_SAVE_RESULT=UNKNOWN_DISPATCHED_ONCE_NOT_PERSISTED diskSha=$after"
+            throw 'RECT2_UI_SAVE_UNKNOWN_NO_REPEAT_INSPECT_ILLUSTRATOR'
+          }
+          $new=Get-Item -LiteralPath $target
+          Write-Host "RECT2_UI_SAVE_DISK_CHANGED=PASS bytes=$($new.Length) sha256=$after original_source_intact=1"
+          Write-Host "RECT2_UI_SAVE_NEEDS_FURTHER_SCENEGRAPH_VERIFICATION=TRUE"

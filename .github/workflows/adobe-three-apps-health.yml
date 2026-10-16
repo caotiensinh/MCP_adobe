@@ -1,0 +1,26 @@
+name: Adobe Three Apps Direct Health
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - scripts/probe_adobe_three_apps.py
+      - .github/workflows/adobe-three-apps-health.yml
+permissions:
+  contents: read
+jobs:
+  read-only-three-apps:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test actual application health through existing MCP
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $machine=[Environment]::GetEnvironmentVariable('Path','Machine')
+          $user=[Environment]::GetEnvironmentVariable('Path','User')
+          $env:Path=(@($machine,$user,$env:Path) | Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'Dependencies unavailable'}
+          uv run python scripts/probe_adobe_three_apps.py
+          if($LASTEXITCODE -ne 0){throw 'Adobe application live readiness blocked'}

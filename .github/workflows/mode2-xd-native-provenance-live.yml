@@ -1,0 +1,51 @@
+name: Mode 2 XD MRCAO native provenance read-only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-native-provenance-live.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read original and isolated copy provenance without touching Adobe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_PROVENANCE_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $original=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if(!(Test-Path -LiteralPath $original -PathType Leaf)){throw 'MODE2_ORIGINAL_MISSING'}
+          $sha=(Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
+          $bytes=(Get-Item -LiteralPath $original).Length
+          Write-Host "MODE2_ORIGINAL_MATCH=$($sha -eq $expected) bytes=$bytes"
+          if($sha -ne $expected){throw 'MODE2_ORIGINAL_HASH_MISMATCH'}
+          $test=Join-Path $root 'mode2-isolated'
+          Write-Host "MODE2_ISOLATED_DIRECTORY_EXISTS=$(Test-Path -LiteralPath $test -PathType Container)"
+          if(Test-Path -LiteralPath $test -PathType Container){
+            $copies=@(Get-ChildItem -LiteralPath $test -Filter '*.xd' -File -ErrorAction Stop)
+            Write-Host "MODE2_ISOLATED_COPIES=$($copies.Count)"
+            foreach($copy in $copies){
+              $hash=(Get-FileHash -LiteralPath $copy.FullName -Algorithm SHA256).Hash
+              Write-Host "MODE2_COPY name=$($copy.Name) baselineMatch=$($hash -eq $expected) bytes=$($copy.Length)"
+            }
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          foreach($w in $windows){
+            $title=[string]$w.Current.Name
+            if($title -match 'Adobe XD$'){Write-Host "MODE2_XD_WINDOW_TITLE=$title"}
+          }
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue)
+          Write-Host "MODE2_XD_PROCESS_COUNT=$($xd.Count)"
+          $ws=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "MODE2_XD_SOCKET_ESTABLISHED=$($ws.Count)"
+          Write-Host 'MODE2_PROVENANCE_READONLY=PASS'

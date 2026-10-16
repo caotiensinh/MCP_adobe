@@ -1,0 +1,88 @@
+name: Panda red XD post native Open editor-owned UXP and MCP read-only verification
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-post-native-open-uxp-readonly.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Verify exact red-native owner CoreWindow and plugin menu availability
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_RED_POST_WRONG_HOST_SESSION'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          foreach($pair in @(
+            @('MCP_Mode1_Panda_XD_38136531800.xd','3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'),
+            @('MCP_KFP4_Red_XD_38205166138.xd','58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'))) {
+            if((Get-FileHash -LiteralPath (Join-Path $root $pair[0]) -Algorithm SHA256).Hash -ne $pair[1]){throw 'XD_RED_POST_NATIVE_SHA_CHANGED'}
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $frames=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $red=@($frames|Where-Object{[string]$_.Current.Name -match '^MCP_KFP4_Red_XD_38205166138.*Adobe XD$' -and
+            [string]$_.Current.ClassName -eq 'ApplicationFrameWindow'})
+          $original=@($frames|Where-Object{[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$|^Untitled.*Adobe XD$'})
+          $picker=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          Write-Host "XD_RED_POST_OWNER red=$($red.Count) foreign=$($original.Count) picker=$($picker.Count)"
+          if($red.Count -ne 1 -or $original.Count -gt 0 -or $picker.Count -gt 0){throw 'XD_RED_POST_WINDOW_AMBIGUOUS'}
+          $children=$red[0].FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $cores=@($children|Where-Object{[string]$_.Current.ClassName -eq 'Windows.UI.Core.CoreWindow'})
+          Write-Host "XD_RED_POST_COREWINDOWS=$($cores.Count)"
+          if($cores.Count -ne 1){throw 'XD_RED_POST_CORE_NOT_UNIQUE'}
+          $core=$cores[0]
+          $titleCond=New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::AutomationIdProperty,'TitleText')
+          $titles=$core.FindAll([System.Windows.Automation.TreeScope]::Descendants,$titleCond)
+          foreach($title in $titles){Write-Host "XD_RED_POST_NATIVE_CORE_TITLE=$($title.Current.Name)"}
+          $menuCond=New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::AutomationIdProperty,'AppMenuBar_Plugins')
+          $menus=$core.FindAll([System.Windows.Automation.TreeScope]::Descendants,$menuCond)
+          Write-Host "XD_RED_POST_PLUGINS_MENU_COUNT=$($menus.Count)"
+          $est=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "XD_RED_POST_WS_ESTABLISHED=$($est.Count)"
+          Write-Host 'XD_RED_POST_EDITOR_OWNER=PASS'
+      - name: Observe transport and read MCP only if XD bridge is connected
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $script=Join-Path $env:RUNNER_TEMP 'panda_red_xd_post_open_verify.py'
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  x=await asyncio.wait_for(c.call_tool("creative_discover",{}),timeout=8)
+                  if x.is_error:raise RuntimeError("XD_RED_DISCOVER_FAILED")
+                  apps=x.structured_content.get("applications",[])
+                  xd=next(a for a in apps if a.get("application")=="xd")
+                  print("XD_RED_POST_DISCOVER="+json.dumps({"connected":xd.get("connected"),"transport":xd.get("transport")}),flush=True)
+                  if xd.get("connected") is not True:
+                      print("XD_RED_POST_NOT_CONNECTED_NO_READ_AND_NO_WRITE=PASS",flush=True)
+                      return
+                  for cap in ("creative.health","creative.document.info","creative.scenegraph.list"):
+                      ret=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=9)
+                      payload=ret.structured_content or {}
+                      data=payload.get("result") or {}
+                      print("XD_RED_POST_READ="+json.dumps({"cap":cap,"is_error":ret.is_error,"ok":payload.get("ok"),
+                        "bridge":data.get("bridge"),"pending_count":data.get("pending_count"),
+                        "id":data.get("id") or data.get("document_id"),"complete":data.get("complete"),
+                        "nodeCount":len(data.get("nodes") or [])}),flush=True)
+                      if ret.is_error or payload.get("ok") is not True:raise RuntimeError("XD_RED_POST_READ_FAILED "+cap)
+          asyncio.run(asyncio.wait_for(main(),timeout=38))
+          '@|Set-Content -LiteralPath $script -Encoding UTF8
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python $script
+          if($LASTEXITCODE -ne 0){throw 'XD_RED_POST_MCP_ERROR'}

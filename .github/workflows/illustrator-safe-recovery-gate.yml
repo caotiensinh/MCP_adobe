@@ -1,0 +1,134 @@
+name: Illustrator safe recovery gate
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/illustrator-safe-recovery-gate.yml"
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore Illustrator process in interactive desktop without changing documents
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $session=[System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          Write-Output ("RUNNER_SESSION={0}" -f $session)
+          if($session -eq 0){throw 'Noninteractive Session 0: cannot open Illustrator on user desktop'}
+          $existing=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          if($existing.Count -gt 0){
+            Write-Output ("ILLUSTRATOR_ALREADY_RUNNING={0}" -f $existing.Count)
+            exit 0
+          }
+          $explicit='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
+          if(Test-Path -LiteralPath $explicit){
+            $exe=$explicit
+            Write-Output 'ILLUSTRATOR_EXPLICIT_PATH=FOUND'
+          } else {
+            Write-Output 'ILLUSTRATOR_EXPLICIT_PATH=NOT_FOUND'
+          }
+          $candidates=@()
+          foreach($base in @($env:ProgramFiles,${env:ProgramFiles(x86)})) {
+            if(-not $base){continue}
+            $adobe=Join-Path $base 'Adobe'
+            if(-not (Test-Path -LiteralPath $adobe)){continue}
+            $dirs=@(Get-ChildItem -LiteralPath $adobe -Directory -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'Illustrator'})
+            foreach($dir in $dirs) {
+              $candidate=Join-Path $dir.FullName 'Support Files\Contents\Windows\Illustrator.exe'
+              if(Test-Path -LiteralPath $candidate){$candidates+=Get-Item -LiteralPath $candidate}
+            }
+          }
+          foreach($key in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\Illustrator.exe','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\Illustrator.exe')){
+            if(Test-Path $key){
+              $value=(Get-Item -LiteralPath $key).GetValue('')
+              if($value -and (Test-Path -LiteralPath $value)){$candidates+=Get-Item -LiteralPath $value}
+            }
+          }
+          if(-not $exe){$exe=($candidates | Sort-Object FullName -Unique | Select-Object -First 1 -ExpandProperty FullName)}
+          if(-not $exe){
+            Write-Output 'ILLUSTRATOR_EXECUTABLE_DISCOVERY=NOT_FOUND'
+            throw 'No Illustrator.exe was found in Adobe installation directories or App Paths registry'
+          }
+          Write-Output ("ILLUSTRATOR_EXECUTABLE_DISCOVERY={0}" -f $exe)
+          Write-Output 'ILLUSTRATOR_START_REQUESTED=1'
+          $tracking=$env:RUNNER_TRACKING_ID
+          try {
+            $env:RUNNER_TRACKING_ID=''
+            Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe)
+          } finally { $env:RUNNER_TRACKING_ID=$tracking }
+          Start-Sleep -Seconds 12
+          $started=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          if($started.Count -eq 0){throw 'Illustrator did not start in interactive session'}
+          Write-Output ("ILLUSTRATOR_STARTED_COUNT={0}" -f $started.Count)
+      - name: Verify previous timed-out job and current canvas read safely
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path) | Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv sync failed'}
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  async def read(cap,args):
+                      r=await c.call_tool("creative_read",{"application":"illustrator","capability":cap,"arguments":args})
+                      if r.is_error:
+                          print("CHECK_"+cap+"=FAIL "+repr(r.content)[:250],flush=True)
+                          return None
+                      p=r.structured_content or {}
+                      print("CHECK_"+cap+"=PASS",flush=True)
+                      return p.get("result",{})
+                  state=await read("creative.job.status",{"jobId":"job_bb227cf2e04a","detail":"summary"})
+                  if state is None: raise RuntimeError("job status unreadable")
+                  job=state.get("data",{}).get("job",{})
+                  print("JOB_STATUS="+str(job.get("status"))+" AWAITING_HOST="+str(job.get("awaitingHost"))+" ERROR="+str(job.get("error"))[:200],flush=True)
+                  print("JOB_EFFECTS="+json.dumps(job.get("effects",{}),ensure_ascii=False),flush=True)
+                  doc=await read("creative.document.info",{})
+                  if doc is None:
+                      print("RECOVERY_GATE=BLOCKED: upstream document read failed; do not redraw",flush=True)
+                      raise RuntimeError("Illustrator document readback failed; E2E drawing is not permitted")
+                  print("DOCUMENT_RESULT="+json.dumps(doc,ensure_ascii=False,default=str)[:1200],flush=True)
+                  print("RECOVERY_GATE=READABLE; no drawing attempted",flush=True)
+                  if job.get("status") == "unknown" or job.get("awaitingHost") is True:
+                      raise RuntimeError("Illustrator unresolved job remains unknown; drawing is not permitted")
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath recovery_gate.py -Encoding UTF8
+          uv run python recovery_gate.py
+          if($LASTEXITCODE -ne 0){throw 'safe recovery probe failed'}
+
+      - name: Collect sanitized Illustrator upstream failure evidence
+        if: failure()
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Continue'
+          $targets = @('Illustrator.exe','python.exe','node.exe')
+          Get-CimInstance Win32_Process | Where-Object { $targets -contains $_.Name } | ForEach-Object {
+            Write-Output ("PROCESS name={0} pid={1} session={2}" -f $_.Name,$_.ProcessId,$_.SessionId)
+          }
+          foreach($port in @(8081,8787)) {
+            $connections = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+            Write-Output ("PORT_{0}_LISTEN_COUNT={1}" -f $port,$connections.Count)
+          }
+          $log=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\logs\local-host.log'
+          if(-not (Test-Path -LiteralPath $log)){Write-Output 'GATEWAY_LOG_NOT_FOUND';exit 0}
+          $bytes=[IO.File]::ReadAllBytes($log)
+          if($bytes.Length -ge 2 -and $bytes[0] -eq 255 -and $bytes[1] -eq 254) {
+            $content=[Text.Encoding]::Unicode.GetString($bytes)
+          } elseif($bytes.Length -ge 2 -and $bytes[0] -eq 254 -and $bytes[1] -eq 255) {
+            $content=[Text.Encoding]::BigEndianUnicode.GetString($bytes)
+          } else {
+            $content=[Text.Encoding]::UTF8.GetString($bytes)
+            if($content.Contains([char]0)){$content=[Text.Encoding]::Unicode.GetString($bytes)}
+          }
+          $lines=@($content -split "\r?\n" | Where-Object {$_ -match 'C014|missing_descriptor|R_TIMEOUT|unresolved|creative_read|traceback|exception|delivery failure'})
+          Write-Output ("GATEWAY_DIAGNOSTIC_MATCHES={0}" -f $lines.Count)
+          $lines | Select-Object -Last 35 | ForEach-Object {
+            $safe = $_ -replace '(?i)(bearer\s+)\S+','$1[REDACTED]' -replace '(?i)((?:token|password|secret|authorization)\s*[:=]\s*)\S+','$1[REDACTED]' -replace 'https?://\S+','[URL_REDACTED]'
+            Write-Output ("GATEWAY_EVIDENCE "+$safe.Substring(0,[Math]::Min(360,$safe.Length)))
+          }

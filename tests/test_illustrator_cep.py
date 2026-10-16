@@ -129,6 +129,34 @@ class IllustratorCepCompatibilityTests(unittest.TestCase):
             ],
         )
 
+    def test_fast_snapshot_avoids_c014_get_document_descriptor_fence(self) -> None:
+        raw = RawCaller({
+            "illustrator_execute_script": {
+                "schemaVersion": "1.1",
+                "execution": "succeeded",
+                "data": {"result": '{"hasDocument":true,"name":"Red Poster"}'},
+                "ok": True,
+            }
+        })
+        response = call_legacy_tool(raw, "fast_document_snapshot", {})
+        self.assertEqual(len(raw.calls), 1)
+        tool, payload = raw.calls[0]
+        self.assertEqual(tool, "illustrator_execute_script")
+        params = payload["params"]
+        self.assertIs(params["read_only"], True)
+        self.assertIn("pageItemCount", params["script"])
+        self.assertIn("activeDocument", params["script"])
+        self.assertNotIn("illustrator_get_document", params["script"])
+        self.assertNotIn("createRectangle", params["script"])
+        self.assertEqual(response["execution"], "succeeded")
+
+    def test_fast_snapshot_is_discoverable_as_read_capability(self) -> None:
+        self.assertIn("fast_document_snapshot", SUPPORTED_LEGACY_TOOLS)
+        adapter = IllustratorAdapter(FilteredClient())
+        info = adapter.info()
+        self.assertIn("creative.document.fast_snapshot", info.common_capabilities)
+        self.assertEqual(info.risk_for("creative.document.fast_snapshot").value, "read")
+
     def test_document_info_uses_single_document_scope_round_trip(self) -> None:
         raw = RawCaller(
             {
@@ -315,6 +343,43 @@ class IllustratorCepCompatibilityTests(unittest.TestCase):
         self.assertEqual(operation["targets"], {"type": "handle", "handles": ["h-123"]})
         self.assertEqual(operation["params"], {"x": 112, "y": 46, "opacity": 60})
         self.assertTrue(arguments["params"]["batch"]["stopOnError"])
+
+    def test_vector_and_text_creation_disables_hidden_upstream_preview_phase(self) -> None:
+        # Regression: a second real rectangle created successfully, but upstream
+        # automatically called z_telemetry afterwards and returned C014/unknown.
+        # Every creation has a separate live fast_snapshot+save acceptance gate.
+        examples = (
+            ("create_rectangle", {"name": "002 Orange-red upper field", "x": 0,
+                                  "y": 0, "width": 880, "height": 700,
+                                  "fill": {"r": 244, "g": 45, "b": 8}}),
+            ("create_ellipse", {"name": "006 Ground shadow", "x": 10,
+                                "y": 10, "width": 90, "height": 25,
+                                "fill": {"r": 180, "g": 0, "b": 0}}),
+            ("create_path", {"name": "004 Stage light", "points": [[0, 0],
+                              [50, 0], [20, 70]], "closed": True,
+                              "fill": {"r": 255, "g": 40, "b": 0}}),
+            ("create_text_frame", {"name": "057 KUNG FU word layer",
+                                   "text": "KUNG FU", "x": 15, "y": 75,
+                                   "fontSize": 100,
+                                   "fill": {"r": 255, "g": 255, "b": 255}}),
+        )
+        for capability, parameters in examples:
+            with self.subTest(tool=capability):
+                raw = RawCaller()
+                call_legacy_tool(raw, capability, parameters)
+                self.assertEqual(len(raw.calls), 1)
+                upstream, arguments = raw.calls[0]
+                self.assertEqual(upstream, "illustrator_execute_task")
+                self.assertIs(arguments["params"]["return_preview"], False)
+                self.assertEqual(len(arguments["params"]["batch"]["operations"]), 1)
+                self.assertEqual(arguments["params"]["batch"]["stopOnError"], True)
+
+    def test_modification_retains_existing_upstream_evidence_default(self) -> None:
+        raw = RawCaller()
+        call_legacy_tool(raw, "modify_object",
+                         {"uuid": "handle:one", "properties": {"opacity": 85}})
+        self.assertEqual(len(raw.calls), 1)
+        self.assertNotIn("return_preview", raw.calls[0][1]["params"])
 
     def test_document_create_maps_to_canonical_document_tool(self) -> None:
         raw = RawCaller()

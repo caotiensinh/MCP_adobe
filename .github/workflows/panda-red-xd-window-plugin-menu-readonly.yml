@@ -1,0 +1,57 @@
+name: Panda red XD window and plugin menu read-only ownership census
+# 2026-10-13 inspect missing unique XD Home after guarded native open refused.
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-window-plugin-menu-readonly.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Enumerate exact active XD UWP CoreWindow and plugins menu without input
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_CENSUS_HOST_OR_SESSION_MISMATCH'}
+          $src=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          $dst=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_KFP4_Red_XD_38205166138.xd'
+          if((Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash -ne '3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'){throw 'XD_CENSUS_OLD_SOURCE_CHANGED'}
+          if((Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -ne '58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'){throw 'XD_CENSUS_NEW_DRAFT_CHANGED'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $windows=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $matches=@()
+          foreach($window in $windows){
+            try{
+              $name=[string]$window.Current.Name
+              $class=[string]$window.Current.ClassName
+              if($name -match 'Adobe XD|MCP_Mode1|MCP_KFP4|Untitled|MCP Adobe' -or $class -eq 'ApplicationFrameWindow'){
+                if($name -notmatch 'Adobe XD|MCP_Mode1|MCP_KFP4|Untitled|MCP Adobe'){continue}
+                Write-Host "XD_CENSUS_WINDOW name=$name class=$class pid=$($window.Current.ProcessId) enabled=$($window.Current.IsEnabled)"
+                $matches+=,$window
+                foreach($child in $window.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)){
+                  Write-Host "XD_CENSUS_CHILD name=$($child.Current.Name) class=$($child.Current.ClassName) pid=$($child.Current.ProcessId)"
+                  if($child.Current.ClassName -eq 'Windows.UI.Core.CoreWindow'){
+                    $criteria=New-Object System.Windows.Automation.PropertyCondition(
+                      [System.Windows.Automation.AutomationElement]::AutomationIdProperty,'AppMenuBar_Plugins')
+                    $menu=$child.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$criteria)
+                    Write-Host "XD_CENSUS_CORE_MENU_PLUGINS_PRESENT=$([bool]$menu) enabled=$(if($menu){$menu.Current.IsEnabled}else{'unknown'})"
+                  }
+                }
+              }
+            }catch{
+              Write-Host "XD_CENSUS_INACCESSIBLE_WINDOW=$($_.Exception.GetType().Name)"
+            }
+          }
+          Write-Host "XD_CENSUS_WINDOW_COUNT=$($matches.Count)"
+          $ws=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "XD_CENSUS_WS_8765_ESTABLISHED=$($ws.Count)"
+          Write-Host 'XD_CENSUS_READONLY_DONE=PASS'

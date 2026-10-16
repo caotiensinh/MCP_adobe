@@ -1,0 +1,88 @@
+name: Panda red XD click exact Home Open button once and census native picker
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-home-open-command-once.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  one_click:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Invoke proven sidebar-work--open only once; inspect picker before any file input
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_HOME_OPEN_WRONG_HOST_OR_SESSION'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          foreach($pair in @(
+            @('MCP_Mode1_Panda_XD_38136531800.xd','3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'),
+            @('MCP_KFP4_Red_XD_38205166138.xd','58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'))) {
+            if((Get-FileHash -LiteralPath (Join-Path $root $pair[0]) -Algorithm SHA256).Hash -ne $pair[1]){throw 'XD_HOME_OPEN_NATIVE_SHA_CHANGED'}
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          function Get-Windows {
+            return $desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          }
+          $top=Get-Windows
+          $homeFrames=@($top|Where-Object{[string]$_.Current.Name -eq 'Adobe XD' -and [string]$_.Current.ClassName -eq 'ApplicationFrameWindow'})
+          $otherDocuments=@($top|Where-Object{[string]$_.Current.Name -match 'MCP_Mode1_Panda_XD|MCP_KFP4_Red_XD|Untitled|Open|Save As'})
+          $pickers=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1})
+          if($homeFrames.Count -ne 1 -or $otherDocuments.Count -gt 0 -or $pickers.Count -gt 0 -or $xd.Count -ne 1){
+            throw 'XD_HOME_OPEN_PREEXISTING_DOCUMENT_OR_PICKER_REFUSE'
+          }
+          $children=$homeFrames[0].FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $cores=@($children|Where-Object{[string]$_.Current.ClassName -eq 'Windows.UI.Core.CoreWindow'})
+          if($cores.Count -ne 1){throw 'XD_HOME_OPEN_EDITOR_NOT_UNIQUE'}
+          $criteria=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'sidebar-work--open')
+          $matches=$cores[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,$criteria)
+          if($matches.Count -ne 1 -or -not $matches[0].Current.IsEnabled -or
+            $matches[0].Current.ControlType.ProgrammaticName -ne 'ControlType.Button'){
+            throw "XD_HOME_OPEN_BUTTON_NOT_EXACT count=$($matches.Count)"
+          }
+          $pattern=$matches[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+          Write-Host 'XD_HOME_OPEN_EXACT_BUTTON=PASS'
+          try{
+            $pattern.Invoke()
+            Write-Host 'XD_HOME_OPEN_BUTTON_INVOKE=ONCE'
+          }catch{
+            throw "XD_HOME_OPEN_INVOCATION_UNKNOWN_NO_REPLAY $($_.Exception.GetType().Name)"
+          }
+          Start-Sleep -Seconds 2
+          $top=Get-Windows
+          $pickerAfter=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          Write-Host "XD_HOME_OPEN_PICKERHOST_COUNT=$($pickerAfter.Count)"
+          foreach($window in $top){
+            try{
+              $title=[string]$window.Current.Name
+              if($title -match 'Adobe XD|Open|File|MCP_KFP4|MCP_Mode1'){
+                Write-Host "XD_HOME_OPEN_AFTER_WINDOW title=$title class=$($window.Current.ClassName) pid=$($window.Current.ProcessId)"
+              }
+            }catch{}
+          }
+          $current=$cores[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          Write-Host "XD_HOME_OPEN_AFTER_CORE_DESCENDANTS=$($current.Count)"
+          $matchesCount=0
+          foreach($node in $current){
+            $name=[string]$node.Current.Name;$id=[string]$node.Current.AutomationId
+            if($name -match '(?i)open|browse|local|your computer|MCP_KFP4|computer|file|開く|参照' -or
+               $id -match '(?i)open|browse|local|file'){
+              Write-Host "XD_HOME_OPEN_AFTER_CONTROL name=$($name.Substring(0,[Math]::Min($name.Length,100))) id=$id type=$($node.Current.ControlType.ProgrammaticName) enabled=$($node.Current.IsEnabled)"
+              $matchesCount++
+              if($matchesCount -ge 45){break}
+            }
+          }
+          foreach($pair in @(
+            @('MCP_Mode1_Panda_XD_38136531800.xd','3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'),
+            @('MCP_KFP4_Red_XD_38205166138.xd','58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'))) {
+            if((Get-FileHash -LiteralPath (Join-Path $root $pair[0]) -Algorithm SHA256).Hash -ne $pair[1]){throw 'XD_HOME_OPEN_NATIVE_CHANGED_AFTER_UI'}
+          }
+          Write-Host 'XD_HOME_OPEN_ONLY_UI_ACTION_DONE_NATIVE_PRESERVED=PASS'

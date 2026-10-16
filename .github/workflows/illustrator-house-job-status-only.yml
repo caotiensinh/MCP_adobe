@@ -1,0 +1,35 @@
+name: Illustrator reconcile pending house create job
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-house-job-status-only.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Query retained job status without replay
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.job.status","arguments":{"jobId":"job_40275b48de5d","detail":"summary"}})
+                  print("HOUSE_JOB_STATUS="+json.dumps({"error":r.is_error,"payload":r.structured_content,"text":[getattr(x,"text",None) for x in r.content]},default=str)[:10000],flush=True)
+                  h=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":False}})
+                  d=(h.structured_content or {}).get("result",{}).get("connection",{}).get("data",{})
+                  print("HOUSE_AFTER_STATUS="+json.dumps({"error":h.is_error,"blockedAt":d.get("blockedAt"),"blocking":d.get("blocking"),"unresolved":(d.get("execution") or {}).get("unresolvedJobs"),"document":(d.get("layers") or {}).get("document")},default=str)[:3800],flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath job_status_house.py -Encoding UTF8
+          uv run python job_status_house.py

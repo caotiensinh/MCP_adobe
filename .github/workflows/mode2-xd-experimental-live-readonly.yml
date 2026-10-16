@@ -1,0 +1,70 @@
+name: Mode 2 XD experimental activated-host read-only E2E
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-experimental-live-readonly.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  isolated-uxp-read:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require sole clean disposable XD document and unique staged plugin
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          if(@(Get-Process -Name Illustrator,Photoshop,PickerHost -ErrorAction SilentlyContinue).Count -gt 0){throw 'MODE2_FOREIGN_APP_OR_MODAL'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $all=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $xd=@($all|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          if($xd.Count -eq 0){
+            $native=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd'
+            $tracking=$env:RUNNER_TRACKING_ID
+            try{$env:RUNNER_TRACKING_ID='';Start-Process -FilePath $native -ErrorAction Stop}finally{$env:RUNNER_TRACKING_ID=$tracking}
+            Write-Host 'MODE2_EXPERIMENTAL_READONLY_OPENED_DISPOSABLE_ONCE'
+            $scope=[System.Windows.Automation.TreeScope]::Children
+            $cond=[System.Windows.Automation.Condition]::TrueCondition
+            for($i=1;$i -le 15;$i++){
+              Start-Sleep -Seconds 3
+              $all=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,$cond)
+              $xd=@($all|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+              $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+              if($xd.Count -eq 1 -and $test.Count -eq 1){break}
+            }
+          }
+          if($xd.Count -ne 1 -or $test.Count -ne 1){throw 'MODE2_EXPERIMENTAL_WRONG_DOCUMENT'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($rel in @('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd','mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd')){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $sha){throw 'MODE2_NATIVE_FILE_CHANGED'}
+          }
+          Write-Host 'MODE2_ACTIVATED_READONLY_NATIVE_PREFLIGHT=PASS'
+      - name: Listen on port 8766 and attest experimental UXP in real XD
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run --python 3.12 python scripts/mode2_xd_experimental_readback.py --wait-seconds 30
+          if($LASTEXITCODE -ne 0){throw 'MODE2_EXPERIMENTAL_UXP_NOT_READY_NO_MUTATION'}
+          Write-Host 'MODE2_EXPERIMENTAL_LIVE_READONLY_ACCEPTANCE=PASS'
+      - name: Confirm both native source documents are unchanged
+        shell: powershell
+        run: |
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($rel in @('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd','mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd')){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $sha){throw 'MODE2_NATIVE_FILE_CHANGED_AFTER_READ'}
+          }
+          Write-Host 'MODE2_EXPERIMENTAL_PROTECTED_SHA256=PASS'

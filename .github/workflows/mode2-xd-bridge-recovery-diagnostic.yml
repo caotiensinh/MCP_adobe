@@ -1,0 +1,56 @@
+name: Mode 2 XD production bridge reconnection diagnosis
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-bridge-recovery-diagnostic.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  diagnose-only:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Read bridge endpoints, plugin installation and activation receipt without writing
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $marker=Join-Path $root 'mode2-disposable-native\Mode2_Experimental_Reload_Once.marker'
+          Write-Host "MODE2_RELOAD_MARKER_EXISTS=$(Test-Path -LiteralPath $marker)"
+          foreach($port in @(8765,8766,8787)){
+            $listen=@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+            $established=@(Get-NetTCPConnection -LocalPort $port -State Established -ErrorAction SilentlyContinue)
+            Write-Host "MODE2_PORT_$($port)_LISTEN=$($listen.Count) ESTABLISHED=$($established.Count)"
+          }
+          $develop=Join-Path $env:LOCALAPPDATA 'Packages\Adobe.XD_pc75e8sa7ep4e\LocalState\develop'
+          foreach($name in @('MCPAdobeBridge','MCPAdobeMode2Experiment')){
+            $p=Join-Path (Join-Path $develop $name) 'manifest.json'
+            if(Test-Path -LiteralPath $p -PathType Leaf){
+              $m=Get-Content -LiteralPath $p -Raw -Encoding UTF8 | ConvertFrom-Json
+              Write-Host "MODE2_INSTALLED_$($name)_ID=$($m.id)"
+            }else{Write-Host "MODE2_INSTALLED_$($name)_MISSING"}
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $xd=@($windows|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          Write-Host "MODE2_XD_WINDOWS=$($xd.Count) DISPOSABLE=$($test.Count)"
+          foreach($file in @('mode2_fixture_connect_selected.txt','mode2_fixture_connect_errors.txt')){
+            $p=Join-Path $env:RUNNER_TEMP $file
+            Write-Host "MODE2_PREVIOUS_WATCH_LOG=$file EXISTS=$(Test-Path -LiteralPath $p)"
+            if(Test-Path -LiteralPath $p -PathType Leaf){
+              Get-Content -LiteralPath $p -Tail 35 | ForEach-Object {Write-Host "MODE2_PREVIOUS_WATCH_DETAIL=$_"}
+            }
+          }
+          $receipt=Join-Path $root 'mode2-disposable-native\mode2_fill_rect_guid_receipt.json'
+          if(Test-Path -LiteralPath $receipt -PathType Leaf){
+            $r=Get-Content -LiteralPath $receipt -Raw -Encoding UTF8 | ConvertFrom-Json
+            Write-Host "MODE2_NEW_RECT_RECEIPT_STATE=$($r.state) GUID=$($r.node_id)"
+          }
+          Write-Host 'MODE2_DIAGNOSTIC_READ_ONLY=PASS'

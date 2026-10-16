@@ -1,0 +1,87 @@
+name: Panda red XD post Save As real UI and file state census
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-post-save-as-readonly-state.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  census:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Inspect only exact XD window, popup controls, and source/target file state
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_SAVE_DIAG_WRONG_HOST'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;using System.Runtime.InteropServices;using System.Text;
+          public class XdSaveDiag {
+            public delegate bool EnumProc(IntPtr hwnd,IntPtr unused);
+            [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback,IntPtr unused);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd,out uint pid);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd,StringBuilder s,int len);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd,StringBuilder s,int len);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+          }
+          '@
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $old=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $new=Join-Path $root 'MCP_KFP4_Red_XD_38205166138.xd'
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if((Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash -ne $sha){throw 'XD_SAVE_DIAG_ORIGINAL_CHANGED'}
+          if(Test-Path -LiteralPath $new -PathType Leaf){
+            Write-Host "XD_SAVE_DIAG_NATIVE_TARGET=EXISTS sha=$((Get-FileHash -LiteralPath $new -Algorithm SHA256).Hash) bytes=$((Get-Item -LiteralPath $new).Length)"
+          }else{Write-Host 'XD_SAVE_DIAG_NATIVE_TARGET=ABSENT'}
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $windows=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          foreach($w in $windows){
+            $title=[string]$w.Current.Name
+            Write-Host "XD_SAVE_DIAG_TOP title=$($title.Substring(0,[Math]::Min(120,$title.Length))) class=$($w.Current.ClassName) pid=$($w.Current.ProcessId)"
+          }
+          $fg=[XdSaveDiag]::GetForegroundWindow();$fgPid=[uint32]0
+          [void][XdSaveDiag]::GetWindowThreadProcessId($fg,[ref]$fgPid)
+          Write-Host "XD_SAVE_DIAG_FOREGROUND hwnd=$fg pid=$fgPid"
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          if($xd.Count -ne 1){throw 'XD_SAVE_DIAG_PROCESS_AMBIGUOUS'}
+          $xdId=[uint32]$xd[0].Id
+          $handles=New-Object System.Collections.Generic.List[System.IntPtr]
+          $callback=[XdSaveDiag+EnumProc]{
+            param([IntPtr]$h,[IntPtr]$ignored)
+            $p=[uint32]0
+            [void][XdSaveDiag]::GetWindowThreadProcessId($h,[ref]$p)
+            if($p -eq $xdId -and [XdSaveDiag]::IsWindowVisible($h)){$handles.Add($h)}
+            return $true
+          }
+          [void][XdSaveDiag]::EnumWindows($callback,[IntPtr]::Zero)
+          foreach($h in $handles){
+            $cls=New-Object System.Text.StringBuilder(150)
+            $title=New-Object System.Text.StringBuilder(150)
+            [void][XdSaveDiag]::GetClassName($h,$cls,150)
+            [void][XdSaveDiag]::GetWindowText($h,$title,150)
+            Write-Host "XD_SAVE_DIAG_OWNED hwnd=$h class=$($cls.ToString()) title=$($title.ToString())"
+            $element=[System.Windows.Automation.AutomationElement]::FromHandle($h)
+            $nodes=$element.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+            Write-Host "XD_SAVE_DIAG_OWNED_NODES hwnd=$h count=$($nodes.Count)"
+            $n=0
+            foreach($node in $nodes){
+              $name=[string]$node.Current.Name;$id=[string]$node.Current.AutomationId
+              if($name -match 'Save|Local|Cloud|Computer|Select|Folder|File|Untitled|Create|Name|New|Document' -or $id -match 'Save|FileName|Local|Cloud'){
+                Write-Host "XD_SAVE_DIAG_CONTROL hwnd=$h name=$($name.Substring(0,[Math]::Min(95,$name.Length))) id=$id type=$($node.Current.ControlType.ProgrammaticName) enabled=$($node.Current.IsEnabled)"
+                $n++
+              }
+              if($n -gt 55){break}
+            }
+          }
+          $pickers=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          Write-Host "XD_SAVE_DIAG_PICKER_COUNT=$($pickers.Count)"
+          if((Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash -ne $sha){throw 'XD_SAVE_DIAG_ORIGINAL_CHANGED_AFTER_READ'}
+          Write-Host 'XD_SAVE_DIAG_READONLY=PASS'

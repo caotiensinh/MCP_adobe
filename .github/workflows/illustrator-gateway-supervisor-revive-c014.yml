@@ -1,0 +1,74 @@
+name: Illustrator C014 gateway supervisor revive
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  revive:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    steps:
+      - name: Inspect gateway supervisor and revive only absent owned listener
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway'
+          $script=Join-Path $root 'run-host.ps1'
+          $pidfile=Join-Path $root 'host-wrapper.pid'
+          $log=Join-Path $root 'logs\local-host.log'
+          $ai=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'")
+          if($ai.Count -lt 1){throw 'C014_ILLUSTRATOR_MISSING'}
+          foreach($p in $ai){Write-Output "C014_ILLUSTRATOR pid=$($p.ProcessId) session=$($p.SessionId)"}
+          if(-not(Test-Path $script)){throw 'C014_RUN_HOST_SCRIPT_MISSING'}
+          $ls=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+          if($ls.Count -gt 1){throw 'C014_GATEWAY_MULTIPLE_OWNERS'}
+          if($ls.Count -eq 1){
+            $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$($ls[0].OwningProcess)"
+            if($owner.CommandLine -notmatch 'mcp-adobe'){throw 'C014_GATEWAY_FOREIGN_OWNER'}
+            Write-Output "C014_GATEWAY_ALREADY_UP pid=$($ls[0].OwningProcess)"
+            exit 0
+          }
+          if(Test-Path $log){
+            Get-Content -LiteralPath $log -Tail 30 | ForEach-Object {
+              $safe=$_ -replace '(?i)(token|secret|password|authorization)\s*[:=]\s*\S+','$1=[REDACTED]'
+              Write-Output "C014_SUPERVISOR_LOG $safe"
+            }
+          }
+          $wrapper=0
+          if(Test-Path $pidfile){
+            $raw=(Get-Content $pidfile -Raw).Trim()
+            [void][int]::TryParse($raw,[ref]$wrapper)
+          }
+          if($wrapper -gt 0){
+            $w=Get-CimInstance Win32_Process -Filter "ProcessId=$wrapper" -ErrorAction SilentlyContinue
+            if($w){
+              Write-Output "C014_WRAPPER_PRESENT pid=$wrapper name=$($w.Name)"
+              if($w.CommandLine -notmatch 'run-host.ps1'){throw 'C014_WRAPPER_PID_REUSED'}
+              throw 'C014_WRAPPER_ALIVE_NO_LISTENER: inspect supervisor log before touching existing wrapper'
+            }
+          }
+          $old=$env:RUNNER_TRACKING_ID
+          try{
+            Remove-Item Env:RUNNER_TRACKING_ID -ErrorAction SilentlyContinue
+            $started=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',('"' + $script + '"')) -PassThru -WindowStyle Hidden
+            Write-Output "C014_WRAPPER_LAUNCHED pid=$($started.Id)"
+          } finally {
+            if($null -ne $old){$env:RUNNER_TRACKING_ID=$old}
+          }
+          $deadline=(Get-Date).AddSeconds(75)
+          do {
+            $ls=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+            if($ls.Count -eq 1){break}
+            Start-Sleep -Seconds 2
+          } until ((Get-Date)-ge $deadline)
+          if($ls.Count -ne 1){throw 'C014_GATEWAY_REVIVE_FAILED'}
+          $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$($ls[0].OwningProcess)"
+          if($owner.CommandLine -notmatch 'mcp-adobe'){throw 'C014_REVIVED_FOREIGN_GATEWAY'}
+          Write-Output "C014_GATEWAY_REVIVED=PASS pid=$($ls[0].OwningProcess)"
+          foreach($p in $ai){
+            if(-not(Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue)){throw 'C014_ILLUSTRATOR_PID_CHANGED'}
+          }
+          Write-Output 'C014_ILLUSTRATOR_PRESERVED=PASS'

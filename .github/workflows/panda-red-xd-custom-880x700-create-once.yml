@@ -1,0 +1,127 @@
+name: Panda red XD create unique custom 880x700 live document once
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-custom-880x700-create-once.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  create:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Verify current old XD source, live real MCP document and empty queue
+        shell: powershell
+        env:
+          UV_LINK_MODE: copy
+          PYTHONUTF8: '1'
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_CUSTOM_WRONG_DESKTOP'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $py=Join-Path $env:RUNNER_TEMP 'xd_custom_idle_check.py'
+          @'
+          import asyncio,hashlib,os
+          from pathlib import Path
+          from mcp import Client
+          base=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"
+          source=base/"MCP_Mode1_Panda_XD_38136531800.xd"
+          target=base/("MCP_KFP4_Red_XD_"+os.environ["GITHUB_RUN_ID"]+".xd")
+          SHA="3a10e1510abc41eccd4485d6f852ea6ced7acc2cf50109e7c1bd123353589ed1"
+          async def main():
+              if hashlib.sha256(source.read_bytes()).hexdigest()!=SHA or target.exists():raise RuntimeError("XD_CUSTOM_NATIVE_GUARD_FAILED")
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  for cap in ("creative.health","creative.scenegraph.list"):
+                      r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=15)
+                      if r.is_error or not isinstance(r.structured_content,dict) or r.structured_content.get("ok") is not True:raise RuntimeError("XD_CUSTOM_READ_FAILED "+cap)
+                      d=r.structured_content["result"]
+                      if cap=="creative.health" and (d.get("bridge")!="connected" or d.get("pending_count")!=0):
+                          raise RuntimeError("XD_CUSTOM_QUEUED_OR_DISCONNECTED")
+                      if cap=="creative.scenegraph.list" and d.get("document_id")!="98d6635b-3767-4254-b200-ec8442b69ad2":
+                          raise RuntimeError("XD_CUSTOM_OLD_SOURCE_DOCUMENT_CHANGED")
+              print("XD_CUSTOM_PRECHECK_MCP=PASS source_unchanged=1 pending=0",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath $py -Encoding UTF8
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python "$py"
+          if($LASTEXITCODE -ne 0){throw 'XD_CUSTOM_PRECHECK_FAILED_NO_GUI_MUTATION'}
+      - name: Set exact custom size through Adobe XD Home UIA and submit once only after focused height field
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -AssemblyName WindowsBase
+          Add-Type @'
+          using System;using System.Runtime.InteropServices;
+          public class XdCustomHome {
+            [StructLayout(LayoutKind.Sequential)] public struct RECT {public int Left;public int Top;public int Right;public int Bottom;}
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out RECT r);
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+          }
+          '@
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_CUSTOM_NOT_INTERACTIVE'}
+          $base=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $source=Join-Path $base 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $target=Join-Path $base ("MCP_KFP4_Red_XD_"+$env:GITHUB_RUN_ID+".xd")
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $sha -or (Test-Path -LiteralPath $target)){throw 'XD_CUSTOM_SOURCE_OR_TARGET_GUARD_FAILED'}
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $tops=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $homeViews=@($tops|Where-Object{[string]$_.Current.Name -eq 'Adobe XD' -and [string]$_.Current.ClassName -eq 'ApplicationFrameWindow'})
+          $old=@($tops|Where-Object{[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+          $untitled=@($tops|Where-Object{[string]$_.Current.Name -match '^Untitled.*Adobe XD$'})
+          $pickers=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          Write-Host "XD_CUSTOM_GUI_PREFLIGHT home=$($homeViews.Count) original=$($old.Count) untitled=$($untitled.Count) picker=$($pickers.Count)"
+          if($homeViews.Count -ne 1 -or $old.Count -ne 1 -or $untitled.Count -gt 0 -or $pickers.Count -gt 0){throw 'XD_CUSTOM_GUI_STATE_NOT_EXCLUSIVE'}
+          $hwnd=[IntPtr]$homeViews[0].Current.NativeWindowHandle
+          $rect=New-Object XdCustomHome+RECT
+          if(-not([XdCustomHome]::GetWindowRect($hwnd,[ref]$rect))){throw 'XD_CUSTOM_HOME_RECT_UNAVAILABLE'}
+          $point=New-Object System.Windows.Point([double]($rect.Left+400),[double]($rect.Top+340))
+          $node=[System.Windows.Automation.AutomationElement]::FromPoint($point)
+          $presets=$null
+          for($depth=0;$depth -lt 14 -and $node;$depth++){
+            if([string]$node.Current.AutomationId -eq 'components-presets'){$presets=$node;break}
+            $node=[System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($node)
+          }
+          if(-not $presets){throw 'XD_CUSTOM_PRESET_REGION_NOT_FOUND'}
+          $widthCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'CustomPreset-Width')
+          $heightCond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'CustomPreset-Height')
+          $w=@($presets.FindAll([System.Windows.Automation.TreeScope]::Descendants,$widthCond))
+          $h=@($presets.FindAll([System.Windows.Automation.TreeScope]::Descendants,$heightCond))
+          if($w.Count -ne 1 -or $h.Count -ne 1 -or -not $w[0].Current.IsEnabled -or -not $h[0].Current.IsEnabled){throw 'XD_CUSTOM_INPUTS_NOT_UNIQUE'}
+          $w[0].GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue('880')
+          $h[0].GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).SetValue('700')
+          $wValue=$w[0].GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+          $hValue=$h[0].GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern).Current.Value
+          Write-Host "XD_CUSTOM_SIZE_READBACK width=$wValue height=$hValue"
+          if($wValue -ne '880' -or $hValue -ne '700'){throw 'XD_CUSTOM_SIZE_VALUES_NOT_VERIFIED_NO_SUBMIT'}
+          [void][XdCustomHome]::SetForegroundWindow($hwnd)
+          Start-Sleep -Milliseconds 300
+          if([XdCustomHome]::GetForegroundWindow() -ne $hwnd){throw 'XD_CUSTOM_HOME_NOT_FOREGROUND_NO_SUBMIT'}
+          $h[0].SetFocus()
+          Start-Sleep -Milliseconds 250
+          $focus=[System.Windows.Automation.AutomationElement]::FocusedElement
+          if([string]$focus.Current.AutomationId -ne 'CustomPreset-Height'){throw 'XD_CUSTOM_HEIGHT_NOT_FOCUSED_NO_SUBMIT'}
+          [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')
+          Write-Host 'XD_CUSTOM_CREATE_ENTER_SENT_ONCE=PASS'
+          $deadline=(Get-Date).AddSeconds(65);$created=@()
+          do{
+            Start-Sleep -Milliseconds 600
+            $t=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+            $created=@($t|Where-Object {[string]$_.Current.Name -match '^Untitled.*Adobe XD$'})
+            if($created.Count -gt 1){throw 'XD_CUSTOM_MULTIPLE_DRAFTS'}
+            if($created.Count -eq 1){break}
+          }until((Get-Date)-ge $deadline)
+          foreach($win in $t){
+            $name=[string]$win.Current.Name
+            if($name -match 'Adobe XD|Untitled'){Write-Host "XD_CUSTOM_POST_WINDOW title=$name"}
+          }
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $sha){throw 'XD_CUSTOM_ORIGINAL_CHANGED_AFTER_SUBMIT'}
+          if($created.Count -ne 1){throw 'XD_CUSTOM_NO_DRAFT_VISIBLE_UNKNOWN_NO_REPLAY'}
+          Write-Host "XD_CUSTOM_NEW_REAL_DOCUMENT=PASS title=$($created[0].Current.Name) original_unchanged=1"

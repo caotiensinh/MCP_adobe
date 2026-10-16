@@ -1,0 +1,85 @@
+name: Mode 2 XD disposable dirty-state revert-readiness diagnosis
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-dirty-revert-readonly-probe.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check disposable-only File Save/Revert and live scene before any revert
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($rel in @('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd','mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd')){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $sha){throw 'MODE2_PROTECTED_DISK_CHANGED'}
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $scope=[System.Windows.Automation.TreeScope]::Children
+          $desc=[System.Windows.Automation.TreeScope]::Descendants
+          $cond=[System.Windows.Automation.Condition]::TrueCondition
+          $top=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,$cond)
+          $xd=@($top|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          if($xd.Count -ne 1 -or $test.Count -ne 1){throw 'MODE2_DIAGNOSTIC_WINDOW_NOT_UNIQUE'}
+          $wp=$test[0].GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+          if($wp.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Minimized){
+            $wp.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Normal)
+          }
+          try{$test[0].SetFocus()}catch{}
+          Start-Sleep -Seconds 1
+          $id=[System.Windows.Automation.AutomationElement]::AutomationIdProperty
+          $file=$test[0].FindFirst($desc,(New-Object System.Windows.Automation.PropertyCondition($id,'AppMenu_File')))
+          if(-not $file){throw 'MODE2_FILE_MENU_NOT_FOUND'}
+          $xp=$file.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+          if($xp.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$xp.Expand()}
+          Start-Sleep -Milliseconds 250
+          $nodes=$test[0].FindAll($desc,$cond)
+          foreach($x in @($nodes|Where-Object {[string]$_.Current.AutomationId -in @('AppMenu_Save','AppMenu_RevertToSaved','AppMenu_SaveAs') })){
+            Write-Host "MODE2_FILE_COMMAND_ID=$([string]$x.Current.AutomationId) NAME=$([string]$x.Current.Name) ENABLED=$($x.Current.IsEnabled)"
+          }
+          $save=@($nodes|Where-Object {[string]$_.Current.AutomationId -eq 'AppMenu_Save'})
+          $revert=@($nodes|Where-Object {[string]$_.Current.AutomationId -eq 'AppMenu_RevertToSaved'})
+          if($save.Count -ne 1 -or $revert.Count -ne 1 -or $save[0].Current.IsEnabled -or $revert[0].Current.IsEnabled){
+            throw 'MODE2_REVERT_DID_NOT_RESTORE_CLEAN_SAVE_STATE'
+          }
+          Write-Host 'MODE2_POST_REVERT_FILE_CLEAN=PASS'
+          $title=@($nodes|Where-Object {[string]$_.Current.AutomationId -eq 'TitleText'})
+          foreach($x in $title|Select-Object -First 3){Write-Host "MODE2_XD_DOCUMENT_TITLE=$([string]$x.Current.Name)"}
+          if($xp.Current.ExpandCollapseState -eq [System.Windows.Automation.ExpandCollapseState]::Expanded){$xp.Collapse()}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json
+          from mcp import Client
+          from scripts.export_region_metadata import payload,unwrap
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  data={}
+                  for cap in ("creative.health","creative.scenegraph.list","creative.selection.get"):
+                      r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=14)
+                      o=unwrap(payload(r))
+                      if isinstance(o,dict) and isinstance(o.get("result"),dict):o=unwrap(o["result"])
+                      data[cap]=o
+                  h,g,s=(data[k] for k in ("creative.health","creative.scenegraph.list","creative.selection.get"))
+                  print("MODE2_PRE_REVERT_MCP="+json.dumps({"build":h.get("bridge_build"),"pending":h.get("pending_count"),"id":g.get("document_id"),"nodes":g.get("node_count"),"complete":g.get("complete"),"selected":len(s.get("items",[])) if isinstance(s.get("items"),list) else None},sort_keys=True),flush=True)
+                  if not g.get("complete") or g.get("node_count")!=33:raise RuntimeError("MODE2_SCENEGRAPH_NOT_BASELINE")
+          asyncio.run(main())
+          '@|Set-Content -LiteralPath .\mode2_revert_read.py -Encoding UTF8
+          uv run --python 3.12 python .\mode2_revert_read.py
+          if($LASTEXITCODE -ne 0){throw 'MODE2_MCP_READ_UNVERIFIED'}
+          Write-Host 'MODE2_READONLY_REVERT_PROBE=PASS'

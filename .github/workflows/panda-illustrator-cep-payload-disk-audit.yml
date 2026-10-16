@@ -1,0 +1,64 @@
+name: Panda Illustrator CEP payload-v1 installed panel host mismatch audit
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-illustrator-cep-payload-disk-audit.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  readonly:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Compare installed CEP host JavaScript and backend pinned source without changing files or calling Illustrator
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'PANDA_CEP_DISK_WRONG_HOST'}
+          $panel=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel'
+          $source=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\source\cep-extension'
+          Write-Host "PANDA_CEP_PANEL_EXISTS=$(Test-Path -LiteralPath $panel)"
+          Write-Host "PANDA_CEP_SOURCE_EXISTS=$(Test-Path -LiteralPath $source)"
+          foreach($relative in @('jsx\host.jsx','dist\index.html','CSXS\manifest.xml')){
+            $a=Join-Path $panel $relative
+            $b=Join-Path $source $relative
+            foreach($one in @(@('installed',$a),@('pinned',$b))){
+              $file=$one[1]
+              if(Test-Path -LiteralPath $file -PathType Leaf){
+                $hash=(Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+                $txt=Get-Content -LiteralPath $file -Raw
+                Write-Host "PANDA_CEP_ASSET group=$($one[0]) file=$relative sha=$hash bytes=$((Get-Item $file).Length) mcp_handle_request=$($txt.Contains('mcp_handle_request')) payloadDescriptor=$($txt.Contains('payloadDescriptor')) mcp_payload_read=$($txt.Contains('mcp_payload_read')) mcp_payload_release=$($txt.Contains('mcp_payload_release'))"
+              }else{
+                Write-Host "PANDA_CEP_ASSET_MISSING group=$($one[0]) file=$relative"
+              }
+            }
+          }
+          $manifest=Join-Path $panel 'CSXS\manifest.xml'
+          if(Test-Path -LiteralPath $manifest){
+            [xml]$data=Get-Content -LiteralPath $manifest
+            $text=Get-Content -LiteralPath $manifest -Raw
+            foreach($line in @($text -split '\r?\n'|Where-Object{$_ -match 'ScriptPath|MainPath|Extension Id|Host Name'})){
+              $safe=[string]$line
+              if($safe.Length -gt 200){$safe=$safe.Substring(0,200)}
+              Write-Host "PANDA_CEP_MANIFEST_LINE=$safe"
+            }
+          }
+          $logbase=Join-Path $env:APPDATA 'Adobe\CEP\logs'
+          if(Test-Path -LiteralPath $logbase){
+            $recent=@(Get-ChildItem -LiteralPath $logbase -File -ErrorAction SilentlyContinue|Sort-Object LastWriteTime -Descending|Select-Object -First 6)
+            foreach($f in $recent){
+              Write-Host "PANDA_CEP_LOG_META name=$($f.Name) updated=$($f.LastWriteTime.ToString('o')) bytes=$($f.Length)"
+              foreach($raw in @(Get-Content -LiteralPath $f.FullName -Tail 100 -ErrorAction SilentlyContinue)){
+                $safe=([string]$raw) -replace '(?i)(token|password|secret|authorization|api[_-]?key|cookie)\s*[:=]\s*[^\s,}]+','$1=[REDACTED]'
+                if($safe -match 'payload|jsx|evalScript|missing_descriptor|console|script|error|exception|not defined|timeout'){
+                  if($safe.Length -gt 390){$safe=$safe.Substring(0,390)}
+                  Write-Host "PANDA_CEP_LOG_SIGNAL=$safe"
+                }
+              }
+            }
+          }
+          Write-Host 'PANDA_CEP_INSTALLED_PAYLOAD_AUDIT=COMPLETE_NO_HOST_WRITES'

@@ -1,0 +1,150 @@
+name: Illustrator C013 activate staged tracer
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  activate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read-only C013 preflight and archive evidence
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'C013_WRONG_HOST'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          $dst=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\venv\Lib\site-packages\illustrator_mcp\_mcp_adobe_trace.py'
+          $want='3F9C0D780E522045F65A4F732388AC43241D26E105E7CBCC20164CC12719BF4B'
+          if(-not(Test-Path $dst) -or (Get-FileHash $dst -Algorithm SHA256).Hash -ne $want){
+            throw 'C013_STAGED_TRACER_HASH_NOT_VERIFIED'
+          }
+          Write-Output 'C013_STAGED_TRACER_HASH=PASS'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'C013_DEPENDENCIES_FAILED'}
+          @'
+          import asyncio, json
+          from pathlib import Path
+          from mcp import Client
+
+          TARGET="job_d8a76c48eac8"
+          async def read(c,cap,args):
+              r=await c.call_tool("creative_read",{"application":"illustrator","capability":cap,"arguments":args})
+              if r.is_error or not isinstance(r.structured_content,dict):
+                  raise RuntimeError("C013_READ_FAILED_"+cap)
+              return r.structured_content
+
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  h=await read(c,"creative.health",{"probe":False,"timeout":5})
+                  s=await read(c,"creative.job.status",{"jobId":TARGET})
+                  d=h.get("result",{}).get("connection",{}).get("data",{})
+                  j=s.get("result",{}).get("data",{}).get("job",{})
+                  state={"health":h,"job":s}
+                  Path("c013_before_activation.json").write_text(json.dumps(state,default=str),encoding="utf-8")
+                  panel=(d.get("layers") or {}).get("panel") or {}
+                  execution=d.get("execution") or {}
+                  print("C013_PREFLIGHT="+json.dumps({
+                      "jobId":j.get("jobId"),"status":j.get("status"),
+                      "error":j.get("error"),"awaitingHost":j.get("awaitingHost"),
+                      "unresolved":execution.get("unresolvedJobs"),
+                      "activeJob":execution.get("activeJob"),"waiting":execution.get("waiting"),
+                      "panelStatus":panel.get("status"),"panelBusy":panel.get("busy"),
+                      "panelActive":panel.get("activeRequestId"),"heartbeatStale":panel.get("heartbeatStale"),
+                  },default=str)[:3200],flush=True)
+                  if j.get("jobId")!=TARGET or j.get("status")!="unknown" or j.get("awaitingHost") is not True:
+                      raise RuntimeError("C013_UNEXPECTED_JOB_STATE")
+                  if "stale_host_session" not in str(j.get("error")):
+                      raise RuntimeError("C013_UNEXPECTED_ERROR")
+                  if execution.get("unresolvedJobs")!=[TARGET] or execution.get("activeJob") is not None or execution.get("waiting")!=0:
+                      raise RuntimeError("C013_OTHER_WORK_OR_QUEUE_PRESENT")
+                  if panel.get("status")!="ok" or panel.get("busy") is not False or panel.get("activeRequestId") is not None or panel.get("heartbeatStale") is True:
+                      raise RuntimeError("C013_PANEL_NOT_PROVEN_IDLE")
+                  print("C013_SAFE_SCOPED_ACTIVATION_PREFLIGHT=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath c013_preflight.py -Encoding UTF8
+          uv run python c013_preflight.py
+          if($LASTEXITCODE -ne 0){throw 'C013_ACTIVATION_PREFLIGHT_FAILED'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: c013-pre-activation-evidence
+          path: c013_before_activation.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Restart only owned gateway under verified live supervisor
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $ai=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" | Where-Object {$_.SessionId -eq 1})
+          if($ai.Count -ne 1){throw 'C013_ILLUSTRATOR_NOT_UNIQUE'}
+          $aiPid=$ai[0].ProcessId
+          $listen=@(Get-NetTCPConnection -State Listen -LocalPort 8787 -ErrorAction SilentlyContinue)
+          if($listen.Count -ne 1){throw 'C013_GATEWAY_NOT_UNIQUE'}
+          $oldId=$listen[0].OwningProcess
+          $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$oldId"
+          if($owner.Name -notmatch '^(python|mcp-adobe)(w?\.exe)?$' -or $owner.CommandLine -notmatch 'mcp-adobe'){
+            throw 'C013_GATEWAY_OWNER_NOT_VERIFIED'
+          }
+          $file=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\host-wrapper.pid'
+          if(-not(Test-Path $file)){throw 'C013_SUPERVISOR_PID_FILE_MISSING'}
+          $superPid=[int](Get-Content $file -Raw).Trim()
+          $super=Get-CimInstance Win32_Process -Filter "ProcessId=$superPid" -ErrorAction SilentlyContinue
+          if(-not $super -or $super.CommandLine -notmatch 'run-host.ps1'){
+            throw 'C013_SUPERVISOR_NOT_VERIFIED'
+          }
+          Write-Output "C013_ACTIVATION_GATEWAY_STOP pid=$oldId illustrator=$aiPid"
+          Stop-Process -Id $oldId -Force -ErrorAction Stop
+          $deadline=(Get-Date).AddSeconds(90)
+          $newId=0
+          do {
+            Start-Sleep -Seconds 2
+            $l=@(Get-NetTCPConnection -State Listen -LocalPort 8787 -ErrorAction SilentlyContinue)
+            if($l.Count -eq 1 -and $l[0].OwningProcess -ne $oldId){$newId=$l[0].OwningProcess;break}
+          } until((Get-Date)-ge $deadline)
+          if($newId -eq 0){throw 'C013_GATEWAY_SUPERVISOR_RESTART_FAILED'}
+          if(-not(Get-Process -Id $aiPid -ErrorAction SilentlyContinue)){
+            throw 'C013_ILLUSTRATOR_NOT_PRESERVED'
+          }
+          Write-Output "C013_GATEWAY_RESTARTED=PASS old=$oldId new=$newId illustrator=$aiPid"
+      - name: Confirm coordinator reset and upstream tracer activation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          $python=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\venv\Scripts\python.exe'
+          @'
+          from illustrator_mcp.websocket_bridge import WebSocketBridge
+          f=WebSocketBridge.execute_script_async
+          g=getattr(WebSocketBridge, "_handle_disconnect",None)
+          assert getattr(f,"_mcp_adobe_trace",False), "upstream tracer not loaded"
+          assert getattr(g,"_mcp_adobe_epoch_reset",False), "C013 epoch reset wrapper not loaded"
+          print("C013_NEW_IMPORT_TRACER=PASS",flush=True)
+          print("C013_NEW_IMPORT_EPOCH_RESET=PASS",flush=True)
+          '@ | Set-Content -LiteralPath c013_activation_import.py -Encoding UTF8
+          & $python c013_activation_import.py
+          if($LASTEXITCODE -ne 0){throw 'C013_INSTALLED_TRACER_IMPORT_FAILED'}
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":False,"timeout":5}})
+                  if r.is_error or not isinstance(r.structured_content,dict):raise RuntimeError("C013_HEALTH_UNAVAILABLE")
+                  d=r.structured_content.get("result",{}).get("connection",{}).get("data",{})
+                  p=(d.get("layers") or {}).get("panel") or {}
+                  q=(d.get("execution") or {}).get("unresolvedJobs")
+                  print("C013_POST_ACTIVATION="+json.dumps({
+                     "blockedAt":d.get("blockedAt"),"unresolved":q,
+                     "panelStatus":p.get("status"),"busy":p.get("busy"),
+                     "heartbeatStale":p.get("heartbeatStale")},default=str),flush=True)
+                  if q: raise RuntimeError("C013_JOB_STILL_BLOCKING")
+                  print("C013_UNRESOLVED_CLEARED=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath c013_post_health.py -Encoding UTF8
+          uv run python c013_post_health.py
+          if($LASTEXITCODE -ne 0){throw 'C013_POST_ACTIVATION_HEALTH_FAILED'}

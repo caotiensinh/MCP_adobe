@@ -1,0 +1,67 @@
+name: Panda Illustrator single bounded live launch preserving XD and original AI
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-20261012-illustrator-single-safe-launch.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  restore:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Verify native checkpoint and launch only missing Illustrator GUI once, without Git checkout
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1) {throw 'AI_SAFE_WRONG_INTERACTIVE_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $targets=@(
+            @{p='MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai';sha='EC6D2239B3547845C16C80997CA716F50FB8E5F4F5F3F8D57E85079581FA89A2'},
+            @{p='rect2_before_uia_save_38194275753\source_before.ai';sha='25D46AAACC766759D11C920872D9EE1CC26861A145826143161698E97CA14B77'}
+          )
+          foreach($target in $targets) {
+            $native=Join-Path $root $target.p
+            if(-not(Test-Path -LiteralPath $native -PathType Leaf)){throw "AI_SAFE_CHECKPOINT_MISSING $($target.p)"}
+            $sha=(Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash
+            if($sha -ne $target.sha){throw "AI_SAFE_NATIVE_CHECKPOINT_DIVERGED $($target.p)"}
+            Write-Host "AI_SAFE_CHECKPOINT=PASS file=$($target.p) sha256=$sha"
+          }
+          $existing=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          Write-Host "AI_SAFE_EXISTING_COUNT=$($existing.Count)"
+          if($existing.Count -gt 1){throw 'AI_SAFE_MULTIPLE_ILLUSTRATOR_PROCESSES_UNKNOWN'}
+          if($existing.Count -eq 1 -and $existing[0].SessionId -ne 1){throw 'AI_SAFE_RUNNING_IN_OTHER_SESSION'}
+          if($existing.Count -eq 0) {
+            $exe='D:\Ilustrator\Adobe Illustrator 2023\Support Files\Contents\Windows\Illustrator.exe'
+            if(-not(Test-Path -LiteralPath $exe -PathType Leaf) -or (Split-Path -Leaf $exe) -ine 'Illustrator.exe'){
+              throw 'AI_SAFE_INSTALLED_EXECUTABLE_UNVERIFIED'
+            }
+            $oldTracking=$env:RUNNER_TRACKING_ID
+            try {
+              $env:RUNNER_TRACKING_ID=''
+              $process=Start-Process -FilePath $exe -PassThru -ErrorAction Stop
+              Write-Host "AI_SAFE_SINGLE_LAUNCH_REQUESTED=PASS pid=$($process.Id)"
+            } finally {$env:RUNNER_TRACKING_ID=$oldTracking}
+          } else {Write-Host "AI_SAFE_ALREADY_RUNNING=PASS pid=$($existing[0].Id) no-duplicate"}
+          $deadline=(Get-Date).AddSeconds(150)
+          $gui=@()
+          do {
+            $gui=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+            if($gui.Count -eq 1){break}
+            if($gui.Count -gt 1){throw 'AI_SAFE_AMBIGUOUS_WINDOWS'}
+            Start-Sleep -Seconds 2
+          } until((Get-Date)-ge $deadline)
+          if($gui.Count -ne 1){throw 'AI_SAFE_GUI_NOT_VISIBLE_NO_RELAUNCH'}
+          Write-Host "AI_SAFE_INTERACTIVE_GUI=PASS pid=$($gui[0].Id) responding=$($gui[0].Responding)"
+          $cep=@(Get-Process -Name CEPHtmlEngine -ErrorAction SilentlyContinue)
+          $ws=@(Get-NetTCPConnection -LocalPort 8081 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "AI_SAFE_CEP_CENSUS process_count=$($cep.Count) ws_established=$($ws.Count)"
+          foreach($target in $targets){
+            $native=Join-Path $root $target.p
+            if((Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash -ne $target.sha){throw 'AI_SAFE_CHECKPOINT_CHANGED_AFTER_GUI_START'}
+          }
+          Write-Host 'AI_SAFE_NATIVE_SOURCE_UNCHANGED=PASS'

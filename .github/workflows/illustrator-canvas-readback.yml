@@ -1,0 +1,40 @@
+name: Illustrator canvas readback after failed live build
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/illustrator-canvas-readback.yml"
+permissions:
+  contents: read
+jobs:
+  readback:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Query actual Illustrator document structure without writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@('C:\Program Files\nodejs',[Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path) | Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'uv setup failed'}
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as client:
+                  for capability in ("creative.context.get","creative.document.structure","creative.layer.list"):
+                      result=await client.call_tool("creative_read",{"application":"illustrator","capability":capability,"arguments":{}})
+                      print("ILLUSTRATOR_READBACK_CAPABILITY="+capability+" is_error="+str(result.is_error),flush=True)
+                      payload=result.structured_content
+                      if payload is None:
+                          payload=[getattr(item,"text","")[:180] for item in result.content]
+                      data=json.dumps(payload,ensure_ascii=False,default=str)
+                      import re
+                      data=re.sub(r"(?i)(token|password|secret|authorization|api[_-]?key)\\s*[:=]\\s*[^\\s,}]+",r"\\1=[REDACTED]",data)
+                      print("ILLUSTRATOR_READBACK_DATA="+data[:4000],flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -Path illustrator_readonly_check.py -Encoding UTF8
+          uv run python illustrator_readonly_check.py
+          if($LASTEXITCODE -ne 0){throw 'Canvas readback failed'}

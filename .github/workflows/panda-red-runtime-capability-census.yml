@@ -1,0 +1,72 @@
+name: Red Panda Illustrator live gateway capability and installed runtime census
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-runtime-capability-census.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Identify actual persistent gateway executable without changing state
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'AI_CAP_CENSUS_WRONG_HOST'}
+          $listeners=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+          if($listeners.Count -ne 1){throw 'AI_CAP_CENSUS_GATEWAY_NOT_UNIQUE'}
+          $p=Get-CimInstance Win32_Process -Filter "ProcessId=$($listeners[0].OwningProcess)"
+          Write-Host "AI_CAP_GATEWAY_PROCESS pid=$($p.ProcessId) name=$($p.Name) executable=$($p.ExecutablePath)"
+          $local=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway'
+          foreach($path in @($local, (Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp'))){
+            Write-Host "AI_CAP_RUNTIME_DIRECTORY path=$path exists=$(Test-Path -LiteralPath $path)"
+          }
+      - name: Compare loaded creative_discover to checkout manifest; no Illustrator host job
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json,pathlib,inspect
+          from mcp import Client
+          async def main():
+            async with Client("http://127.0.0.1:8787/mcp") as c:
+              r=await asyncio.wait_for(c.call_tool("creative_discover",{}),timeout=15)
+              if r.is_error:raise RuntimeError("AI_CAP_DISCOVER_TOOL_ERROR")
+              p=r.structured_content or {}
+              apps=p.get("applications") or (p.get("result") or {}).get("applications") or []
+              obj={"is_error":r.is_error,"app_count":len(apps),"applications":[]}
+              for a in apps:
+                app=a.get("application") or a.get("name")
+                cap=a.get("common_capabilities") or a.get("commonCapabilities") or []
+                native=a.get("native_capabilities") or []
+                obj["applications"].append({
+                  "name":app,"connected":a.get("connected"),"transport":a.get("transport"),
+                  "supports_safe_fast_snapshot":"creative.document.fast_snapshot" in cap,
+                  "supports_document_info":"creative.document.info" in cap,
+                  "common_count":len(cap),"native_count":len(native),
+                  "capability_keys":sorted(a.keys())})
+              print("AI_CAP_LIVE_DISCOVERY="+json.dumps(obj,default=str),flush=True)
+              if not obj["applications"]:
+                print("AI_CAP_RAW_DISCOVER_TRUNCATED="+str(p)[:4000],flush=True)
+              pathlib.Path("red_ai_capabilities.json").write_text(json.dumps(obj,indent=2),encoding="utf8")
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\red_ai_cap_census.py -Encoding UTF8
+          uv run --python 3.12 python .\red_ai_cap_census.py
+          if($LASTEXITCODE -ne 0){throw 'AI_CAP_LIVE_DISCOVERY_FAILED'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: illustrator-actual-runtime-capability-census
+          path: red_ai_capabilities.json
+          if-no-files-found: warn

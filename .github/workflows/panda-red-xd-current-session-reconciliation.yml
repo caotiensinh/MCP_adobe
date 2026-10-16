@@ -1,0 +1,135 @@
+name: Panda red XD reconcile present live desktop and MCP transport read only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-current-session-reconciliation.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - name: Read exact native SHA process owner UWP child and WebSocket state
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1) {throw 'XD_RECON_WRONG_HOST_SESSION'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          foreach($pair in @(
+            @('MCP_Mode1_Panda_XD_38136531800.xd','3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'),
+            @('MCP_KFP4_Red_XD_38205166138.xd','58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'))) {
+            $full=Join-Path $root $pair[0]
+            if(-not(Test-Path -LiteralPath $full -PathType Leaf)){throw 'XD_RECON_NATIVE_MISSING_STOP'}
+            $actual=(Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash
+            Write-Host "XD_RECON_NATIVE name=$($pair[0]) bytes=$((Get-Item $full).Length) matches=$($actual -eq $pair[1])"
+            if($actual -ne $pair[1]){throw 'XD_RECON_NATIVE_MODIFIED_NO_ACTION'}
+          }
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          $frames=@(Get-Process -Name ApplicationFrameHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          $picker=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          Write-Host "XD_RECON_PROCESS_COUNTS xd=$($xd.Count) applicationFrameHost=$($frames.Count) picker=$($picker.Count)"
+          foreach($proc in $xd){
+            Write-Host "XD_RECON_XD pid=$($proc.Id) mainhwnd=$($proc.MainWindowHandle) started_utc=$($proc.StartTime.ToUniversalTime().ToString('o')) responding=$($proc.Responding)"
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;using System.Collections.Generic;using System.Runtime.InteropServices;using System.Text;
+          public static class XdWinCensus {
+            public delegate bool WindowCallback(IntPtr hwnd,IntPtr lparam);
+            [DllImport("user32.dll")] public static extern bool EnumWindows(WindowCallback cb,IntPtr data);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd,out uint pid);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd,StringBuilder text,int len);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd,StringBuilder text,int len);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+          }
+          '@
+          $xdPidValues=@($xd|ForEach-Object{[uint32]$_.Id})
+          $owned=New-Object System.Collections.Generic.List[System.IntPtr]
+          $cb=[XdWinCensus+WindowCallback]{
+            param([IntPtr]$hwnd,[IntPtr]$unused)
+            $foundOwner=[uint32]0
+            [void][XdWinCensus]::GetWindowThreadProcessId($hwnd,[ref]$foundOwner)
+            if($xdPidValues -contains $foundOwner){$owned.Add($hwnd)}
+            return $true
+          }
+          [void][XdWinCensus]::EnumWindows($cb,[IntPtr]::Zero)
+          Write-Host "XD_RECON_NATIVE_TOPLEVEL_WINDOWS=$($owned.Count)"
+          foreach($hwnd in $owned){
+            $className=New-Object System.Text.StringBuilder(128)
+            $titleText=New-Object System.Text.StringBuilder(160)
+            [void][XdWinCensus]::GetClassName($hwnd,$className,128)
+            [void][XdWinCensus]::GetWindowText($hwnd,$titleText,160)
+            Write-Host "XD_RECON_XD_WIN32 hwnd=$hwnd class=$($className.ToString()) title=$($titleText.ToString()) visible=$([XdWinCensus]::IsWindowVisible($hwnd))"
+          }
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $windows=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $editors=0;$homes=0;$core=0
+          foreach($window in $windows){
+            try{
+              $name=[string]$window.Current.Name
+              $className=[string]$window.Current.ClassName
+              if($className -ne 'ApplicationFrameWindow' -or
+                 $name -notmatch 'Adobe XD|MCP_Mode1|MCP_KFP4|Untitled'){continue}
+              Write-Host "XD_RECON_UWP_FRAME name=$name hwnd=$($window.Current.NativeWindowHandle)"
+              if($name -eq 'Adobe XD'){$homes++}else{$editors++}
+              $children=$window.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+              foreach($child in $children){
+                Write-Host "XD_RECON_UWP_CHILD class=$($child.Current.ClassName) pid=$($child.Current.ProcessId) name=$($child.Current.Name)"
+                if([string]$child.Current.ClassName -eq 'Windows.UI.Core.CoreWindow'){$core++}
+              }
+            }catch{Write-Host "XD_RECON_WINDOW_INSPECTION_EXCEPTION=$($_.Exception.GetType().Name)"}
+          }
+          Write-Host "XD_RECON_UIA_SUMMARY editors=$editors homes=$homes corewindows=$core"
+          foreach($port in @(8787,8765)){
+            $listen=@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+            $estab=@(Get-NetTCPConnection -LocalPort $port -State Established -ErrorAction SilentlyContinue)
+            Write-Host "XD_RECON_SOCKET port=$port listening=$($listen.Count) established=$($estab.Count)"
+          }
+          Write-Host 'XD_RECON_PASSIVE=PASS'
+      - name: MCP capability discovery and bounded health if XD transport connected
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $py=Join-Path $env:RUNNER_TEMP 'xd_current_readonly.py'
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await asyncio.wait_for(c.call_tool("creative_discover",{}),timeout=8)
+                  d=r.structured_content or {}
+                  xd=next((i for i in d.get("applications",[]) if i.get("application")=="xd"),{})
+                  print("XD_RECON_DISCOVER="+json.dumps({"is_error":r.is_error,"xd_connected":xd.get("connected"),
+                     "xd_transport":xd.get("transport"),"xd_readiness":xd.get("readiness_status")}),flush=True)
+                  if r.is_error or xd.get("connected") is not True:
+                      print("XD_RECON_MCP_HEALTH_SKIP=XD_TRANSPORT_NOT_CONNECTED",flush=True)
+                      return
+                  for cap in ("creative.health","creative.document.info","creative.scenegraph.list"):
+                      x=await asyncio.wait_for(c.call_tool("creative_read",{
+                          "application":"xd","capability":cap,"arguments":{}}),timeout=8)
+                      p=x.structured_content or {}
+                      result=p.get("result") or {}
+                      print("XD_RECON_READ="+json.dumps({"cap":cap,"is_error":x.is_error,
+                        "ok":p.get("ok"),"document_id":result.get("document_id") or result.get("id"),
+                        "bridge":result.get("bridge"),"pending_count":result.get("pending_count"),
+                        "complete":result.get("complete"),"nodes":len(result.get("nodes") or [])},
+                        default=str),flush=True)
+                      if x.is_error or p.get("ok") is not True:break
+          try:
+              asyncio.run(asyncio.wait_for(main(),timeout=36))
+          except BaseException as exc:
+              print("XD_RECON_MCP_ERROR="+type(exc).__name__+":"+str(exc)[:200],flush=True)
+          '@|Set-Content -LiteralPath $py -Encoding UTF8
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python $py
+          if($LASTEXITCODE -ne 0){throw 'XD_RECON_CLIENT_FAILED'}
+          Write-Host 'XD_RECON_MCP_READONLY_DONE=PASS'

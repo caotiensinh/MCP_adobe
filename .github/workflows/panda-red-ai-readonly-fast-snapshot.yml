@@ -1,0 +1,96 @@
+name: Panda red Illustrator guarded fast snapshot C014 diagnosis
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-ai-readonly-fast-snapshot.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  snapshot:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail closed on unresolved Illustrator fence and capture exact native state
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'RED_AI_FAST_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RED_AI_FAST_NONINTERACTIVE'}
+          $native=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_KFP4_Red_AI_38146162392.ai'
+          if(-not(Test-Path -LiteralPath $native -PathType Leaf)){throw 'RED_AI_NATIVE_MISSING'}
+          $hash=(Get-FileHash $native -Algorithm SHA256).Hash
+          if($hash -ne '0EAF49CA76244CD9D19502E2EDF4E8D8B341633862CD650934ACB9C7DFF073A3'){throw 'RED_AI_NATIVE_UNEXPECTED_SHA'}
+          Write-Host "RED_AI_FAST_NATIVE_PRESENT=PASS bytes=$((Get-Item $native).Length) sha256=$hash"
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          """Pure read: one fast snapshot only if fresh health says all fences idle."""
+          import asyncio,json,time,os,hashlib
+          from pathlib import Path
+          from mcp import Client
+          NATIVE=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"/"MCP_KFP4_Red_AI_38146162392.ai"
+          SHA="0eaf49ca76244cd9d19502e2edf4e8d8b341633862cd650934acb9c7dff073a3"
+          async def main():
+            evidence={"schema":"red-illustrator-fast-read-v1","run":os.environ.get("GITHUB_RUN_ID"),"native_sha_before":hashlib.sha256(NATIVE.read_bytes()).hexdigest(),"write_count":0}
+            try:
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                health=await asyncio.wait_for(c.call_tool("creative_read",{
+                    "application":"illustrator","capability":"creative.health",
+                    "arguments":{"probe":False,"timeout":5}}),timeout=12)
+                data=((health.structured_content or {}).get("result") or {}).get("connection",{}).get("data") or {}
+                run=data.get("execution") or {}
+                panel=(data.get("layers") or {}).get("panel") or {}
+                evidence["health"]={"blockedAt":data.get("blockedAt"),"panelStatus":panel.get("status"),
+                  "panelBusy":panel.get("busy"),"heartbeatStale":panel.get("heartbeatStale"),
+                  "activeRequestId":panel.get("activeRequestId"),"activeJob":run.get("activeJob"),
+                  "waiting":run.get("waiting"),"unresolvedJobs":run.get("unresolvedJobs")}
+                print("RED_AI_FAST_PRECHECK="+json.dumps(evidence["health"]),flush=True)
+                safe=(not health.is_error and (health.structured_content or {}).get("ok") is True and
+                  panel.get("status")=="ok" and panel.get("busy") is False and
+                  panel.get("heartbeatStale") is False and panel.get("activeRequestId") is None and
+                  run.get("activeJob") is None and run.get("waiting")==0 and
+                  run.get("unresolvedJobs")==[])
+                if not safe:
+                  evidence["outcome"]="BLOCKED_NO_NEW_HOST_REQUEST"
+                else:
+                  t=time.perf_counter()
+                  try:
+                    ret=await asyncio.wait_for(c.call_tool("creative_read",{
+                      "application":"illustrator","capability":"creative.document.fast_snapshot",
+                      "arguments":{}}),timeout=17)
+                    evidence["read_latency_ms"]=round((time.perf_counter()-t)*1000,2)
+                    evidence["is_error"]=ret.is_error
+                    evidence["payload_excerpt"]=str(ret.structured_content)[:2500]
+                    evidence["error_excerpt"]=[str(x)[:300] for x in ret.content] if ret.is_error else []
+                    evidence["outcome"]="FAST_SNAPSHOT_RETURNED" if not ret.is_error and (ret.structured_content or {}).get("ok") else "FAST_SNAPSHOT_ERROR_NO_RETRY"
+                  except Exception as e:
+                    evidence["outcome"]="FAST_SNAPSHOT_UNKNOWN_NO_RETRY"
+                    evidence["error"]=type(e).__name__+":"+str(e)[:250]
+            except Exception as e:
+              evidence["outcome"]="CONNECT_OR_HEALTH_ERROR_NO_RETRY"
+              evidence["error"]=type(e).__name__+":"+str(e)[:250]
+            evidence["native_sha_after"]=hashlib.sha256(NATIVE.read_bytes()).hexdigest()
+            if evidence["native_sha_after"]!=SHA or evidence["native_sha_before"]!=SHA:
+              raise RuntimeError("RED_AI_NATIVE_CHANGED_DURING_READONLY_AUDIT")
+            Path("red_ai_fast_snapshot_evidence.json").write_text(json.dumps(evidence,indent=2,ensure_ascii=False),encoding="utf8")
+            print("RED_AI_FAST_RESULT="+json.dumps(evidence,ensure_ascii=False),flush=True)
+            if evidence["outcome"] not in ("FAST_SNAPSHOT_RETURNED","BLOCKED_NO_NEW_HOST_REQUEST"):
+              raise RuntimeError("RED_AI_FAST_READ_UNVERIFIED_NO_REPLAY")
+          asyncio.run(main())
+          '@|Set-Content .\red_ai_fast_snapshot.py -Encoding UTF8
+          uv run --python 3.12 python .\red_ai_fast_snapshot.py
+          if($LASTEXITCODE -ne 0){throw 'RED_AI_FAST_READ_EVIDENCE_REQUIRES_DIAGNOSIS'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: red-illustrator-c014-fast-read-evidence
+          path: red_ai_fast_snapshot_evidence.json
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,27 @@
+name: Mode 2 visual region targeting safety baseline
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - '.github/workflows/mode2-region-targeting-baseline.yml'
+      - 'src/mcp_adobe/region_targeting.py'
+      - 'src/mcp_adobe/xd_scenegraph_targeting.py'
+      - 'tests/test_xd_scenegraph_targeting.py'
+      - 'tests/test_region_targeting.py'
+      - 'tests/xd_scenegraph_uxp_contract.cjs'
+      - 'adobe-xd-plugin/main.js'
+permissions:
+  contents: read
+jobs:
+  mode2-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Region targeting and XD scenegraph regression with no mutation
+        env:
+          PYTHONPATH: src
+        run: |
+          python3 -m unittest discover -s tests -p 'test_xd_scenegraph_targeting.py' -v
+          python3 -m unittest discover -s tests -p 'test_region_targeting.py' -v
+          node tests/xd_scenegraph_uxp_contract.cjs

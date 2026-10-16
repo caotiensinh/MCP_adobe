@@ -1,0 +1,81 @@
+name: Mode 2 XD foreground switch bridge identity experiment
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-window-switch-identity.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  compare:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare bridge snapshots across two known XD windows with no mutation
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($rel in @('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd','mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd')){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $sha){throw 'MODE2_PROTECTED_FILE_CHANGED'}
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class Mode2Window {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+          }
+          '@
+          $all=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $windows=@($all|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $test=@($windows|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          $panda=@($windows|Where-Object {[string]$_.Current.Name -match '^Panda_Mode2_Editable_Experiment.*Adobe XD$'})
+          $ws=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "MODE2_PRECHECK_WINDOWS=$($windows.Count) TEST=$($test.Count) PANDA=$($panda.Count) BRIDGE=$($ws.Count)"
+          foreach($w in $windows){Write-Host "MODE2_WINDOW_NAME=$([string]$w.Current.Name)"}
+          if($windows.Count -ne 2 -or $test.Count -ne 1 -or $panda.Count -ne 1 -or $ws.Count -lt 1){throw 'MODE2_TWO_DOCUMENTS_NOT_READY'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json,hashlib,sys
+          from mcp import Client
+          from scripts.export_region_metadata import payload,unwrap
+          async def main():
+              tag=sys.argv[1]
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  readings={}
+                  for cap in ("creative.scenegraph.list","creative.selection.get","creative.canvas.frame"):
+                      r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=14)
+                      o=unwrap(payload(r))
+                      if isinstance(o,dict) and isinstance(o.get("result"),dict):o=unwrap(o["result"])
+                      if not isinstance(o,dict):raise RuntimeError("MODE2_UNEXPECTED_PAYLOAD")
+                      readings[cap]=o
+                  graph=readings["creative.scenegraph.list"];sel=readings["creative.selection.get"];frame=readings["creative.canvas.frame"]
+                  if graph.get("document_id")!=frame.get("document_id") or graph.get("complete") is not True:raise RuntimeError("MODE2_MISMATCH")
+                  print("MODE2_WINDOW_BRIDGE="+json.dumps({"window":tag,"document_id":graph.get("document_id"),"node_count":graph.get("node_count"),"selection_count":len(sel.get("items",[])) if isinstance(sel.get("items"),list) else None,"scenegraph_sha256":hashlib.sha256(json.dumps(graph,sort_keys=True,default=str).encode()).hexdigest()},sort_keys=True),flush=True)
+          asyncio.run(main())
+          '@|Set-Content -LiteralPath .\mode2_window_identity.py -Encoding UTF8
+          foreach($entry in @(@('panda',$panda[0]),@('test',$test[0]))){
+            $h=[IntPtr]$entry[1].Current.NativeWindowHandle
+            [void][Mode2Window]::SetForegroundWindow($h)
+            Start-Sleep -Milliseconds 700
+            if([Mode2Window]::GetForegroundWindow() -ne $h){throw "MODE2_FOREGROUND_NOT_CONFIRMED_$($entry[0])"}
+            uv run --python 3.12 python .\mode2_window_identity.py $entry[0]
+            if($LASTEXITCODE -ne 0){throw "MODE2_READ_FAILED_$($entry[0])"}
+          }
+          foreach($rel in @('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd','mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd')){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $sha){throw 'MODE2_PROTECTED_FILE_CHANGED_AFTER'}
+          }
+          Write-Host 'MODE2_SWITCH_READONLY_COMPLETE=PASS'
+          Write-Host 'MODE2_NATIVE_MUTATION_PERFORMED=False'

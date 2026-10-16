@@ -1,0 +1,54 @@
+name: Mode 2 XD guarded isolated native copy
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-isolated-copy.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  isolate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Copy verified XD native without altering the live original
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_COPY_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $source=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if(!(Test-Path -LiteralPath $source -PathType Leaf)){throw 'MODE2_ORIGIN_NOT_FOUND'}
+          $originalHash=(Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+          if($originalHash -ne $expected){throw 'MODE2_ORIGIN_HASH_MISMATCH'}
+          $dir=Join-Path $root 'mode2-isolated'
+          $target=Join-Path $dir 'Panda_Mode2_Editable_Experiment.xd'
+          if(Test-Path -LiteralPath $target){
+            $existing=(Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash
+            Write-Host "MODE2_COPY_EXISTING_SHA_MATCH=$($existing -eq $expected)"
+            if($existing -ne $expected){throw 'MODE2_COPY_EXISTING_CHANGED_PRESERVE'}
+            Write-Host 'MODE2_COPY_ALREADY_PRESENT=PASS'
+            exit 0
+          }
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $partial=Join-Path $dir ('Panda_Mode2_Editable_Experiment.xd.partial.'+$env:GITHUB_RUN_ID)
+          if(Test-Path -LiteralPath $partial){throw 'MODE2_COPY_PARTIAL_COLLISION'}
+          try {
+            Copy-Item -LiteralPath $source -Destination $partial -ErrorAction Stop
+            if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_ORIGIN_CHANGED_DURING_COPY'}
+            if((Get-FileHash -LiteralPath $partial -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_PARTIAL_HASH_MISMATCH'}
+            Move-Item -LiteralPath $partial -Destination $target -ErrorAction Stop
+          } finally {
+            if(Test-Path -LiteralPath $partial){Remove-Item -LiteralPath $partial -Force}
+          }
+          if((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_TARGET_HASH_MISMATCH'}
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_ORIGIN_POST_COPY_MISMATCH'}
+          Write-Host "MODE2_ISOLATED_COPY_PATH=$target"
+          Write-Host 'MODE2_ISOLATED_COPY_SHA256_MATCH=PASS'
+          Write-Host 'MODE2_ORIGINAL_UNCHANGED=PASS'
+          Write-Host 'MODE2_NO_ADOBE_MUTATION=PASS'

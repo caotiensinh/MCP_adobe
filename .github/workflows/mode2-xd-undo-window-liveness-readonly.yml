@@ -1,0 +1,54 @@
+name: Mode 2 XD unsaved Fill window and Undo liveness read-only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-undo-window-liveness-readonly.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Check XD window/proc/socket/unsaved mutation receipts without modifying GUI
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'MODE2_WRONG_RUNNER'}
+          Write-Host "MODE2_RUNNER_SESSION=$([Diagnostics.Process]::GetCurrentProcess().SessionId) USER=$env:USERNAME SESSIONNAME=$env:SESSIONNAME"
+          $p=@(Get-CimInstance Win32_Process | Where-Object{$_.Name -in @('XD.exe','ApplicationFrameHost.exe','powershell.exe','python.exe')})
+          foreach($x in $p){
+            Write-Host "MODE2_SESSION_PROC=$($x.Name) PID=$($x.ProcessId) SESSION=$($x.SessionId) START=$($x.CreationDate)"
+          }
+          $xdProc=@($p|Where-Object{$_.Name -eq 'XD.exe'})
+          Write-Host "MODE2_REAL_XD_PROCESS_COUNT=$($xdProc.Count)"
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $top=[System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+            [System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          Write-Host "MODE2_DESKTOP_TOP_LEVEL_COUNT=$($top.Count)"
+          $windows=@($top|Where-Object{[string]$_.Current.Name -match 'Adobe|XD|Mode2_Undo'})
+          foreach($w in $windows|Select-Object -First 18){
+            Write-Host "MODE2_RELEVANT_WINDOW_PID=$($w.Current.ProcessId) HANDLE=$($w.Current.NativeWindowHandle) TITLE=$([string]$w.Current.Name)"
+          }
+          $xd=@($top|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          Write-Host "MODE2_NATIVE_XD_WINDOWS=$($xd.Count) SAVED_RECT_WINDOWS=$($test.Count)"
+          foreach($port in @(8765,8766)){
+            $l=@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+            $e=@(Get-NetTCPConnection -LocalPort $port -State Established -ErrorAction SilentlyContinue)
+            Write-Host "MODE2_PORT_$port LISTEN=$($l.Count) ESTABLISHED=$($e.Count)"
+          }
+          $dir=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\mode2-disposable-native'
+          $f=Get-Content -LiteralPath (Join-Path $dir 'mode2_exact_guid_fill_mutation_receipt.json') -Raw -Encoding UTF8|ConvertFrom-Json
+          Write-Host "MODE2_FILL_VERIFIED_STATE=$($f.state) OP=$($f.operation_id)"
+          Write-Host "MODE2_UNDO_RECEIPT_PRESENT=$(Test-Path -LiteralPath (Join-Path $dir 'mode2_exact_guid_fill_undo_receipt.json'))"
+          Write-Host "MODE2_UNDO_ONCE_MARKER_PRESENT=$(Test-Path -LiteralPath (Join-Path $dir 'Mode2_GUID_Fill_Undo_Once.marker'))"
+          $native=Join-Path $dir 'Mode2_Undo_E2E_38584984023.xd'
+          Write-Host "MODE2_DISPOSABLE_DISK_HASH=$((Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash)"
+          Write-Host 'MODE2_WINDOW_LIVENESS_READONLY_DIAG=PASS'
+          Write-Host 'MODE2_GUI_MUTATION_OR_REOPEN_ATTEMPTED=False'

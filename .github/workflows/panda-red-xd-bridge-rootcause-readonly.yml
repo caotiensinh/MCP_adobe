@@ -1,0 +1,97 @@
+name: Panda red XD WebSocket MCP rootcause read-only
+# 2026-10-13 diagnose confirmed creative_read error response after XD launch.
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-bridge-rootcause-readonly.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Read process and WebSocket ownership without Adobe input
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_DIAG_WRONG_HOST_OR_SESSION'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          foreach($pair in @(
+            @('MCP_Mode1_Panda_XD_38136531800.xd','3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'),
+            @('MCP_KFP4_Red_XD_38205166138.xd','58966788CF369885C2395CE217D6E0443ED57BCD7F40BD550B2F3A24C2B5B831'))) {
+            $file=Join-Path $root $pair[0]
+            if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $pair[1]){throw 'XD_DIAG_FILE_HASH_CHANGED'}
+          }
+          Write-Host 'XD_DIAG_NATIVE_CHECKPOINTS=PASS'
+          foreach($name in @('XD','ApplicationFrameHost','PickerHost')){
+            foreach($p in @(Get-Process -Name $name -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})){
+              Write-Host "XD_DIAG_PROCESS name=$name pid=$($p.Id) title=$($p.MainWindowTitle)"
+            }
+          }
+          foreach($port in @(8787,8765)){
+            $listeners=@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+            $est=@(Get-NetTCPConnection -LocalPort $port -State Established -ErrorAction SilentlyContinue)
+            Write-Host "XD_DIAG_SOCKET port=$port listen=$($listeners.Count) established=$($est.Count)"
+            foreach($l in $listeners){
+              $own=Get-CimInstance Win32_Process -Filter "ProcessId=$($l.OwningProcess)" -ErrorAction SilentlyContinue
+              Write-Host "XD_DIAG_OWNER port=$port pid=$($l.OwningProcess) exe=$($own.Name)"
+            }
+          }
+          foreach($pkg in @(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'Adobe.*XD|XD.*Adobe'})){
+            $plugin=Join-Path $env:LOCALAPPDATA "Packages\$($pkg.PackageFamilyName)\LocalState\develop\MCPAdobeBridge\main.js"
+            Write-Host "XD_DIAG_PLUGIN_PRESENT=$([bool](Test-Path -LiteralPath $plugin -PathType Leaf))"
+          }
+      - name: Read gateway discovery and XD health; print bounded error payload
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $py=Join-Path $env:RUNNER_TEMP 'panda_xd_rootcause_readonly.py'
+          @'
+          import asyncio,json,time
+          from mcp import Client
+          async def probe(c,tool,args):
+              begin=time.perf_counter()
+              try:
+                  r=await asyncio.wait_for(c.call_tool(tool,args),timeout=9)
+                  p=r.structured_content if isinstance(r.structured_content,dict) else {}
+                  result=p.get("result") if isinstance(p.get("result"),dict) else {}
+                  record={"tool":tool,"capability":args.get("capability"),"is_error":r.is_error,
+                     "ok":p.get("ok"),"latency_ms":round((time.perf_counter()-begin)*1000,1),
+                     "content":[getattr(x,"text","")[:250] for x in (r.content or [])][:2]}
+                  if tool=="creative_discover":
+                      record["xd"]=[{"connected":x.get("connected"),"transport":x.get("transport"),
+                          "readiness_status":x.get("readiness_status")} for x in p.get("applications",[])
+                          if x.get("application")=="xd"]
+                  else:
+                      record.update({"bridge":result.get("bridge"),"pending_count":result.get("pending_count"),
+                         "document_id":result.get("document_id") or result.get("id"),
+                         "complete":result.get("complete"),"nodes":len(result.get("nodes") or [])})
+                  print("XD_ROOTCAUSE="+json.dumps(record,default=str),flush=True)
+                  return not r.is_error and (tool=="creative_discover" or p.get("ok") is True)
+              except Exception as e:
+                  print("XD_ROOTCAUSE_EXCEPTION="+json.dumps({"tool":tool,"class":type(e).__name__,"message":str(e)[:400]}),flush=True)
+                  return False
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  print("XD_ROOTCAUSE_GATEWAY_CONNECT=PASS",flush=True)
+                  await probe(c,"creative_discover",{})
+                  if await probe(c,"creative_read",{"application":"xd","capability":"creative.health","arguments":{}}):
+                      for cap in ("creative.document.info","creative.scenegraph.list"):
+                          await probe(c,"creative_read",{"application":"xd","capability":cap,"arguments":{}})
+                  else:
+                      print("XD_ROOTCAUSE_FIRST_WRITE_REFUSED=HEALTH_NOT_VERIFIED",flush=True)
+          try:asyncio.run(asyncio.wait_for(main(),timeout=40))
+          except BaseException as e:print("XD_ROOTCAUSE_FATAL="+type(e).__name__+":"+str(e)[:250],flush=True)
+          '@|Set-Content -LiteralPath $py -Encoding UTF8
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python "$py"
+          if($LASTEXITCODE -ne 0){throw 'XD_DIAG_PYTHON_COMMAND_FAILED'}
+          Write-Host 'XD_ROOTCAUSE_READONLY_DONE=PASS'

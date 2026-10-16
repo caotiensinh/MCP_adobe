@@ -1,0 +1,46 @@
+name: Illustrator house inspect existing PNG evidence
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Read only existing PNG previews and saved AI metadata
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'NOT_MRCAO'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $ai=Join-Path $root 'Two_Story_Red_Tile_House.ai'
+          if(-not(Test-Path $ai)){throw 'HOUSE_AI_NOT_FOUND'}
+          $f=Get-Item $ai
+          Write-Output "HOUSE_SAVED_AI bytes=$($f.Length) modified=$($f.LastWriteTime.ToString('o')) sha256=$((Get-FileHash $ai -Algorithm SHA256).Hash)"
+          $candidates=@(
+            'Two_Story_Red_Tile_House_preview.png',
+            'Two_Story_Red_Tile_House_4strokes_verification_20261011.png'
+          )
+          $count=0
+          foreach($name in $candidates){
+            $p=Join-Path $root $name
+            if(-not(Test-Path $p)){Write-Output "HOUSE_PNG_ABSENT=$name";continue}
+            $meta=Get-Item $p
+            $bytes=[IO.File]::ReadAllBytes($p)
+            $valid=($bytes.Length -gt 1000 -and $bytes[0] -eq 137 -and $bytes[1] -eq 80 -and $bytes[2] -eq 78 -and $bytes[3] -eq 71)
+            Write-Output "HOUSE_PNG_FOUND name=$name bytes=$($meta.Length) modified=$($meta.LastWriteTime.ToString('o')) sha256=$((Get-FileHash $p -Algorithm SHA256).Hash) pngSignatureValid=$valid newerThanAI=$($meta.LastWriteTime -ge $f.LastWriteTime)"
+            if(-not $valid){continue}
+            $dst="preview_found_$($count+1).png"
+            Copy-Item -LiteralPath $p -Destination $dst -ErrorAction Stop
+            $count++
+          }
+          if($count -eq 0){Write-Output 'HOUSE_PNG_EVIDENCE=NONE_AVAILABLE'}
+          else{Write-Output "HOUSE_PNG_EVIDENCE_FILES=$count"}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: illustrator-house-existing-png-evidence
+          path: preview_found_*.png
+          if-no-files-found: ignore
+          retention-days: 14

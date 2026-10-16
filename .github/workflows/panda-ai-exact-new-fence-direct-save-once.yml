@@ -1,0 +1,141 @@
+name: Panda AI exact read-fence recovery and one native save without second snapshot
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-ai-exact-new-fence-direct-save-once.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  save:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 9
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - name: Prove exact orphan read, idle CEP and XD, safe target, persistent supervisor
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RECT2_SAVE_NOT_INTERACTIVE_MRCAO'}
+          $root=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway'
+          $installed=Join-Path $root 'venv\Lib\site-packages\mcp_adobe\illustrator_cep.py'
+          if((Get-FileHash $installed -Algorithm SHA256).Hash -ne '38F0CC8120347FEF4F52764A509F5549CB73323B5FEC1DAF187E8D80FFD8226B'){
+            throw 'RECT2_SAVE_ADAPTER_NOT_CORRECT'
+          }
+          $native=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai'
+          $source=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_KFP4_Red_AI_Fresh_38157335430.ai'
+          $expected='25D46AAACC766759D11C920872D9EE1CC26861A145826143161698E97CA14B77'
+          if((Get-FileHash $native -Algorithm SHA256).Hash -ne $expected -or (Get-FileHash $source -Algorithm SHA256).Hash -ne $expected){
+            throw 'RECT2_SAVE_NATIVE_SHA_CHANGED_NO_WRITE'
+          }
+          $ai=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object {$_.SessionId -eq 1})
+          if($ai.Count -ne 1 -or $ai[0].MainWindowTitle -notmatch 'MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai'){
+            throw 'RECT2_SAVE_FOREIGN_ADOBE_DOCUMENT'
+          }
+          $stage=Join-Path $root ('updates\rect2_direct_save_'+$env:GITHUB_RUN_ID)
+          if(Test-Path $stage){throw 'RECT2_SAVE_DUPLICATE_ATTEMPT_REFUSED'}
+          New-Item $stage -ItemType Directory -Force|Out-Null
+          Copy-Item -LiteralPath $native -Destination (Join-Path $stage 'before.ai')
+          if((Get-FileHash (Join-Path $stage 'before.ai') -Algorithm SHA256).Hash -ne $expected){throw 'RECT2_SAVE_BACKUP_MISMATCH'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json
+          from mcp import Client
+          ID="job_5095fd805adc"
+          async def read(c,app,cap,args=None):
+              r=await asyncio.wait_for(c.call_tool("creative_read",{"application":app,"capability":cap,"arguments":args or {}}),timeout=20)
+              p=r.structured_content or {}
+              if r.is_error or p.get("ok") is not True:raise RuntimeError("RECT2_SAVE_PREFLIGHT_UNAVAILABLE:"+cap)
+              return p.get("result") or {}
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  h=await read(c,"illustrator","creative.health",{"probe":False,"timeout":5})
+                  d=((h.get("connection") or {}).get("data") or {})
+                  q=d.get("execution") or {}
+                  panel=(d.get("layers") or {}).get("panel") or {}
+                  if q.get("unresolvedJobs")!=[ID] or q.get("waiting")!=0 or q.get("activeJob") is not None or panel.get("busy") is not False or panel.get("status")!="ok":
+                      raise RuntimeError("RECT2_SAVE_FOREIGN_OR_ACTIVE_FENCE")
+                  data=await read(c,"illustrator","creative.job.status",{"jobId":ID,"detail":"full"})
+                  job=((data.get("data") or {}).get("job") or {})
+                  if job.get("status")!="unknown" or job.get("label")!="illustrator_execute_script" or "missing_descriptor" not in str(job.get("error")):
+                      raise RuntimeError("RECT2_SAVE_UNEXPECTED_READ_FAILURE")
+                  xd=await read(c,"xd","creative.health")
+                  if xd.get("pending_count")!=0:raise RuntimeError("RECT2_SAVE_XD_BUSY")
+                  print("RECT2_SAVE_READONLY_PREFLIGHT=PASS "+json.dumps({"job":ID,"panel":"idle","xd_pending":0}),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\rect2_save_preflight.py -Encoding UTF8
+          uv run --python 3.12 python .\rect2_save_preflight.py
+          if($LASTEXITCODE -ne 0){throw 'RECT2_SAVE_PREFLIGHT_FAILED_NO_RESTART'}
+      - name: Retire only this exact orphaned read coordinator fence under verified gateway supervisor
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway'
+          $pidfile=Join-Path $root 'host-wrapper.pid'
+          $superId=0
+          if(-not(Test-Path $pidfile) -or -not [int]::TryParse((Get-Content $pidfile -Raw).Trim(),[ref]$superId)){throw 'RECT2_SAVE_SUPERVISOR_PID_INVALID'}
+          $super=Get-CimInstance Win32_Process -Filter "ProcessId=$superId" -ErrorAction SilentlyContinue
+          if(-not $super -or $super.CommandLine -notmatch 'run-host.ps1'){throw 'RECT2_SAVE_SUPERVISOR_NOT_OWNED'}
+          $ports=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+          if($ports.Count -ne 1){throw 'RECT2_SAVE_GATEWAY_NOT_UNIQUE'}
+          $oldPid=$ports[0].OwningProcess
+          $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$oldPid"
+          if(-not $owner -or $owner.CommandLine -notmatch 'mcp-adobe.exe.*--transport streamable-http.*--host 127.0.0.1.*--port 8787'){throw 'RECT2_SAVE_GATEWAY_NOT_OWNED'}
+          if(@(Get-NetTCPConnection -LocalPort 8787 -State Established -ErrorAction SilentlyContinue).Count -ne 0){throw 'RECT2_SAVE_ACTIVE_EXTERNAL_CLIENT'}
+          Stop-Process -Id $oldPid -ErrorAction Stop
+          $deadline=(Get-Date).AddSeconds(105)
+          $newPid=0
+          do{
+            Start-Sleep -Seconds 2
+            $ports=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+            if($ports.Count -eq 1 -and $ports[0].OwningProcess -ne $oldPid){$newPid=$ports[0].OwningProcess;break}
+          }until((Get-Date)-ge $deadline)
+          if($newPid -eq 0){throw 'RECT2_SAVE_RESTART_UNKNOWN_NO_RETRY'}
+          Write-Host "RECT2_SAVE_GATEWAY_RECOVERED=PASS oldPid=$oldPid newPid=$newPid"
+      - name: One direct native save of already created shape, no fast snapshot or duplicate draw
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json,hashlib,os,time
+          from pathlib import Path
+          from mcp import Client
+          f=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"
+          target=f/"MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai"
+          original=f/"MCP_KFP4_Red_AI_Fresh_38157335430.ai"
+          expected="25d46aaacc766759d11c920872d9ee1cc26861a145826143161698e97ca14b77"
+          def sha(x):return hashlib.sha256(x.read_bytes()).hexdigest()
+          async def main():
+              if sha(target)!=expected or sha(original)!=expected:
+                  raise RuntimeError("RECT2_SAVE_SOURCE_DIVERGED")
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  h=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":False,"timeout":5}})
+                  p=h.structured_content or {}
+                  q=((((p.get("result") or {}).get("connection") or {}).get("data") or {}).get("execution") or {})
+                  if h.is_error or q.get("unresolvedJobs")!=[] or q.get("activeJob") is not None or q.get("waiting")!=0:
+                      raise RuntimeError("RECT2_SAVE_NEW_GATEWAY_NOT_IDLE")
+                  start=time.perf_counter()
+                  try:
+                      r=await asyncio.wait_for(c.call_tool("creative_write",{"application":"illustrator","capability":"creative.document.save","arguments":{}}),timeout=38)
+                  except Exception as e:
+                      raise RuntimeError("RECT2_SAVE_HOST_UNKNOWN_NO_RETRY") from e
+                  p=r.structured_content or {}
+                  result=p.get("result") or {}
+                  duration=round((time.perf_counter()-start)*1000,2)
+                  print("RECT2_SAVE_ONESHOT_RESULT="+json.dumps({"elapsed_ms":duration,"tool_error":r.is_error,
+                        "ok":p.get("ok"),"execution":result.get("execution"),"job":result.get("jobId")}),flush=True)
+                  if r.is_error or p.get("ok") is not True or result.get("execution")!="succeeded":
+                      raise RuntimeError("RECT2_SAVE_NOT_VERIFIED_DO_NOT_REPLAY")
+              after=sha(target)
+              if after==expected or sha(original)!=expected:raise RuntimeError("RECT2_SAVE_DISK_NOT_CHANGED_OR_SOURCE_CHANGED")
+              print("RECT2_SAVE_NATIVE_DISK_PERSISTED=PASS "+json.dumps({"sha256":after,"bytes":target.stat().st_size}),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\rect2_save_once.py -Encoding UTF8
+          uv run --python 3.12 python .\rect2_save_once.py
+          if($LASTEXITCODE -ne 0){throw 'RECT2_SAVE_DISPATCH_UNCERTAIN_NO_REPEAT'}

@@ -1,0 +1,76 @@
+name: Mode 2 XD disposable bridge binding E2E preflight
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-test-bridge-binding.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare actual foreground XD document with MCP live graph and original hashes
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $original=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $existing=Join-Path $root 'mode2-isolated\Panda_Mode2_Editable_Experiment.xd'
+          $fixture=Join-Path $root 'mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($file in @($original,$existing,$fixture)){
+            if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_NATIVE_CHANGED'}
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public class Mode2Foreground { [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); }
+          '@
+          $top=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $xd=@($top|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          $panda=@($xd|Where-Object {[string]$_.Current.Name -match '^Panda_Mode2_Editable_Experiment.*Adobe XD$'})
+          $foreground=[Mode2Foreground]::GetForegroundWindow()
+          $foregroundTest=@($test|Where-Object {[IntPtr]$_.Current.NativeWindowHandle -eq $foreground})
+          $connected=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "MODE2_WINDOWS=$($xd.Count) TEST=$($test.Count) PANDA=$($panda.Count) TEST_FOREGROUND=$($foregroundTest.Count) BRIDGE=$($connected.Count)"
+          if($xd.Count -ne 2 -or $test.Count -ne 1 -or $panda.Count -ne 1 -or $connected.Count -lt 1){throw 'MODE2_TEST_WINDOWS_NOT_READY'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json
+          from mcp import Client
+          from scripts.export_region_metadata import payload,unwrap
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  for cap in ("creative.scenegraph.list","creative.selection.get","creative.canvas.frame"):
+                      result=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=12)
+                      obj=unwrap(payload(result))
+                      if isinstance(obj,dict) and isinstance(obj.get("result"),dict):obj=unwrap(obj["result"])
+                      if not isinstance(obj,dict):raise RuntimeError("MODE2_INVALID_MCP_PAYLOAD")
+                      if cap=="creative.scenegraph.list":
+                          print("MODE2_MCP_GRAPH="+json.dumps({"document_id":obj.get("document_id"),"node_count":obj.get("node_count"),"complete":obj.get("complete")},sort_keys=True),flush=True)
+                      elif cap=="creative.selection.get":
+                          print("MODE2_MCP_SELECTION_COUNT="+str(len(obj.get("items",[])) if isinstance(obj.get("items"),list) else "unknown"),flush=True)
+                      else:print("MODE2_MCP_FRAME_ID="+str(obj.get("document_id")),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\mode2_binding_probe.py -Encoding UTF8
+          uv run --python 3.12 python .\mode2_binding_probe.py
+          if($LASTEXITCODE -ne 0){throw 'MODE2_BRIDGE_READ_FAILED'}
+          foreach($file in @($original,$existing,$fixture)){
+            if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_NATIVE_CHANGED_AFTER'}
+          }
+          Write-Host 'MODE2_DISPOSABLE_BRIDGE_PROVENANCE=NOT_YET_ATTESTED'
+          Write-Host 'MODE2_MUTATION_ALLOWED=False'
+          Write-Host 'MODE2_BRIDGE_BINDING_READONLY_PROBE=PASS'

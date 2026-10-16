@@ -1,0 +1,253 @@
+name: Mode1 PANDA XD verified primitive E2E
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/mode1-panda-xd-live-e2e.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  xd-panda:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 40
+    env:
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: copy
+      PANDA_XD_RESUME_RUN_ID: '38114632173'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify MRCAO session and install XD plugin without killing apps
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_PANDA_WRONG_HOST'}
+          $sid=[System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          if($sid -ne 1){throw "XD_PANDA_WRONG_SESSION_$sid"}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'XD_PANDA_UV_SYNC_FAIL'}
+          if(-not @(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)){
+            throw 'XD_PANDA_GATEWAY_NOT_READY'
+          }
+          if(-not @(Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue)){
+            throw 'XD_PANDA_BRIDGE_LISTENER_NOT_READY'
+          }
+          powershell -ExecutionPolicy Bypass -File scripts/install_xd_plugin.ps1 -NoReloadHint
+          if($LASTEXITCODE -ne 0){throw 'XD_PANDA_PLUGIN_INSTALL_FAIL'}
+          Write-Host 'XD_PANDA_MRCAO_SESSION_AND_PLUGIN=PASS'
+      - name: Refresh only stale owned MCP gateway after real XD checkpoint preflight
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run python scripts/panda_xd_gateway_refresh_gate.py before
+          if($LASTEXITCODE -ne 0){throw 'XD_PRE_REFRESH_LIVE_STATE_NOT_SAFE'}
+          $flag=Join-Path $env:RUNNER_TEMP 'xd_gateway_refresh_required.flag'
+          if(Test-Path -LiteralPath $flag){
+            Write-Host 'XD_STALE_GATEWAY_REFRESH=START_OWNED_PROCESSES_ONLY'
+            $root=Join-Path $env:LOCALAPPDATA 'MCPAdobe'
+            $backup=Join-Path $root 'gateway.previous'
+            if(Test-Path -LiteralPath $backup){
+              if(-not (Test-Path -LiteralPath $backup -PathType Container)){throw 'XD_BACKUP_IS_NOT_DIRECTORY_REFUSE_MOVE'}
+              $exe=Join-Path $backup 'venv\Scripts\mcp-adobe.exe'
+              $metadata=Join-Path $backup 'install-metadata.json'
+              if(-not (Test-Path -LiteralPath $exe) -or -not (Test-Path -LiteralPath $metadata)){
+                throw 'XD_UNRECOGNIZED_PREVIOUS_HOST_BACKUP_REFUSE_MOVE'
+              }
+              $meta=Get-Content -LiteralPath $metadata -Raw | ConvertFrom-Json
+              if($meta.gateway_port -ne 8787 -or $meta.xd_port -ne 8765){
+                throw 'XD_PREVIOUS_BACKUP_PORTS_NOT_OWNED_REFUSE_MOVE'
+              }
+              $live=@(Get-NetTCPConnection -State Listen -LocalPort 8787 -ErrorAction SilentlyContinue)
+              foreach($listener in $live){
+                $proc=Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
+                if($proc -and ([string]$proc.ExecutablePath).StartsWith($backup,[StringComparison]::OrdinalIgnoreCase)){
+                  throw 'XD_ARCHIVED_BACKUP_IS_ACTIVE_PROCESS_REFUSE_MOVE'
+                }
+              }
+              $items=@(Get-ChildItem -LiteralPath $backup -Force -ErrorAction SilentlyContinue)
+              Write-Host "XD_PREVIOUS_BACKUP_INSPECTED=PASS path=$backup entries=$($items.Count) gatewayPort=$($meta.gateway_port)"
+              $archive=Join-Path $root "gateway.previous.preserved_$env:GITHUB_RUN_ID"
+              if(Test-Path -LiteralPath $archive){throw 'XD_BACKUP_ARCHIVE_ALREADY_EXISTS_REFUSE_OVERWRITE'}
+              Move-Item -LiteralPath $backup -Destination $archive -ErrorAction Stop
+              if(-not (Test-Path -LiteralPath (Join-Path $archive 'venv\Scripts\mcp-adobe.exe'))){
+                throw 'XD_PREVIOUS_BACKUP_ARCHIVE_NOT_VERIFIED'
+              }
+              Write-Host "XD_PREVIOUS_BACKUP_PRESERVED=PASS archive=$archive"
+            }
+            powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_local_host.ps1 -SkipStartupRegistration
+            if($LASTEXITCODE -ne 0){throw 'XD_VERSIONED_GATEWAY_INSTALL_FAILED_CHECK_ROLLBACK'}
+            Write-Host 'XD_STALE_GATEWAY_REFRESH=INSTALL_COMPLETE_VERIFY_RUNTIME'
+          }else{
+            Write-Host 'XD_GATEWAY_REFRESH=SKIPPED_VERSION_ALREADY_CORRECT'
+          }
+          $verified=$false
+          for($i=1;$i -le 6;$i++){
+            uv run python scripts/panda_xd_gateway_refresh_gate.py after
+            if($LASTEXITCODE -eq 0){$verified=$true;break}
+            Write-Host "XD_GATEWAY_RECONNECT_READONLY_CHECK=$i/6"
+            Start-Sleep -Seconds 3
+          }
+          if(-not $verified){throw 'XD_GATEWAY_POST_INSTALL_CAPABILITY_OR_DOCUMENT_MISMATCH'}
+          Write-Host 'XD_GATEWAY_REFRESH_RESULT=PASS_PRESERVED_DOCUMENT'
+      - name: Launch and connect real XD panel in interactive desktop
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class XdPandaNative {
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+          }
+          '@
+          function Get-XdWindows {
+            @(Get-Process -ErrorAction SilentlyContinue |
+              Where-Object {($_.ProcessName -match '^(XD|AdobeXD)$' -or $_.MainWindowTitle -match 'Adobe XD') -and $_.MainWindowHandle -ne 0 -and $_.SessionId -eq 1})
+          }
+          function Find-Xd {
+            $all=@(Get-XdWindows)
+            $doc=@($all | Where-Object {$_.MainWindowTitle -match '^Untitled.*Adobe XD$'} | Select-Object -First 1)
+            if($doc.Count -gt 0){return $doc[0]}
+            return @($all | Select-Object -First 1)[0]
+          }
+          function Trace-XdWindows {
+            foreach($w in @(Get-XdWindows)){Write-Host "XD_WINDOW_DISCOVERY pid=$($w.Id) title=$($w.MainWindowTitle) hwnd=$($w.MainWindowHandle)"}
+          }
+          function Trace-XdHomeControls {
+            param([System.Diagnostics.Process]$Process)
+            if(-not $Process){return}
+            try{
+              $root=[System.Windows.Automation.AutomationElement]::FromHandle($Process.MainWindowHandle)
+              $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+              for($i=0;$i -lt [Math]::Min($all.Count,120);$i++){
+                $e=$all.Item($i); $nm=[string]$e.Current.Name; $id=[string]$e.Current.AutomationId
+                if($nm -or $id){Write-Host "XD_HOME_CONTROL name=$nm automationId=$id type=$($e.Current.ControlType.ProgrammaticName)"}
+              }
+            }catch{Write-Host "XD_HOME_CONTROLS_UNAVAILABLE=$($_.Exception.Message)"}
+          }
+          $checkpoint=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38114632173.json'
+          $resume=Test-Path -LiteralPath $checkpoint
+          Write-Host "XD_RESUME_GUARD present=$resume path=$checkpoint"
+          if($resume){
+            # A real XD plugin is already holding a queued operation. Any GUI
+            # connect or Create here could invalidate the in-memory receipt.
+            # The Python resume step validates document id, exact GUIDs and queue.
+            Write-Host "XD_RESUME_GUI_REINITIALIZATION=SKIPPED_PRESERVE_LIVE_DOCUMENT_AND_QUEUE"
+            exit 0
+          }
+          $xd=Find-Xd
+          if(-not $xd){
+            $start=Get-StartApps -ErrorAction SilentlyContinue |
+              Where-Object {$_.Name -match '^Adobe XD$|Adobe.*XD'} |
+              Select-Object -First 1
+            if(-not $start){throw 'XD_PANDA_START_APP_NOT_REGISTERED'}
+            Start-Process explorer.exe ("shell:AppsFolder\"+$start.AppID)
+            $deadline=(Get-Date).AddSeconds(90)
+            do{Start-Sleep -Seconds 2;$xd=Find-Xd}until($xd -or (Get-Date)-gt $deadline)
+          }
+          if(-not $xd){throw 'XD_PANDA_LIVE_WINDOW_NOT_READY'}
+          [void][XdPandaNative]::ShowWindow($xd.MainWindowHandle,9)
+          if(-not [XdPandaNative]::SetForegroundWindow($xd.MainWindowHandle)){throw 'XD_PANDA_WINDOW_FOREGROUND_FAILED'}
+          $title=[string]$xd.MainWindowTitle
+          Write-Host "XD_PANDA_WINDOW=PASS pid=$($xd.Id) title=$title"
+          if($resume -and $title -eq 'Adobe XD'){
+            throw 'XD_RESUME_EXACT_DOCUMENT_WINDOW_NOT_VISIBLE_NO_NEW_DOCUMENT'
+          }
+          if($title -eq 'Adobe XD'){
+            $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
+            $cond=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'sidebar-work--create')
+            $create=$root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$cond)
+            if($create){
+              try {
+                $pattern=$create.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+                $pattern.Invoke()
+              } catch {
+                $legacy=$create.GetCurrentPattern([System.Windows.Automation.LegacyIAccessiblePattern]::Pattern)
+                $legacy.DoDefaultAction()
+              }
+              Write-Host 'XD_PANDA_CREATE_HOME_CLICK=PASS'
+            }else{
+              [System.Windows.Forms.SendKeys]::SendWait('^n')
+              Write-Host 'XD_PANDA_CREATE_HOME_SHORTCUT_SENT'
+            }
+            $deadline=(Get-Date).AddSeconds(35)
+            do {
+              Start-Sleep -Seconds 2
+              Trace-XdWindows
+              $xd=Find-Xd
+            } until(($xd -and $xd.MainWindowTitle -match '^Untitled.*Adobe XD$') -or (Get-Date)-gt $deadline)
+            if(-not $xd -or $xd.MainWindowTitle -eq 'Adobe XD'){
+              Trace-XdHomeControls -Process $xd
+              throw 'XD_PANDA_DOCUMENT_NOT_CREATED_AFTER_ENUMERATION'
+            }
+          }elseif($title -notmatch '^Untitled.*Adobe XD$'){
+            throw "XD_PANDA_UNSAFE_EXISTING_DOCUMENT=$title"
+          }
+          Write-Host "XD_PANDA_DOCUMENT_CONTEXT=PASS title=$($xd.MainWindowTitle)"
+          [void][XdPandaNative]::ShowWindow($xd.MainWindowHandle,9)
+          if(-not [XdPandaNative]::SetForegroundWindow($xd.MainWindowHandle)){throw 'XD_PANDA_CONNECT_FOREGROUND_FAIL'}
+          Start-Sleep -Milliseconds 550
+          [System.Windows.Forms.SendKeys]::SendWait('^%+9')
+          $deadline=(Get-Date).AddSeconds(35)
+          do{
+            Start-Sleep -Milliseconds 600
+            $connected=@(Get-NetTCPConnection -State Established -LocalPort 8765 -ErrorAction SilentlyContinue)
+          }until($connected.Count -gt 0 -or (Get-Date)-gt $deadline)
+          if($connected.Count -eq 0){throw 'XD_PANDA_UXP_PANEL_NOT_CONNECTED'}
+          Write-Host 'XD_PANDA_BRIDGE_CONNECTION=PASS'
+      - name: Draw actual XD panda one MCP write one UXP apply one scenegraph receipt each
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run python scripts/panda_xd_mode1_e2e.py
+          if($LASTEXITCODE -ne 0){throw 'XD_PANDA_LIVE_E2E_FAILED_NO_BLIND_RERUN'}
+      - name: Save original Adobe XD through official local Save As
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/panda_xd_save_native.ps1 -RunId "$env:PANDA_XD_RESUME_RUN_ID"
+          if($LASTEXITCODE -ne 0){throw 'XD_NATIVE_SAVE_LOCAL_NOT_VERIFIED'}
+      - name: Collect genuine XD plugin rendition and receipts
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $native=Join-Path $root "MCP_Mode1_Panda_XD_$env:PANDA_XD_RESUME_RUN_ID.xd"
+          if(Test-Path -LiteralPath $native){
+            Copy-Item -LiteralPath $native -Destination (Join-Path $PWD 'panda_mode1_xd.xd')
+            Write-Host "XD_NATIVE_ARTIFACT_BYTES=$((Get-Item -LiteralPath $native).Length)"
+          }
+          $evidence=Join-Path $root "MCP_Mode1_Panda_XD_$env:PANDA_XD_RESUME_RUN_ID.json"
+          if(Test-Path -LiteralPath $evidence){
+            Copy-Item -LiteralPath $evidence -Destination (Join-Path $PWD 'panda_mode1_xd_receipts.json')
+          }
+          $filename="MCP_Mode1_Panda_XD_$env:PANDA_XD_RESUME_RUN_ID.png"
+          $dataRoot=Join-Path $env:LOCALAPPDATA 'Packages'
+          if(Test-Path $dataRoot){
+            $found=@(Get-ChildItem -LiteralPath $dataRoot -Filter $filename -File -Recurse -ErrorAction SilentlyContinue)
+            if($found.Count -eq 1){
+              Copy-Item -LiteralPath $found[0].FullName -Destination (Join-Path $PWD 'panda_mode1_xd.png')
+              Write-Host "XD_ACTUAL_EXPORT_COLLECTED=$($found[0].FullName)"
+            }elseif($found.Count -gt 1){throw 'XD_AMBIGUOUS_NATIVE_EXPORT_PATH'}
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mode1-panda-xd-native-evidence
+          path: |
+            panda_mode1_xd.xd
+            panda_mode1_xd.png
+            panda_mode1_xd_receipts.json
+          if-no-files-found: ignore
+          retention-days: 14

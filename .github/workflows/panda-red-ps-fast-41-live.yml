@@ -1,0 +1,75 @@
+name: Red Panda Photoshop first real one-call native speed gate component 41
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-ps-fast-41-live.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  one-shape:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+      RED_PS_SOURCE_NAME: MCP_KFP4_Red_PS_38149203280_40shapes.psd
+      RED_PS_SOURCE_SHA: 1058e77a88a52450bcdbaed396c53ed41b03ba5fabe54d3af6e8761fb9aa14da
+      RED_PS_START: '41'
+      RED_PS_END: '41'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate native checkpoint and exclusive Photoshop owner
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){
+            throw 'RED_PS_FAST41_WRONG_OWNER'}
+          $ps=@(Get-Process -Name Photoshop -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+          if($ps.Count -ne 1){throw 'RED_PS_FAST41_GUI_AMBIGUOUS'}
+          $source=Join-Path (Join-Path $env:USERPROFILE 'Documents\MCPAdobe') $env:RED_PS_SOURCE_NAME
+          if(-not(Test-Path -LiteralPath $source -PathType Leaf) -or
+             (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $env:RED_PS_SOURCE_SHA){
+            throw 'RED_PS_FAST41_SOURCE_NOT_VERIFIED'}
+          Write-Host "RED_PS_FAST41_PREFLIGHT=PASS pid=$($ps[0].Id)"
+      - name: Execute ONE real native layer+fill, readback and persist, measure wall clock
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run --python 3.12 python -m py_compile scripts/panda_red_photoshop_resume_range.py scripts/panda_red_photoshop_fast_native.py
+          if($LASTEXITCODE -ne 0){throw 'RED_PS_FAST41_CODE_INVALID'}
+          $stopwatch=[System.Diagnostics.Stopwatch]::StartNew()
+          uv run --python 3.12 python scripts/panda_red_photoshop_resume_range.py
+          $result=$LASTEXITCODE
+          $stopwatch.Stop()
+          Write-Host "RED_PS_FAST41_E2E_TOTAL_MS=$($stopwatch.ElapsedMilliseconds) rc=$result"
+          if($result -ne 0){throw 'RED_PS_FAST41_OUTCOME_UNKNOWN_PRESERVE_CHECKPOINT_DO_NOT_REPLAY'}
+      - name: Copy actual unique PSD/PNG and verify integrity
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $folder=Join-Path $PWD 'red_ps_41'
+          New-Item -ItemType Directory -Force -Path $folder|Out-Null
+          foreach($extension in @('psd','png')){
+            $src=Join-Path $root ("MCP_KFP4_Red_PS_{0}_41shapes.{1}" -f $env:GITHUB_RUN_ID,$extension)
+            if(Test-Path -LiteralPath $src -PathType Leaf){
+              $dst=Join-Path $folder ("red_panda_41.{0}" -f $extension)
+              Copy-Item -LiteralPath $src -Destination $dst -ErrorAction Stop
+              $a=(Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+              if((Get-FileHash -LiteralPath $dst -Algorithm SHA256).Hash -ne $a){throw 'RED_PS_FAST41_SHA_COPY_ERROR'}
+              Write-Host "RED_PS_FAST41_ARTIFACT=$extension bytes=$((Get-Item $src).Length) sha256=$a"
+            }else{Write-Host "RED_PS_FAST41_ARTIFACT_NOT_PRESENT=$extension"}
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: red-photoshop-fast-single-shape-41
+          path: red_ps_41/*
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,239 @@
+name: Panda activate verified three-module gateway update with rollback
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-adobe-activate-staged-three-modules.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  activate:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 10
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify idle Photoshop XD Illustrator hosts before changing only Python adapter files
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'PAN_ACTIVATE_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'PAN_ACTIVATE_NONINTERACTIVE'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def rd(c,app,args):
+            r=await asyncio.wait_for(c.call_tool("creative_read",{
+              "application":app,"capability":"creative.health","arguments":args}),timeout=15)
+            p=r.structured_content or {}
+            if r.is_error or p.get("ok") is not True:
+              raise RuntimeError("PAN_ACTIVATE_READONLY_PRECHECK_FAILED:"+app)
+            return p.get("result") or {}
+          async def main():
+            async with Client("http://127.0.0.1:8787/mcp") as c:
+              ai=await rd(c,"illustrator",{"probe":False,"timeout":5})
+              data=(ai.get("connection") or {}).get("data") or {}
+              ex=data.get("execution") or {}
+              panel=(data.get("layers") or {}).get("panel") or {}
+              ps=await rd(c,"photoshop",{})
+              xd=await rd(c,"xd",{})
+              state={"unresolved":ex.get("unresolvedJobs"),"active":ex.get("activeJob"),
+                "waiting":ex.get("waiting"),"panel_status":panel.get("status"),
+                "panel_busy":panel.get("busy"),"xd_pending":xd.get("pending_count"),
+                "xd_bridge":xd.get("bridge")}
+              print("PAN_ACTIVATE_PREFLIGHT="+json.dumps(state),flush=True)
+              if ex.get("unresolvedJobs")!=[] or ex.get("activeJob") is not None or ex.get("waiting")!=0 or panel.get("busy") is not False or panel.get("status")!="ok":
+                raise RuntimeError("PAN_ACTIVATE_ILLUSTRATOR_NOT_IDLE_NO_MODULE_COPY")
+              if xd.get("pending_count")!=0 or xd.get("bridge")!="connected":
+                raise RuntimeError("PAN_ACTIVATE_XD_NOT_IDLE_NO_MODULE_COPY")
+              if not ps:
+                raise RuntimeError("PAN_ACTIVATE_PHOTOSHOP_TRANSPORT_DOWN")
+              print("PAN_ACTIVATE_READONLY_PREFLIGHT=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\pan_activate_preflight.py -Encoding UTF8
+          uv run --python 3.12 python .\pan_activate_preflight.py
+          if($LASTEXITCODE -ne 0){throw 'PAN_ACTIVATE_PREFLIGHT_FAILED'}
+      - name: Validate embedded PowerShell parser before any runtime module copies
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $scriptFile=Join-Path $PWD '.github/workflows/panda-adobe-activate-staged-three-modules.yml'
+          $src=@(Get-Content -LiteralPath $scriptFile)
+          $entry=-1
+          for($i=0;$i -lt $src.Count;$i++){
+            if($src[$i] -match '^      - name: Activate ONLY staged 3 Python modules'){$entry=$i;break}
+          }
+          if($entry -lt 0){throw 'PAN_ACTIVATE_STATIC_STEP_MISSING'}
+          $runIndex=-1
+          for($i=$entry+1;$i -lt $src.Count;$i++){
+            if($src[$i] -match '^        run: \|$'){$runIndex=$i;break}
+          }
+          if($runIndex -lt 0){throw 'PAN_ACTIVATE_STATIC_RUN_MISSING'}
+          $finish=$src.Count
+          for($i=$runIndex+1;$i -lt $src.Count;$i++){
+            if($src[$i] -match '^      - name: ' -or $src[$i] -match '^      - uses: '){$finish=$i;break}
+          }
+          $body=@()
+          for($i=$runIndex+1;$i -lt $finish;$i++){
+            if($src[$i] -ne '' -and -not $src[$i].StartsWith('          ')){
+              throw "PAN_ACTIVATE_WRONG_YAML_RUN_INDENT_LINE=$($i+1)"
+            }
+            $body+=if($src[$i] -eq ''){''}else{$src[$i].Substring(10)}
+          }
+          $tokens=$null;$errors=$null
+          [void][System.Management.Automation.Language.Parser]::ParseInput(($body -join [Environment]::NewLine),[ref]$tokens,[ref]$errors)
+          if(@($errors).Count -ne 0){
+            foreach($e in $errors){Write-Host "PAN_ACTIVATE_PARSER_ERROR line=$($e.Extent.StartLineNumber) message=$($e.Message)"}
+            throw 'PAN_ACTIVATE_PS_SYNTAX_FAILED_NO_MUTATION'
+          }
+          Write-Host 'PAN_ACTIVATE_POWERSHELL_PARSER=PASS'
+      - name: Activate ONLY staged 3 Python modules, verify live capabilities; rollback on known failure
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway'
+          $install=Join-Path $root 'venv\Lib\site-packages\mcp_adobe'
+          $stage=Join-Path $root 'updates\red_panda_38153086928'
+          $candidate=Join-Path $stage 'candidate\mcp_adobe'
+          $original=Join-Path $stage 'original'
+          $manifest=Join-Path $stage 'manifest.json'
+          if(-not(Test-Path -LiteralPath $manifest)){throw 'PAN_ACTIVATE_VERIFIED_STAGE_MISSING'}
+          $m=Get-Content -LiteralPath $manifest -Raw|ConvertFrom-Json
+          if($m.stage_id -ne '38153086928' -or $m.module_count -ne 3 -or $m.activate -ne $false){
+            throw 'PAN_ACTIVATE_MANIFEST_MISMATCH'
+          }
+          $sha=@{
+            'illustrator.py'=@('06EE5E5FE43348768D9D0FC81C3575801437A8CC584C19F1E3C0AB96F7B1AD59','0298CB04EE1A2928CF38A79E6F4A28492222950259A8B3662ECE82D6453BFE8C')
+            'illustrator_cep.py'=@('E14F47CC6018FAB3A2F4F490261FCAC2E5C560D88A990AAC904DBDB7C5BA711C','E2AC497A4C2E31F85D2A98A051DCA618584E95292FAC9A006566ADD8D7CD3C82')
+            'xd.py'=@('15E80FDEA6C6710A51153D1216314E1E003D993BB12573288057338B73B43695','F020BAF5FC6DFAB5F2D0690BFAF57E12B3244249058DDE98C0A33E260A06923D')
+          }
+          $names=@('illustrator.py','illustrator_cep.py','xd.py')
+          foreach($name in $names){
+            foreach($slot in @(@((Join-Path $install $name),$sha[$name][0]),@((Join-Path $original $name),$sha[$name][0]),@((Join-Path $candidate $name),$sha[$name][1]))){
+              $file=[string]$slot[0];$expected=[string]$slot[1]
+              if(-not(Test-Path -LiteralPath $file -PathType Leaf) -or
+                (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $expected){
+                throw "PAN_ACTIVATE_CONCURRENT_CHANGE_OR_BAD_STAGE:$name"
+              }
+            }
+          }
+          $pidfile=Join-Path $root 'host-wrapper.pid'
+          $wrapperPid=0
+          if(-not(Test-Path $pidfile) -or -not[int]::TryParse((Get-Content $pidfile -Raw).Trim(),[ref]$wrapperPid)){
+            throw 'PAN_ACTIVATE_SUPERVISOR_PID_INVALID'
+          }
+          $wrapper=Get-CimInstance Win32_Process -Filter "ProcessId=$wrapperPid" -ErrorAction SilentlyContinue
+          if(-not $wrapper -or $wrapper.CommandLine -notmatch 'run-host.ps1'){
+            throw 'PAN_ACTIVATE_NOT_OWNED_SUPERVISOR'
+          }
+          $listeners=@(Get-NetTCPConnection -State Listen -LocalPort 8787 -ErrorAction SilentlyContinue)
+          if($listeners.Count -ne 1){throw 'PAN_ACTIVATE_GATEWAY_LISTENER_NOT_UNIQUE'}
+          $oldPid=$listeners[0].OwningProcess
+          $proc=Get-CimInstance Win32_Process -Filter "ProcessId=$oldPid"
+          if($proc.CommandLine -notmatch 'mcp-adobe.exe.*--transport streamable-http.*--host 127.0.0.1.*--port 8787'){
+            throw 'PAN_ACTIVATE_GATEWAY_OWNER_NOT_VERIFIED'
+          }
+          if(@(Get-NetTCPConnection -LocalPort 8787 -State Established -ErrorAction SilentlyContinue).Count -ne 0){
+            throw 'PAN_ACTIVATE_ACTIVE_MCP_CLIENT_NO_RESTART'
+          }
+          $beforeAdobe=@{}
+          foreach($n in @('Photoshop.exe','Illustrator.exe','XD.exe')){
+            $p=@(Get-CimInstance Win32_Process -Filter "Name='$n'" |Where-Object{$_.SessionId -eq 1})
+            if($p.Count -ne 1){throw "PAN_ACTIVATE_ADOBE_PROCESS_NOT_UNIQUE:$n"}
+            $beforeAdobe[$n]=$p[0].ProcessId
+          }
+          Write-Host "PAN_ACTIVATE_OWNER=PASS gateway=$oldPid supervisor=$wrapperPid adobe=3"
+          $copied=$false
+          $verified=$false
+          try {
+            foreach($name in $names){
+              Copy-Item -LiteralPath (Join-Path $candidate $name) -Destination (Join-Path $install $name) -Force -ErrorAction Stop
+              $copied=$true
+              if((Get-FileHash -LiteralPath (Join-Path $install $name) -Algorithm SHA256).Hash -ne $sha[$name][1]){
+                throw "PAN_ACTIVATE_COPY_SHA_FAIL:$name"
+              }
+              Write-Host "PAN_ACTIVATE_MODULE=PASS name=$name sha256=$($sha[$name][1])"
+            }
+            $python=Join-Path $root 'venv\Scripts\python.exe'
+            @'
+          import mcp_adobe.illustrator as ai
+          import mcp_adobe.illustrator_cep as cep
+          import mcp_adobe.xd as xd
+          assert "creative.document.fast_snapshot" in ai._BINDINGS
+          assert "fast_document_snapshot" in cep.SUPPORTED_LEGACY_TOOLS
+          assert "xd.queue.path_create" in xd._BINDINGS
+          print("PAN_ACTIVATE_INSTALLED_IMPORT=PASS",flush=True)
+          '@ | Set-Content -LiteralPath .\pan_runtime_import.py -Encoding UTF8
+            & $python .\pan_runtime_import.py
+            if($LASTEXITCODE -ne 0){throw 'PAN_ACTIVATE_UPDATED_INSTALLED_IMPORT_FAILED'}
+            Stop-Process -Id $oldPid -ErrorAction Stop
+            $deadline=(Get-Date).AddSeconds(100);$newPid=0
+            do{
+              Start-Sleep -Seconds 2
+              $now=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+              if($now.Count -eq 1 -and $now[0].OwningProcess -ne $oldPid){$newPid=$now[0].OwningProcess;break}
+            }until((Get-Date)-ge $deadline)
+            if($newPid -eq 0){throw 'PAN_ACTIVATE_NEW_GATEWAY_NOT_LISTENING'}
+            foreach($n in @($beforeAdobe.Keys)){
+              if(-not(Get-Process -Id $beforeAdobe[$n] -ErrorAction SilentlyContinue)){
+                throw "PAN_ACTIVATE_ADOBE_PROCESS_DISAPPEARED:$n"
+              }
+            }
+            $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+            @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+            async with Client("http://127.0.0.1:8787/mcp") as c:
+              response=await asyncio.wait_for(c.call_tool("creative_discover",{}),timeout=15)
+              if response.is_error:raise RuntimeError("PAN_ACTIVATE_DISCOVERY_FAILED")
+              p=response.structured_content or {}
+              apps={x["application"]:x for x in p.get("applications",[])}
+              ai=set(apps["illustrator"].get("common_capabilities") or [])
+              xd=set(apps["xd"].get("native_capabilities") or [])
+              print("PAN_ACTIVATE_LIVE_CAPS="+json.dumps({
+                "ai_fast_snapshot":"creative.document.fast_snapshot" in ai,
+                "xd_path_create":"xd.queue.path_create" in xd}),flush=True)
+              if "creative.document.fast_snapshot" not in ai or "xd.queue.path_create" not in xd:
+                raise RuntimeError("PAN_ACTIVATE_LIVE_MISSING_NEW_CAPABILITIES")
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\pan_live_discover.py -Encoding UTF8
+            uv run --python 3.12 python .\pan_live_discover.py
+            if($LASTEXITCODE -ne 0){throw 'PAN_ACTIVATE_LIVE_DISCOVER_BAD'}
+            $verified=$true
+            Write-Host "PAN_ACTIVATE_VERIFIED=PASS oldPid=$oldPid newPid=$newPid stage=38153086928"
+          } catch {
+            Write-Host "PAN_ACTIVATE_FAILURE=$($_.Exception.Message)"
+            if($copied -and -not $verified){
+              foreach($name in $names){
+                Copy-Item -LiteralPath (Join-Path $original $name) -Destination (Join-Path $install $name) -Force -ErrorAction Stop
+                if((Get-FileHash -LiteralPath (Join-Path $install $name) -Algorithm SHA256).Hash -ne $sha[$name][0]){
+                  throw "PAN_ACTIVATE_ROLLBACK_HASH_FAILED:$name"
+                }
+              }
+              $listener=@(Get-NetTCPConnection -LocalPort 8787 -State Listen -ErrorAction SilentlyContinue)
+              if($listener.Count -eq 1){
+                $newPid=$listener[0].OwningProcess
+                $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$newPid" -ErrorAction SilentlyContinue
+                if($owner -and $owner.CommandLine -match 'mcp-adobe.exe.*--transport streamable-http.*--host 127.0.0.1.*--port 8787'){
+                  Stop-Process -Id $newPid -ErrorAction Stop
+                }
+              }
+              Write-Host "PAN_ACTIVATE_ROLLBACK_FILES=PASS source_staged_unchanged=1"
+            }
+            throw
+          }
+      - name: Inspect new immutable adapter module SHA after runtime activation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\venv\Lib\site-packages\mcp_adobe'
+          foreach($name in @('illustrator.py','illustrator_cep.py','xd.py')){
+            Write-Host "PAN_ACTIVATE_FINAL_HASH name=$name sha256=$((Get-FileHash (Join-Path $root $name) -Algorithm SHA256).Hash)"
+          }

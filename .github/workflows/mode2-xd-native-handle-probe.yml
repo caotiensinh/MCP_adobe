@@ -1,0 +1,95 @@
+name: Mode 2 XD native file ownership live probe
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-native-handle-probe.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  native-file-handles:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Compare Windows Restart Manager file ownership for source and isolated copy
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $source=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $copy=Join-Path $root 'mode2-isolated\Panda_Mode2_Editable_Experiment.xd'
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($file in @($source,$copy)){
+            if(!(Test-Path -LiteralPath $file -PathType Leaf)){throw 'MODE2_FILE_MISSING'}
+            if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $sha){throw 'MODE2_SHA_MISMATCH'}
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $roots=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $xd=@($roots|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $copies=@($xd|Where-Object {[string]$_.Current.Name -match '^Panda_Mode2_Editable_Experiment.*Adobe XD$'})
+          $ws=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "MODE2_HOST_WINDOW_COUNT=$($xd.Count) COPY=$($copies.Count) BRIDGE=$($ws.Count)"
+          if($xd.Count -ne 1 -or $copies.Count -ne 1 -or $ws.Count -lt 1){throw 'MODE2_HOST_NOT_READY_NO_OPEN'}
+          $code=@'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class RMReadOnly {
+            [StructLayout(LayoutKind.Sequential)]
+            public struct RM_UNIQUE_PROCESS { public int dwProcessId; public System.Runtime.InteropServices.ComTypes.FILETIME ProcessStartTime; }
+            [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+            public struct RM_PROCESS_INFO {
+              public RM_UNIQUE_PROCESS Process;
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst=256)] public string strAppName;
+              [MarshalAs(UnmanagedType.ByValTStr, SizeConst=64)] public string strServiceShortName;
+              public uint ApplicationType;
+              public uint AppStatus;
+              public uint TSSessionId;
+              [MarshalAs(UnmanagedType.Bool)] public bool bRestartable;
+            }
+            [DllImport("rstrtmgr.dll", CharSet=CharSet.Unicode)]
+            public static extern int RmStartSession(out uint handle, int flags, string key);
+            [DllImport("rstrtmgr.dll", CharSet=CharSet.Unicode)]
+            public static extern int RmRegisterResources(uint handle, uint fileCount, string[] files, uint appCount, IntPtr apps, uint serviceCount, IntPtr services);
+            [DllImport("rstrtmgr.dll")]
+            public static extern int RmGetList(uint handle, out uint needed, ref uint count, [In, Out] RM_PROCESS_INFO[] processes, ref uint rebootReasons);
+            [DllImport("rstrtmgr.dll")]
+            public static extern int RmEndSession(uint handle);
+            public static RM_PROCESS_INFO[] Readers(string file) {
+              uint h;
+              int rc=RmStartSession(out h, 0, Guid.NewGuid().ToString("N"));
+              if(rc!=0) throw new Exception("RM_START_"+rc);
+              try {
+                rc=RmRegisterResources(h, 1, new[]{file}, 0, IntPtr.Zero, 0, IntPtr.Zero);
+                if(rc!=0) throw new Exception("RM_REGISTER_"+rc);
+                uint needed=0, count=0, reason=0;
+                rc=RmGetList(h, out needed, ref count, null, ref reason);
+                if(rc==0 && needed==0) return new RM_PROCESS_INFO[0];
+                if(rc!=234) throw new Exception("RM_LIST_SIZE_"+rc);
+                var processes=new RM_PROCESS_INFO[needed];
+                count=needed;
+                rc=RmGetList(h, out needed, ref count, processes, ref reason);
+                if(rc!=0) throw new Exception("RM_LIST_"+rc);
+                if(count<processes.Length) Array.Resize(ref processes, (int)count);
+                return processes;
+              } finally { RmEndSession(h); }
+            }
+          }
+          '@
+          Add-Type -TypeDefinition $code
+          $originUsers=@([RMReadOnly]::Readers($source))
+          $copyUsers=@([RMReadOnly]::Readers($copy))
+          Write-Host "MODE2_RM_SOURCE_COUNT=$($originUsers.Count) COPY_COUNT=$($copyUsers.Count)"
+          foreach($item in $originUsers){Write-Host "MODE2_RM_SOURCE_PROCESS=$($item.Process.dwProcessId) APP=$($item.strAppName)"}
+          foreach($item in $copyUsers){Write-Host "MODE2_RM_COPY_PROCESS=$($item.Process.dwProcessId) APP=$($item.strAppName)"}
+          Write-Host 'MODE2_RM_FILE_HANDLE_ALONE_IS_NOT_PROOF=True'
+          Write-Host 'MODE2_UNDO_ATTESTED=False'
+          Write-Host 'MODE2_MUTATION_AUTHORIZED=False'
+          foreach($file in @($source,$copy)){
+            if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $sha){throw 'MODE2_FILE_CHANGED'}
+          }
+          Write-Host 'MODE2_RESTART_MANAGER_READONLY_PROBE=PASS'

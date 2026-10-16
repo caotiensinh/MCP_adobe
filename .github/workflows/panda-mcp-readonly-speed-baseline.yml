@@ -1,0 +1,135 @@
+name: Panda MCP read-only performance baseline and health diagnostics
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-mcp-readonly-speed-baseline.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  measure:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 9
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect process and ports without restarting or activating Adobe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'MCP_BENCH_WRONG_HOST'}
+          Write-Host "MCP_BENCH_HOST=$env:COMPUTERNAME session=$([System.Diagnostics.Process]::GetCurrentProcess().SessionId)"
+          foreach($port in @(8787,8765,8081)){
+            $listeners=@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+            foreach($listener in $listeners){
+              $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
+              Write-Host "MCP_BENCH_PORT=$port pid=$($listener.OwningProcess) image=$($owner.Name)"
+            }
+            if($listeners.Count -eq 0){Write-Host "MCP_BENCH_PORT_ABSENT=$port"}
+          }
+          foreach($app in @('Photoshop.exe','Illustrator.exe','XD.exe','Adobe XD.exe')){
+            foreach($p in @(Get-CimInstance Win32_Process -Filter "Name='$app'" -ErrorAction SilentlyContinue)){
+              Write-Host "MCP_BENCH_ADOBE_PROCESS=$($p.Name) pid=$($p.ProcessId) session=$($p.SessionId)"
+            }
+          }
+      - name: Measure new MCP client sessions and reused-session readbacks
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          """Read-only MCP latencies. NEVER restarts host, performs Apply, or replays writes."""
+          import asyncio,json,os,statistics,time
+          from pathlib import Path
+          from mcp import Client
+
+          URL="http://127.0.0.1:8787/mcp"
+          APPS=("xd","photoshop","illustrator")
+          DATA={"schema":"mcp-adobe-speed-baseline/v1","run_id":os.getenv("GITHUB_RUN_ID"),
+                "host":os.getenv("COMPUTERNAME"),"cold_definition":"new MCP Client connection to existing Gateway, not cold Gateway process",
+                "warm_definition":"repeated calls over one existing MCP Client session",
+                "process_cold_start":{"measured":False,"reason":"Gateway process restart prohibited for read-only baseline"},
+                "samples":[],"errors":[]}
+          def now():return time.perf_counter()
+          def record(kind,app,start,ok,detail=None):
+              v={"phase":kind,"application":app,"milliseconds":round((now()-start)*1000,3),"ok":ok}
+              if detail:v["detail"]=str(detail)[:300]
+              DATA["samples"].append(v)
+              print("MCP_TIMING="+json.dumps(v,ensure_ascii=False),flush=True)
+          async def call(c,app,cap,phase):
+              start=now()
+              try:
+                  args={"probe":False,"timeout":5} if app=="illustrator" and cap=="creative.health" else {}
+                  r=await asyncio.wait_for(c.call_tool("creative_read",{"application":app,"capability":cap,"arguments":args}),timeout=9)
+                  payload=r.structured_content or {}
+                  ok=not r.is_error and isinstance(payload,dict) and payload.get("ok") is True
+                  detail=None if ok else json.dumps(payload,ensure_ascii=False,default=str)[:300]
+                  record(phase,app,start,ok,detail)
+                  if not ok:DATA["errors"].append({"app":app,"cap":cap,"phase":phase,"error":detail})
+                  return ok
+              except Exception as exc:
+                  detail=type(exc).__name__+": "+str(exc)[:250]
+                  record(phase,app,start,False,detail)
+                  DATA["errors"].append({"app":app,"cap":cap,"phase":phase,"error":detail})
+                  return False
+          async def main():
+              for i in range(6):
+                  start=now()
+                  try:
+                      async with Client(URL) as c:
+                          record("new_client_session","gateway",start,True)
+                          await call(c,"xd","creative.health","new_client_health")
+                  except Exception as exc:
+                      record("new_client_session","gateway",start,False,type(exc).__name__+": "+str(exc))
+              start=now()
+              try:
+                  async with Client(URL) as c:
+                      record("reused_client_session","gateway",start,True)
+                      for app in APPS:
+                          for _ in range(12):
+                              await call(c,app,"creative.health","warm_health")
+                          if app=="xd":
+                              for _ in range(12):
+                                  await call(c,app,"creative.scenegraph.list","warm_scenegraph_readback")
+                          if app=="photoshop":
+                              for _ in range(4):
+                                  await call(c,app,"creative.document.info","warm_document_readback")
+              except Exception as exc:
+                  DATA["errors"].append({"phase":"reused_client_session","error":type(exc).__name__+": "+str(exc)[:400]})
+              groups={}
+              for x in DATA["samples"]:
+                  k=x["phase"]+"/"+x["application"]
+                  groups.setdefault(k,[]).append(x)
+              for k,values in groups.items():
+                  valid=sorted(x["milliseconds"] for x in values if x["ok"])
+                  def pct(percent):
+                      if not valid:return None
+                      n=(len(valid)-1)*percent
+                      lo=int(n);hi=min(lo+1,len(valid)-1)
+                      return round(valid[lo]+(valid[hi]-valid[lo])*(n-lo),3)
+                  DATA.setdefault("statistics",{})[k]={"count":len(values),"successful":len(valid),
+                    "p50_ms":pct(.5),"p95_ms":pct(.95),"p99_ms":pct(.99)}
+              file=Path("mcp_readonly_speed_baseline.json")
+              file.write_text(json.dumps(DATA,ensure_ascii=False,indent=2),encoding="utf-8")
+              print("MCP_BASELINE_RESULT="+json.dumps({"statistics":DATA["statistics"],
+                    "error_count":len(DATA["errors"]),"path":str(file)},ensure_ascii=False),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\mcp_latency_baseline.py -Encoding UTF8
+          $watch=[System.Diagnostics.Stopwatch]::StartNew()
+          uv run --python 3.12 python .\mcp_latency_baseline.py
+          $rc=$LASTEXITCODE
+          $watch.Stop()
+          Write-Host "MCP_BENCH_UV_AND_PYTHON_TOTAL_MS=$($watch.ElapsedMilliseconds) rc=$rc"
+          if($rc -ne 0){throw "MCP_BENCH_DIAGNOSTIC_SCRIPT_FAILED_$rc"}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-mcp-readonly-speed-baseline
+          path: mcp_readonly_speed_baseline.json
+          if-no-files-found: warn
+          retention-days: 14

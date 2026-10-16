@@ -1,0 +1,49 @@
+name: PANDA XD bootstrap native local document first
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-bootstrap-native.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  bootstrap:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create fresh XD test document and save original .xd before any panda strokes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $parseErrors=$null
+          $parseTokens=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'scripts/panda_xd_bootstrap_native.ps1'),[ref]$parseTokens,[ref]$parseErrors)
+          if(@($parseErrors).Count -gt 0){
+            foreach($e in $parseErrors){Write-Host "XD_BOOTSTRAP_PS_PARSER_ERROR=$($e.Message)"}
+            throw 'XD_BOOTSTRAP_SCRIPT_SYNTAX_INVALID'
+          }
+          Write-Host 'XD_BOOTSTRAP_POWERSHELL_AST_VALID=PASS'
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/panda_xd_bootstrap_native.ps1 -RunId "${{ github.run_id }}"
+          if($LASTEXITCODE -ne 0){throw 'XD_BOOTSTRAP_NATIVE_FILE_NOT_VERIFIED'}
+      - name: Collect verified local XD source
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $source=Join-Path $env:USERPROFILE "Documents\MCPAdobe\MCP_Mode1_Panda_XD_${{ github.run_id }}.xd"
+          if(Test-Path -LiteralPath $source){
+            Copy-Item -LiteralPath $source -Destination (Join-Path $PWD 'panda_xd_initial_native.xd')
+            Write-Host "XD_BOOTSTRAP_ARTIFACT_BYTES=$((Get-Item $source).Length)"
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-xd-blank-original
+          path: panda_xd_initial_native.xd
+          if-no-files-found: ignore
+          retention-days: 14

@@ -1,0 +1,133 @@
+name: PANDA XD recover interactive host without new document
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-host-recovery.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  recover:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    env:
+      PYTHONUTF8: "1"
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Recover only the Adobe XD host and reconnect existing document
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_HOST_RECOVERY_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_HOST_RECOVERY_NOT_INTERACTIVE_SESSION'}
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class XdRecoveryNative {
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int n);
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+          }
+          '@
+          function Find-XdWindow {
+            @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+              ($_.ProcessName -match '^(XD|AdobeXD)$' -or $_.MainWindowTitle -match 'Adobe XD') -and
+              $_.MainWindowHandle -ne 0 -and $_.SessionId -eq 1
+            } | Sort-Object @{Expression={if($_.MainWindowTitle -match '^Untitled'){0}else{1}}} | Select-Object -First 1)[0]
+          }
+          function Foreground-Pid {
+            $h=[XdRecoveryNative]::GetForegroundWindow()
+            $owner=[uint32]0
+            if($h -ne [IntPtr]::Zero){[void][XdRecoveryNative]::GetWindowThreadProcessId($h,[ref]$owner)}
+            return [int]$owner
+          }
+          $xd=Find-XdWindow
+          Write-Host "XD_RECOVERY_BEFORE_WINDOW=$($xd.MainWindowTitle) pid=$($xd.Id)"
+          if(-not $xd){
+            $app=Get-StartApps -ErrorAction SilentlyContinue |
+              Where-Object {$_.Name -match '^Adobe XD$|Adobe.*XD'} |
+              Select-Object -First 1
+            if(-not $app){throw 'XD_RECOVERY_APP_NOT_REGISTERED'}
+            Write-Host "XD_RECOVERY_START_APP name=$($app.Name) appid=$($app.AppID)"
+            Start-Process explorer.exe ("shell:AppsFolder\"+$app.AppID)
+            $deadline=(Get-Date).AddSeconds(90)
+            do{Start-Sleep -Seconds 2;$xd=Find-XdWindow}until($xd -or (Get-Date)-gt $deadline)
+          }
+          if(-not $xd){throw 'XD_RECOVERY_NO_INTERACTIVE_WINDOW'}
+          [void][XdRecoveryNative]::ShowWindow($xd.MainWindowHandle,9)
+          [void][XdRecoveryNative]::SetForegroundWindow($xd.MainWindowHandle)
+          $foreground=Foreground-Pid
+          if($foreground -ne $xd.Id){
+            $shell=New-Object -ComObject WScript.Shell
+            [void]$shell.AppActivate([int]$xd.Id)
+            Start-Sleep -Milliseconds 450
+            $foreground=Foreground-Pid
+          }
+          Write-Host "XD_RECOVERY_WINDOW=PASS pid=$($xd.Id) title=$($xd.MainWindowTitle) foreground=$foreground"
+          if($xd.MainWindowTitle -notmatch '^Untitled.*Adobe XD$'){
+            Write-Host "XD_RECOVERY_HOME_ONLY_NO_DOCUMENT=DETECTED title=$($xd.MainWindowTitle)"
+            throw 'XD_RECOVERY_PREVIOUS_UNSAVED_DOCUMENT_NOT_OPEN_NO_WRITE'
+          }
+          $established=@(Get-NetTCPConnection -State Established -LocalPort 8765 -ErrorAction SilentlyContinue)
+          if($established.Count -eq 0){
+            if($foreground -ne $xd.Id){throw 'XD_RECOVERY_FOREGROUND_NOT_OWNED_NO_CONNECT'}
+            [System.Windows.Forms.SendKeys]::SendWait('^%+9')
+            Write-Host 'XD_RECOVERY_CONNECT_COMMAND_SENT_ONCE'
+            $deadline=(Get-Date).AddSeconds(35)
+            do{
+              Start-Sleep -Milliseconds 700
+              $established=@(Get-NetTCPConnection -State Established -LocalPort 8765 -ErrorAction SilentlyContinue)
+            }until($established.Count -gt 0 -or (Get-Date)-gt $deadline)
+          }
+          if($established.Count -eq 0){throw 'XD_RECOVERY_UXP_BRIDGE_DID_NOT_RECONNECT'}
+          Write-Host 'XD_RECOVERY_UXP_BRIDGE_ESTABLISHED=PASS'
+      - name: Prove recovered XD document identity, exact five GUIDs and zero queued ops
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'XD_RECOVERY_UV_INSTALL_FAILED'}
+          @'
+          import asyncio,json,os
+          from pathlib import Path
+          from mcp import Client
+          cp=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"/"MCP_Mode1_Panda_XD_38114632173.json"
+          async def main():
+              data=json.loads(cp.read_text(encoding="utf-8"))
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  async def read(cap):
+                      r=await c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}})
+                      if r.is_error:raise RuntimeError("XD_RECOVERY_READ_ERROR "+cap+" "+str(r.content))
+                      return r.structured_content["result"]
+                  h=await read("creative.health")
+                  scene=await read("creative.scenegraph.list")
+                  print("XD_RECOVERY_HEALTH="+json.dumps(h),flush=True)
+                  print("XD_RECOVERY_DOCUMENT_ID="+str(scene.get("document_id")),flush=True)
+                  nodes={}
+                  def walk(x):
+                      if isinstance(x,dict):
+                          if "name" in x and "id" in x:nodes[x["name"]]=x["id"]
+                          for v in x.values():walk(v)
+                      elif isinstance(x,list):
+                          for y in x:walk(y)
+                  walk(scene.get("nodes",[]))
+                  expected={r["name"]:r["guid"] for r in data["proven"]}
+                  actual={n:nodes.get(n) for n in expected}
+                  print("XD_RECOVERY_GUID_CHECK="+json.dumps({"expected":expected,"actual":actual},ensure_ascii=False),flush=True)
+                  if scene.get("document_id")!="892cdc9e-115d-4ec9-aa93-a0b75e9c1de0":
+                      raise RuntimeError("XD_RECOVERY_DOCUMENT_ID_CHANGED_NO_REPLAY")
+                  if actual!=expected or h.get("pending_count")!=0:
+                      raise RuntimeError("XD_RECOVERY_GUIDS_OR_QUEUE_NOT_MATCHING")
+                  print("XD_RECOVERED_ORIGINAL_UNSAVED_SCENEGRAPH=PASS objects="+str(len(expected)),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath xd_recover_verify.py -Encoding UTF8
+          uv run python xd_recover_verify.py
+          if($LASTEXITCODE -ne 0){throw 'XD_RECOVERY_DOCUMENT_NOT_VERIFIED'}

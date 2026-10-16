@@ -1,0 +1,42 @@
+name: Illustrator C014 CEP reconnection preflight
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Identify missing CEP panel session without host mutation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $ai=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'")
+          if($ai.Count -ne 1){throw "C014_AI_PROCESS_COUNT=$($ai.Count)"}
+          Write-Output "C014_AI_PID=$($ai[0].ProcessId) session=$($ai[0].SessionId)"
+          $cep=@(Get-CimInstance Win32_Process -Filter "Name='CEPHtmlEngine.exe'")
+          Write-Output "C014_CEP_PROCESS_COUNT=$($cep.Count)"
+          foreach($p in $cep){
+            $cmd=[string]$p.CommandLine
+            Write-Output "C014_CEP_PROCESS pid=$($p.ProcessId) session=$($p.SessionId) extension_match=$($cmd -match 'com\.illustrator\.mcp\.panel') parent=$($p.ParentProcessId)"
+          }
+          $manifest=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel\CSXS\manifest.xml'
+          Write-Output "C014_CEP_MANIFEST_EXISTS=$(Test-Path $manifest)"
+          if(Test-Path $manifest){
+            $xml=Get-Content $manifest -Raw
+            foreach($m in [regex]::Matches($xml,'<Menu>[^<]+|<MainPath>[^<]+')){
+              Write-Output "C014_CEP_MANIFEST $($m.Value)"
+            }
+          }
+          $con=@(Get-NetTCPConnection -RemotePort 8081 -State Established -ErrorAction SilentlyContinue)
+          Write-Output "C014_CEP_TCP_ESTABLISHED=$($con.Count)"
+          foreach($p in $con){
+            $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$($p.OwningProcess)"
+            Write-Output "C014_CEP_TCP_OWNER pid=$($p.OwningProcess) name=$($owner.Name)"
+          }
+          if($con.Count -gt 0){Write-Output "C014_CEP_TRANSPORT_RECONNECTED=OBSERVED"}
+          else{Write-Output "C014_CEP_RECONNECT_NEEDED=TRUE"}

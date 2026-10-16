@@ -1,0 +1,105 @@
+name: XD Apply exact pending ellipse via real Plugins menu once
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-apply-one-queued-menu.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  apply:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+      PANDA_XD_SOURCE_RUN_ID: '38136531800'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm one exact queued operation and zero-radius target (read only)
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_APPLY_ONE_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_APPLY_ONE_WRONG_SESSION'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'XD_APPLY_ONE_ENV_NOT_READY'}
+          uv run python scripts/panda_xd_exact_pending_apply_gate.py before
+          if($LASTEXITCODE -ne 0){throw 'XD_APPLY_ONE_GUARD_REJECTED_NO_GUI_ACTION'}
+      - name: Invoke exactly one real XD MCP Adobe Apply UXP command
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $root=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $documents=@()
+          foreach($w in $top){
+            if([string]$w.Current.Name -match 'MCP_Mode1_Panda_XD_38136531800' -and
+               [string]$w.Current.Name -match 'Adobe XD' -and
+               [string]$w.Current.ClassName -eq 'ApplicationFrameWindow'){$documents+=,$w}
+          }
+          if($documents.Count -ne 1){throw "XD_APPLY_ONE_DOCUMENT_NOT_UNIQUE count=$($documents.Count)"}
+          $window=$documents[0]
+          $idProperty=[System.Windows.Automation.AutomationElement]::AutomationIdProperty
+          $menu=$window.FindFirst([System.Windows.Automation.TreeScope]::Descendants,
+              (New-Object System.Windows.Automation.PropertyCondition($idProperty,'AppMenuBar_Plugins')))
+          if(-not $menu -or -not $menu.Current.IsEnabled){throw 'XD_APPLY_ONE_PLUGINS_MENU_NOT_ENABLED'}
+          $menuPattern=$menu.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+          if($menuPattern.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$menuPattern.Expand()}
+          Start-Sleep -Milliseconds 220
+          $nodes=$window.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $submenus=@()
+          foreach($node in $nodes){
+            if([string]$node.Current.Name -eq 'MCP Adobe Bridge' -and
+               [string]$node.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'){
+              try{
+                $expandable=$node.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+                $submenus+=,$node
+                Write-Host "XD_APPLY_ONE_EXPANDABLE_BRIDGE_ITEM id=$($node.Current.AutomationId) state=$($expandable.Current.ExpandCollapseState)"
+              }catch{
+                Write-Host 'XD_APPLY_ONE_IGNORED_NONEXPANDABLE_BRIDGE_LEAF'
+              }
+            }
+          }
+          if($submenus.Count -ne 1){throw "XD_APPLY_ONE_BRIDGE_MENU_NOT_UNIQUE count=$($submenus.Count)"}
+          $submenu=$submenus[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+          if($submenu.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$submenu.Expand()}
+          Start-Sleep -Milliseconds 220
+          $items=$window.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $apply=@()
+          foreach($node in $items){
+            if([string]$node.Current.Name -eq 'MCP Adobe Apply' -and
+               [string]$node.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and
+               $node.Current.IsEnabled){$apply+=,$node}
+          }
+          if($apply.Count -ne 1){throw "XD_APPLY_ONE_MENU_COMMAND_NOT_UNIQUE count=$($apply.Count)"}
+          $checkpoint=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800_ellipse_repair.json'
+          $record=Get-Content -LiteralPath $checkpoint -Raw | ConvertFrom-Json
+          if(@($record.repaired).Count -ne 0 -or $record.pending.operation_id -ne 'xd-1791723425452-1'){
+            throw 'XD_APPLY_ONE_CHECKPOINT_CHANGED_BEFORE_INVOKE'
+          }
+          Write-Host "XD_APPLY_ONE_REAL_MENU_VERIFIED=PASS document=$($window.Current.Name) control=$($apply[0].Current.Name)"
+          # UIA invokes the Adobe XD UXP command itself; this is not a script
+          # constructing geometry, injecting an SVG, or sending keys to Chrome.
+          # Do not use fallback if this invocation has an ambiguous outcome.
+          $pattern=$apply[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+          try{
+            $pattern.Invoke()
+            Write-Host 'XD_APPLY_ONE_UXP_MENU_INVOKED=ONCE'
+          }catch{
+            throw "XD_APPLY_ONE_INVOKE_RESULT_UNKNOWN_NO_RETRY $($_.Exception.Message)"
+          }
+      - name: Read exact operation receipt and measured ellipse geometry after Apply
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run python scripts/panda_xd_exact_pending_apply_gate.py after
+          if($LASTEXITCODE -ne 0){throw 'XD_APPLY_ONE_NOT_VERIFIED_STOP_NO_REPLAY'}

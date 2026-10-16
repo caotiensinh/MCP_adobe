@@ -1,0 +1,65 @@
+name: PANDA XD locate real native save result after PickerHost click
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-native-save-result-discovery.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  discover:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read native .xd files, processes and desktop state without any mouse or keyboard
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_SAVE_DISCOVERY_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_SAVE_DISCOVERY_WRONG_SESSION'}
+          $locations=@(
+            (Join-Path $env:USERPROFILE 'Documents'),
+            (Join-Path $env:USERPROFILE 'Desktop'),
+            (Join-Path $env:USERPROFILE 'Downloads')
+          )
+          $matching=@()
+          foreach($dir in $locations){
+            if(-not (Test-Path -LiteralPath $dir -PathType Container)){continue}
+            $files=@(Get-ChildItem -LiteralPath $dir -File -Filter '*.xd' -Recurse -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.LastWriteTime -gt (Get-Date).AddHours(-3) -and
+                ($_.Name -like 'Untitled*.xd' -or $_.Name -like 'MCP_Mode1_Panda_XD_*.xd')
+              })
+            Write-Host "XD_SAVE_DISCOVERY_SCAN dir=$dir matches=$($files.Count)"
+            $matching += $files
+          }
+          $matching=@($matching | Sort-Object FullName -Unique)
+          foreach($f in $matching){
+            $sha=(Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash
+            $magic=@(Get-Content -LiteralPath $f.FullName -TotalCount 4 -Encoding Byte)
+            Write-Host "XD_SAVE_DISCOVERY_CANDIDATE=FOUND path=$($f.FullName) bytes=$($f.Length) modified=$($f.LastWriteTime.ToString('o')) sha256=$sha magic=$($magic -join '-')"
+          }
+          $ps=@(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.SessionId -eq 1 -and ($_.ProcessName -match 'XD|ApplicationFrameHost|PickerHost' -or
+              $_.MainWindowTitle -match 'Adobe XD|Save As|Untitled')
+          })
+          foreach($p in $ps){
+            Write-Host "XD_SAVE_DISCOVERY_PROCESS name=$($p.ProcessName) pid=$($p.Id) hwnd=$($p.MainWindowHandle) title=$($p.MainWindowTitle)"
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,
+                                [System.Windows.Automation.Condition]::TrueCondition)
+          foreach($e in $top){
+            $name=[string]$e.Current.Name
+            if($name -match 'Adobe XD|Save As|Untitled'){
+              Write-Host "XD_SAVE_DISCOVERY_WINDOW name=$name pid=$($e.Current.ProcessId) class=$($e.Current.ClassName)"
+            }
+          }
+          Write-Host "XD_SAVE_DISCOVERY_COMPLETED matches=$($matching.Count)"

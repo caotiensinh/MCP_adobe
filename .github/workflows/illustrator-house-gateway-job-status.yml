@@ -1,0 +1,44 @@
+name: Illustrator house gateway job status
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  status:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read original Illustrator job status through mapped gateway capability
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.job.status","arguments":{"jobId":"job_d8a76c48eac8"}})
+                  print("MAPPED_JOB_STATUS="+json.dumps({"error":r.is_error,"payload":r.structured_content,"text":str(r.content)[:1000]},default=str)[:9000],flush=True)
+                  if r.is_error or not isinstance(r.structured_content, dict):
+                      raise RuntimeError("JOB_STATUS_UNREADABLE")
+                  data=r.structured_content.get("result",{}).get("data",{})
+                  job=data.get("job",{})
+                  if job.get("jobId")!="job_d8a76c48eac8":
+                      raise RuntimeError("JOB_ID_MISMATCH")
+                  print("C014_JOB_RECONCILIATION="+json.dumps({"status":job.get("status"),"awaitingHost":job.get("awaitingHost"),"outcomeSource":job.get("outcomeSource"),"error":job.get("error"),"effectsComplete":(job.get("effects") or {}).get("complete"),"reconciliation":data.get("reconciliation")},default=str)[:3000],flush=True)
+                  h=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":False,"timeout":5}})
+                  if h.is_error or not isinstance(h.structured_content,dict):
+                      raise RuntimeError("PASSIVE_HEALTH_UNAVAILABLE")
+                  state=h.structured_content.get("result",{}).get("connection",{}).get("data",{})
+                  print("C014_COORDINATOR="+json.dumps({"blockedAt":state.get("blockedAt"),"panel":(state.get("layers") or {}).get("panel"),"unresolved":(state.get("execution") or {}).get("unresolvedJobs")},default=str)[:3000],flush=True)
+                  if job.get("status")=="unknown" and job.get("awaitingHost") is True:
+                      print("C014_BLOCKED_SAFE=host outcome uncertain; no automatic replay or fence clearing",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath check_job.py -Encoding UTF8
+          uv run python check_job.py

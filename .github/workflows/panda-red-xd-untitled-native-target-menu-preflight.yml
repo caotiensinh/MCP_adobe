@@ -1,0 +1,63 @@
+name: Panda red XD unique Untitled active CoreWindow native menu preflight
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-untitled-native-target-menu-preflight.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  preflight:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Verify exact Untitled frame and XD.exe native File menu ownership
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_DRAFT_MENU_WRONG_HOST'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;using System.Runtime.InteropServices;
+          public class RedXdDraftMenu {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+          }
+          '@
+          $folder=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $old=Join-Path $folder 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $target=Join-Path $folder 'MCP_KFP4_Red_XD_38205166138.xd'
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if((Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash -ne $sha -or (Test-Path $target)){throw 'XD_DRAFT_MENU_NATIVE_GUARD_STOP'}
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $wins=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $draft=@($wins|Where-Object{[string]$_.Current.Name -match '^Untitled-1.*Adobe XD$' -and [string]$_.Current.ClassName -eq 'ApplicationFrameWindow'})
+          $original=@($wins|Where-Object{[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+          $picker=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          Write-Host "XD_DRAFT_MENU_PREFLIGHT draft=$($draft.Count) source=$($original.Count) xd=$($xd.Count) picker=$($picker.Count)"
+          if($draft.Count -ne 1 -or $original.Count -ne 1 -or $xd.Count -ne 1 -or $picker.Count -gt 0){throw 'XD_DRAFT_MENU_AMBIGUOUS_HOST'}
+          $hwnd=[IntPtr]$draft[0].Current.NativeWindowHandle
+          [void][RedXdDraftMenu]::SetForegroundWindow($hwnd)
+          Start-Sleep -Milliseconds 650
+          if([RedXdDraftMenu]::GetForegroundWindow() -ne $hwnd){throw 'XD_DRAFT_MENU_NOT_FOREGROUND'}
+          $core=[System.Windows.Automation.AutomationElement]::FromHandle($xd[0].MainWindowHandle)
+          $all=$core.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $titles=@($all|Where-Object{[string]$_.Current.AutomationId -eq 'TitleText'})
+          foreach($t in $titles){Write-Host "XD_DRAFT_MENU_CORE_TITLE name=$($t.Current.Name) id=$($t.Current.AutomationId)"}
+          $fileId=New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty,'AppMenu_File')
+          $files=@($core.FindAll([System.Windows.Automation.TreeScope]::Descendants,$fileId))
+          Write-Host "XD_DRAFT_MENU_CORE_PRECHECK titleCount=$($titles.Count) fileCount=$($files.Count)"
+          if($titles.Count -ne 1 -or $files.Count -ne 1){throw 'XD_DRAFT_MENU_NO_NATIVE_TITLE_OR_FILE'}
+          $title=[string]$titles[0].Current.Name
+          if($title -notmatch '^Untitled'){throw 'XD_DRAFT_MENU_NATIVE_CORE_NOT_UNTITLED_REFUSE_MENU'}
+          $menu=$files[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+          if($menu.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){
+            $menu.Expand();Write-Host 'XD_DRAFT_MENU_NATIVE_FILE_EXPAND_ONCE=PASS'
+          }else{Write-Host 'XD_DRAFT_MENU_NATIVE_FILE_ALREADY_EXPANDED=PASS'}
+          if((Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash -ne $sha){throw 'XD_DRAFT_MENU_ORIGINAL_CHANGED'}
+          Write-Host 'XD_DRAFT_MENU_NATIVE_OWNERSHIP=PASS'

@@ -1,0 +1,91 @@
+name: Mode 2 XD real host undo and selection probe
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-undo-live-probe.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  host-undo-and-selection:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Real Adobe XD copy ownership, selection and Undo command readback
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+          UV_LINK_MODE: copy
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $original=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $copy=Join-Path $root 'mode2-isolated\Panda_Mode2_Editable_Experiment.xd'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($file in @($original,$copy)){
+            if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_BASELINE_CHANGED'}
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $scope=[System.Windows.Automation.TreeScope]::Children
+          $all=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,[System.Windows.Automation.Condition]::TrueCondition)
+          $xd=@($all|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $target=@($xd|Where-Object {[string]$_.Current.Name -match '^Panda_Mode2_Editable_Experiment.*Adobe XD$'})
+          $ws=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "MODE2_COPY_HOST_COUNT=$($xd.Count) TARGET=$($target.Count) UXP=$($ws.Count)"
+          if($xd.Count -ne 1 -or $target.Count -ne 1 -or $ws.Count -lt 1){throw 'MODE2_COPY_HOST_NOT_READY'}
+          $children=$target[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $edit=@($children|Where-Object {[string]$_.Current.AutomationId -match 'AppMenuBar_Edit' -or [string]$_.Current.Name -eq 'Edit'})
+          $undo=@($children|Where-Object {[string]$_.Current.Name -match '^Undo( |$)'})
+          Write-Host "MODE2_EDIT_MENU_COUNT=$($edit.Count) UNDO_CONTROL_COUNT=$($undo.Count)"
+          if($edit.Count -ne 1){throw 'MODE2_EDIT_MENU_NOT_UNIQUE'}
+          $editPattern=$null
+          try{$editPattern=$edit[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)}catch{}
+          if($null -eq $editPattern){throw 'MODE2_EDIT_MENU_EXPAND_UNAVAILABLE'}
+          if($editPattern.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$editPattern.Expand()}
+          Start-Sleep -Milliseconds 300
+          $children=$target[0].FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $undo=@($children|Where-Object {[string]$_.Current.Name -match '^Undo( |$)'})
+          $menuItems=@($children|Where-Object {[string]$_.Current.ControlType.ProgrammaticName -eq "ControlType.MenuItem"})
+          foreach($item in $menuItems|Select-Object -First 65){Write-Host "MODE2_EDIT_MENU_ITEM name=$([string]$item.Current.Name) id=$([string]$item.Current.AutomationId) enabled=$($item.Current.IsEnabled)"}
+          Write-Host "MODE2_EXPANDED_UNDO_COUNT=$($undo.Count)"
+          foreach($item in $undo){Write-Host "MODE2_UNDO_EXPANDED name=$([string]$item.Current.Name) enabled=$($item.Current.IsEnabled)"}
+          $editPattern.Collapse()
+          Write-Host 'MODE2_EDIT_MENU_READONLY_OPEN_CLOSE=PASS'
+          foreach($item in $undo){Write-Host "MODE2_UNDO_CONTROL name=$([string]$item.Current.Name) enabled=$($item.Current.IsEnabled)"}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json
+          from mcp import Client
+          from scripts.export_region_metadata import payload,unwrap
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  for cap in ("creative.health","creative.selection.get","creative.document.info","creative.scenegraph.list"):
+                      r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=12)
+                      raw=payload(r)
+                      d=unwrap(raw)
+                      if isinstance(d,dict) and "result" in d and isinstance(d["result"],dict):
+                          d=unwrap(d["result"])
+                      if not isinstance(d,dict): raise RuntimeError("MODE2_INVALID_READ "+cap)
+                      if cap=="creative.scenegraph.list":
+                          print("MODE2_SCENE_ID="+str(d.get("document_id"))+" NODES="+str(d.get("node_count")),flush=True)
+                          if not d.get("complete") or not d.get("document_id"):raise RuntimeError("MODE2_SCENE_UNVERIFIED")
+                      elif cap=="creative.selection.get":
+                          print("MODE2_LIVE_SELECTION="+json.dumps({"keys":sorted(d.keys()),"selected":len(d.get("items",[])) if isinstance(d.get("items"),list) else None,"ids":[str(i.get("guid") or i.get("id")) for i in d.get("items",[]) if isinstance(i,dict)][:5]},sort_keys=True),flush=True)
+                      else:
+                          print("MODE2_READ="+cap+" keys="+",".join(sorted(d.keys())[:12]),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\mode2_undo_probe.py -Encoding UTF8
+          uv run --python 3.12 python .\mode2_undo_probe.py
+          if($LASTEXITCODE -ne 0){throw 'MODE2_MCP_HOST_READ_FAILED'}
+          foreach($file in @($original,$copy)){
+            if((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_PROTECTED_FILE_CHANGED'}
+          }
+          Write-Host 'MODE2_UNDO_INVOCATION=NOT_PERFORMED'
+          Write-Host 'MODE2_MUTATION=NOT_PERFORMED'
+          Write-Host 'MODE2_LIVE_UNDO_READONLY_PROBE=PASS'

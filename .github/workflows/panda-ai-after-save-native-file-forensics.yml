@@ -1,0 +1,75 @@
+name: Panda Illustrator after Ctrl-S source and target checkpoint forensic read only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-ai-after-save-native-file-forensics.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  reconcile:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Compare source target and immutable backups by SHA and last write time, no Adobe calls
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'RECT2_FORENSICS_WRONG_RUNNER'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $backup=Join-Path $root 'rect2_before_uia_save_38194275753'
+          $files=[ordered]@{
+            source=Join-Path $root 'MCP_KFP4_Red_AI_Fresh_38157335430.ai'
+            target=Join-Path $root 'MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai'
+            before_source=Join-Path $backup 'source_before.ai'
+            before_target=Join-Path $backup 'target_before.ai'
+          }
+          $record=[ordered]@{
+            checked_at_utc=(Get-Date).ToUniversalTime().ToString('o')
+            source_baseline_sha='25D46AAACC766759D11C920872D9EE1CC26861A145826143161698E97CA14B77'
+            saved_target_sha='EC6D2239B3547845C16C80997CA716F50FB8E5F4F5F3F8D57E85079581FA89A2'
+            files=[ordered]@{}
+            desktop=@()
+          }
+          foreach($key in $files.Keys){
+            $path=$files[$key]
+            if(-not(Test-Path -LiteralPath $path -PathType Leaf)){
+              $record.files[$key]=@{exists=$false}
+              Write-Host "RECT2_FILE_FORENSIC name=$key exists=false"
+              continue
+            }
+            $f=Get-Item -LiteralPath $path
+            $sha=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            $record.files[$key]=[ordered]@{
+              exists=$true;sha256=$sha;bytes=$f.Length;
+              created_utc=$f.CreationTimeUtc.ToString('o')
+              modified_utc=$f.LastWriteTimeUtc.ToString('o')
+            }
+            Write-Host "RECT2_FILE_FORENSIC name=$key sha256=$sha bytes=$($f.Length) modified=$($f.LastWriteTimeUtc.ToString('o'))"
+          }
+          foreach($app in @('Illustrator','XD','Photoshop')){
+            foreach($proc in @(Get-Process -Name $app -ErrorAction SilentlyContinue)){
+              $entry=@{name=$app;pid=$proc.Id;session=$proc.SessionId;responding=$proc.Responding;title=$proc.MainWindowTitle}
+              $record.desktop+= $entry
+              Write-Host "RECT2_DESKTOP_APP name=$app pid=$($proc.Id) session=$($proc.SessionId) title=$($proc.MainWindowTitle)"
+            }
+          }
+          $dest=Join-Path $PWD 'panda_ai_file_forensics'
+          New-Item -ItemType Directory -Path $dest -Force|Out-Null
+          ($record|ConvertTo-Json -Depth 7)|Set-Content -LiteralPath (Join-Path $dest 'checkpoint.json') -Encoding UTF8
+          if($record.files.before_source.sha256 -ne $record.source_baseline_sha -or
+             $record.files.before_target.sha256 -ne $record.source_baseline_sha){
+            throw 'RECT2_FORENSIC_BACKUP_NOT_VALID'
+          }
+          Write-Host 'RECT2_CHECKPOINT_BACKUPS=PASS both_original_native_copies_intact'
+          Write-Host 'RECT2_FILE_FORENSIC_READONLY=PASS no host or document mutation'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-ai-ctrl-s-immutable-checkpoint-forensics
+          path: panda_ai_file_forensics/checkpoint.json
+          if-no-files-found: warn
+          retention-days: 14

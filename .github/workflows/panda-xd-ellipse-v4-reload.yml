@@ -1,0 +1,163 @@
+name: XD ellipse v4 safely reload live plugin on MRCAO
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - '.github/workflows/panda-xd-ellipse-v4-reload.yml'
+      - 'scripts/panda_xd_ellipse_fix_preflight.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  reload:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify exact preserved document, all zero ellipse bounds, no pending queue
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_RADIUS_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_RADIUS_WRONG_SESSION'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_UV_ENV_FAILED'}
+          uv run python -m py_compile scripts/panda_xd_ellipse_fix_preflight.py scripts/panda_xd_repair_ellipse_mode1.py scripts/panda_xd_wait_v4_runtime.py
+          if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_PYTHON_INVALID'}
+          uv run python scripts/panda_xd_ellipse_fix_preflight.py
+          if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_SOURCE_NOT_PRISTINE_NO_PLUGIN_RELOAD'}
+      - name: Upgrade installed gateway adapter while source is saved and XD queue idle
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $root=Join-Path $env:LOCALAPPDATA 'MCPAdobe'
+          $backup=Join-Path $root 'gateway.previous'
+          if(Test-Path -LiteralPath $backup){
+            $exe=Join-Path $backup 'venv\Scripts\mcp-adobe.exe'
+            $metadata=Join-Path $backup 'install-metadata.json'
+            if(-not (Test-Path -LiteralPath $exe) -or -not (Test-Path -LiteralPath $metadata)){
+              throw 'XD_RADIUS_GATEWAY_EXISTING_BACKUP_NOT_RECOGNIZED'
+            }
+            $meta=Get-Content -LiteralPath $metadata -Raw | ConvertFrom-Json
+            if($meta.gateway_port -ne 8787 -or $meta.xd_port -ne 8765){
+              throw 'XD_RADIUS_GATEWAY_BACKUP_PORTS_WRONG'
+            }
+            foreach($proc in @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)){
+              if(([string]$proc.ExecutablePath).StartsWith($backup,[StringComparison]::OrdinalIgnoreCase) -or
+                ([string]$proc.CommandLine).IndexOf($exe,[StringComparison]::OrdinalIgnoreCase) -ge 0){
+                throw "XD_RADIUS_GATEWAY_BACKUP_IS_EXECUTING pid=$($proc.ProcessId)"
+              }
+            }
+            $archive=Join-Path $root "gateway.previous.before-ellipse-radius-$env:GITHUB_RUN_ID"
+            if(Test-Path -LiteralPath $archive){throw 'XD_RADIUS_GATEWAY_ARCHIVE_COLLISION'}
+            Move-Item -LiteralPath $backup -Destination $archive
+            if(-not (Test-Path -LiteralPath (Join-Path $archive 'install-metadata.json'))){
+              throw 'XD_RADIUS_GATEWAY_PREVIOUS_BACKUP_NOT_PRESERVED'
+            }
+            Write-Host "XD_RADIUS_GATEWAY_BACKUP_PRESERVED=$archive"
+          }
+          $installed=Join-Path $root 'gateway'
+          foreach($port in @(8787,8765)){
+            foreach($listener in @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)){
+              $owner=Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
+              $cmd=[string]$owner.CommandLine
+              if($cmd.IndexOf((Join-Path $installed 'venv\Scripts\mcp-adobe.exe'),[StringComparison]::OrdinalIgnoreCase) -lt 0){
+                throw "XD_RADIUS_GATEWAY_UNOWNED_PORT=$port"
+              }
+              Write-Host "XD_RADIUS_GATEWAY_PREWRITE_LISTENER port=$port pid=$($listener.OwningProcess)"
+            }
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_local_host.ps1 -SkipStartupRegistration
+          if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_GATEWAY_UPGRADE_FAILED_NO_BLIND_RETRY'}
+          Write-Host 'XD_RADIUS_GATEWAY_VERSIONED_UPGRADE=PASS'
+      - name: Preserve previous live bridge and update only this XD plugin
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $packages=Join-Path $env:LOCALAPPDATA 'Packages'
+          $registered=@(Get-AppxPackage -ErrorAction SilentlyContinue | Where-Object {$_.Name -match 'Adobe.*XD|XD.*Adobe'})
+          $dirs=@()
+          foreach($pkg in $registered){
+            $p=Join-Path $packages "$($pkg.PackageFamilyName)\LocalState\develop\MCPAdobeBridge"
+            if(Test-Path -LiteralPath (Join-Path $p 'manifest.json')){$dirs+=,$p}
+          }
+          $dirs=@($dirs | Select-Object -Unique)
+          if($dirs.Count -ne 1){throw "XD_RADIUS_PLUGIN_DIR_AMBIGUOUS count=$($dirs.Count)"}
+          $backup=Join-Path $env:USERPROFILE "Documents\MCPAdobe\xd_bridge_prior_radius_v4_$env:GITHUB_RUN_ID"
+          if(Test-Path -LiteralPath $backup){throw 'XD_RADIUS_BACKUP_ALREADY_EXISTS'}
+          Copy-Item -LiteralPath $dirs[0] -Destination $backup -Recurse -ErrorAction Stop
+          $before=(Get-FileHash -LiteralPath (Join-Path $dirs[0] 'main.js') -Algorithm SHA256).Hash
+          $after=(Get-FileHash -LiteralPath (Join-Path $backup 'main.js') -Algorithm SHA256).Hash
+          if($before -ne $after){throw 'XD_RADIUS_BRIDGE_BACKUP_SHA_FAILED'}
+          Write-Host "XD_RADIUS_PREVIOUS_PLUGIN_BACKUP=PASS path=$backup sha256=$after"
+          # Preserve stale External UXP plugin copies before installer removes
+          # only those exact duplicate bridge IDs (prevent destructive loss).
+          $externalRoot=Join-Path $env:APPDATA 'Adobe\\UXP\\Plugins\\External'
+          foreach($staleId in @('MCPADB01','com.mcpadobe.xd.bridge')){
+            $candidate=Join-Path $externalRoot $staleId
+            if(Test-Path -LiteralPath $candidate){
+              $archived=Join-Path $env:USERPROFILE "Documents\\MCPAdobe\\xd_external_prior_$staleId-$env:GITHUB_RUN_ID"
+              if(Test-Path -LiteralPath $archived){throw 'XD_RADIUS_EXTERNAL_ARCHIVE_COLLISION'}
+              Copy-Item -LiteralPath $candidate -Destination $archived -Recurse -ErrorAction Stop
+              Write-Host "XD_RADIUS_EXTERNAL_DUPLICATE_BACKUP=PASS path=$archived"
+            }
+          }
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install_xd_plugin.ps1 -DevelopFolder (Split-Path -Parent $dirs[0]) -NoReloadHint
+          if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_PLUGIN_INSTALL_FAILED'}
+          $deployed=(Get-FileHash -LiteralPath (Join-Path $dirs[0] 'main.js') -Algorithm SHA256).Hash
+          $src=(Get-FileHash -LiteralPath 'adobe-xd-plugin/main.js' -Algorithm SHA256).Hash
+          if($src -ne $deployed){throw 'XD_RADIUS_PLUGIN_COPY_SHA_MISMATCH'}
+          Write-Host "XD_RADIUS_PLUGIN_V4_ON_DISK=PASS sha256=$deployed"
+      - name: Invoke XD Reload Plugins once on active saved source document
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName System.Windows.Forms
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class XdRadiusGui {
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+            [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h,int mode);
+          }
+          '@
+          $window=@(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0 -and
+            $_.MainWindowTitle -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'
+          })
+          if($window.Count -ne 1){throw "XD_RADIUS_SAVED_DOCUMENT_WINDOW_NOT_UNIQUE count=$($window.Count)"}
+          $xd=$window[0]
+          [void][XdRadiusGui]::ShowWindow($xd.MainWindowHandle,9)
+          [void][XdRadiusGui]::SetForegroundWindow($xd.MainWindowHandle)
+          Start-Sleep -Milliseconds 320
+          $fg=[XdRadiusGui]::GetForegroundWindow()
+          $pidValue=[uint32]0
+          if($fg -ne [IntPtr]::Zero){[void][XdRadiusGui]::GetWindowThreadProcessId($fg,[ref]$pidValue)}
+          if([int]$pidValue -ne $xd.Id){
+            $shell=New-Object -ComObject WScript.Shell
+            [void]$shell.AppActivate([int]$xd.Id)
+            Start-Sleep -Milliseconds 350
+            $fg=[XdRadiusGui]::GetForegroundWindow()
+            $pidValue=[uint32]0
+            if($fg -ne [IntPtr]::Zero){[void][XdRadiusGui]::GetWindowThreadProcessId($fg,[ref]$pidValue)}
+          }
+          if([int]$pidValue -ne $xd.Id){throw 'XD_RADIUS_CANNOT_OWN_FOREGROUND_NO_RELOAD'}
+          [System.Windows.Forms.SendKeys]::SendWait('^+r')
+          Write-Host "XD_RADIUS_PLUGIN_RELOAD_COMMAND_SENT_ONCE=PASS pid=$($xd.Id)"
+      - name: Confirm actual XD UXP v4 and gateway repair capability (read only)
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run python scripts/panda_xd_wait_v4_runtime.py
+          if($LASTEXITCODE -ne 0){throw 'XD_RADIUS_PLUGIN_VERSION_NOT_VERIFIED_NO_RELOAD_RETRY'}

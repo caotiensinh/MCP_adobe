@@ -1,0 +1,98 @@
+name: Red Panda Photoshop safe start and live MCP readiness
+# 2026-10-13 isolate upstream cold startup from 15s outer health timeout; one guarded diagnostic.
+# 2026-10-13 PS serial lane after idle AI absence verified run 38413249692.
+# 2026-10-13 serial PS stage after AI graceful-close PASS in run 38411835460.
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-photoshop-safe-start.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  start:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Launch only installed Photoshop executable, no process cleanup or document writes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'RED_PS_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RED_PS_WRONG_DESKTOP'}
+          foreach($other in @('XD','Illustrator')){if(@(Get-Process -Name $other -ErrorAction SilentlyContinue).Count -gt 0){throw "RED_PS_OTHER_APP_RUNNING_$other"}}
+          foreach($other in @('Illustrator','XD')) { if(@(Get-Process -Name $other -ErrorAction SilentlyContinue).Count -gt 0){throw "RED_PS_OTHER_APP_RUNNING_$other"} }
+          $existing=@(Get-Process -Name Photoshop -ErrorAction SilentlyContinue)
+          if($existing.Count -gt 0 -and -not(@($existing|Where-Object {$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0}).Count)){
+            throw 'RED_PS_PROCESS_PRESENT_BUT_NO_INTERACTIVE_WINDOW_NO_DUPLICATE_LAUNCH'
+          }
+          $inventory=@(& "$PWD/scripts/adobe_inventory.ps1")
+          $app=@($inventory|Where-Object {$_.PSObject.Properties.Name -contains 'Photoshop'}|Select-Object -Last 1)
+          if($app.Count -ne 1){throw 'RED_PS_INVENTORY_UNAVAILABLE'}
+          $exe=[string]$app[0].Photoshop
+          if(-not $exe -or -not(Test-Path -LiteralPath $exe -PathType Leaf)){throw 'RED_PS_INSTALLED_EXECUTABLE_NOT_FOUND'}
+          Write-Host "RED_PS_EXE_PRESENT=PASS path=$exe"
+          if($existing.Count -eq 0){
+            # Without this, GitHub Runner.Worker cleanup terminates Photoshop at
+            # the end of every job, forcing a costly launch for each test.
+            $originalTrackingId=$env:RUNNER_TRACKING_ID
+            try{
+              $env:RUNNER_TRACKING_ID=''
+              $p=Start-Process -FilePath $exe -PassThru
+              Write-Host "RED_PS_DETACHED_FROM_RUNNER_TRACKING=PASS pid=$($p.Id)"
+            }finally{$env:RUNNER_TRACKING_ID=$originalTrackingId}
+            Write-Host "RED_PS_START_REQUESTED_ONCE=PASS pid=$($p.Id)"
+          }else{Write-Host "RED_PS_ALREADY_RUNNING=PASS count=$($existing.Count) no-relaunch"}
+          $deadline=(Get-Date).AddSeconds(110)
+          do{
+            $ready=@(Get-Process -Name Photoshop -ErrorAction SilentlyContinue |Where-Object {$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+            if($ready.Count -eq 1){break}
+            if($ready.Count -gt 1){throw 'RED_PS_MULTIPLE_INTERACTIVE_WINDOWS_AMBIGUOUS'}
+            Start-Sleep -Seconds 2
+          }until((Get-Date)-ge $deadline)
+          if($ready.Count -ne 1){throw 'RED_PS_INTERACTIVE_WINDOW_TIMEOUT_NO_BLIND_RELAUNCH'}
+          Write-Host "RED_PS_INTERACTIVE_WINDOW=PASS pid=$($ready[0].Id) title=$($ready[0].MainWindowTitle)"
+      - name: Read live Photoshop ping and current document before new poster creation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,json,time
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  for capability in ("creative.health","creative.document.info"):
+                      t=time.perf_counter()
+                      try:
+                          r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"photoshop",
+                            "capability":capability,"arguments":{}}),timeout=(90 if capability=="creative.health" else 20))
+                      except Exception as e:
+                          print("RED_PS_LIVE_PROBE="+json.dumps({"cap":capability,"error":type(e).__name__+":"+str(e)[:200]}),flush=True)
+                          raise RuntimeError("RED_PS_MCP_NOT_READY_NO_CANVAS_WRITES") from e
+                      obj={"cap":capability,"latency_ms":round((time.perf_counter()-t)*1000,2),
+                        "is_error":r.is_error,"payload":str(r.structured_content)[:1100]}
+                      print("RED_PS_LIVE_PROBE="+json.dumps(obj),flush=True)
+                      if r.is_error or (r.structured_content or {}).get("ok") is not True:
+                          raise RuntimeError("RED_PS_READBACK_INVALID_NO_CANVAS_WRITES")
+                      if capability=="creative.document.info":
+                          state=(r.structured_content or {}).get("result") or {}
+                          if state.get("hasDocument") is False:
+                              print("RED_PS_EMPTY_DOCUMENT=PASS no-layer-list-without-document",flush=True)
+                          else:
+                              layers=await asyncio.wait_for(c.call_tool("creative_read",{
+                                  "application":"photoshop","capability":"creative.layer.list","arguments":{}}),timeout=15)
+                              if layers.is_error or (layers.structured_content or {}).get("ok") is not True:
+                                  raise RuntimeError("RED_PS_LAYER_READBACK_FAILED_ACTIVE_DOC")
+                  print("RED_PS_SAFE_READY_FOR_DOCUMENT_GATED_E2E=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\red_ps_live_probe.py -Encoding UTF8
+          uv run --python 3.12 python .\red_ps_live_probe.py
+          if($LASTEXITCODE -ne 0){throw 'RED_PS_MCP_READINESS_FAILED'}

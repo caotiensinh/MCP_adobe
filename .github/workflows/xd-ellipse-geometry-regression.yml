@@ -1,0 +1,25 @@
+name: XD ellipse geometry regression unit gate
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - '.github/workflows/xd-ellipse-geometry-regression.yml'
+      - 'tests/xd_ellipse_geometry_contract.cjs'
+      - 'adobe-xd-plugin/main.js'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ellipse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Parse plugin and run live applyMutation mock regression
+        run: |
+          node --check adobe-xd-plugin/main.js
+          node tests/xd_ellipse_geometry_contract.cjs
+          node tests/xd_scenegraph_uxp_contract.cjs

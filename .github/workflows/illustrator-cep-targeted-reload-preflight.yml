@@ -1,0 +1,33 @@
+name: Illustrator CEP panel targeted reload preflight
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-cep-targeted-reload-preflight.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Inspect exact CEP process ownership without stopping it
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Output "RUNNER_HOST=$env:COMPUTERNAME RUNNER_NAME=$env:RUNNER_NAME"
+          $ps=@(Get-CimInstance Win32_Process -Filter "Name='CEPHtmlEngine.exe'")
+          Write-Output "CEP_PROCESS_COUNT=$($ps.Count)"
+          foreach($p in $ps){
+            $cmd=[string]$p.CommandLine
+            $ext=if($cmd -match 'com\.illustrator\.mcp\.panel'){'MATCH'}else{'NO_MATCH'}
+            $parent=Get-CimInstance Win32_Process -Filter "ProcessId=$($p.ParentProcessId)" -ErrorAction SilentlyContinue
+            Write-Output "CEP_OWNER pid=$($p.ProcessId) parentPid=$($p.ParentProcessId) parentName=$($parent.Name) extension=$ext"
+          }
+          $listeners=@(Get-NetTCPConnection -LocalPort 8081 -State Established -ErrorAction SilentlyContinue)
+          foreach($l in $listeners){Write-Output "CEP_SOCKET_OWNER pid=$($l.OwningProcess) remote=$($l.RemotePort)"}
+          $ai=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'")
+          foreach($p in $ai){Write-Output "AI_OWNER pid=$($p.ProcessId) session=$($p.SessionId)"}
+          Write-Output 'CEP_PANEL_RELOAD_PREFLIGHT=COMPLETE'

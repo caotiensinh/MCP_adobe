@@ -1,0 +1,75 @@
+name: Panda AI recover second verified Illustrator vector without duplicate draw
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-ai-reconcile-two-without-duplicate.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  confirm:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify live original Illustrator session and exact second-vector target
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){
+            throw 'RECT2_CONFIRM_NOT_INTERACTIVE_MRCAO'
+          }
+          $ai=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue | Where-Object{$_.SessionId -eq 1})
+          if($ai.Count -ne 1 -or $ai[0].MainWindowTitle -notmatch 'MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai'){
+            throw 'RECT2_CONFIRM_WRONG_NATIVE_ARTBOARD'
+          }
+          $native=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai'
+          $before=(Get-FileHash $native -Algorithm SHA256).Hash
+          if($before -ne '25D46AAACC766759D11C920872D9EE1CC26861A145826143161698E97CA14B77'){
+            throw 'RECT2_CONFIRM_TARGET_CHANGED_REFUSE_WRITE'
+          }
+          Write-Host "RECT2_CONFIRM_NATIVE_PREFLIGHT=PASS pid=$($ai[0].Id) file_sha256=$before"
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run --python 3.12 python -m py_compile scripts\panda_red_illustrator_confirm_second_after_recovery.py
+          if($LASTEXITCODE -ne 0){throw 'RECT2_CONFIRM_PYTHON_PARSE_FAILED'}
+      - name: Confirm two actual objects; save current host edit then export PNG
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $t=[Diagnostics.Stopwatch]::StartNew()
+          uv run --python 3.12 python scripts\panda_red_illustrator_confirm_second_after_recovery.py
+          $rc=$LASTEXITCODE
+          $t.Stop()
+          Write-Host "RECT2_CONFIRM_TOTAL_MILLIS=$($t.ElapsedMilliseconds) exit_code=$rc"
+          if($rc -ne 0){throw 'RECT2_CONFIRM_UNKNOWN_OR_UNPERSISTED_NO_REPLAY'}
+      - name: Collect only real native .ai and rendered PNG, verify origin unchanged
+        if: success()
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $source=Join-Path $root 'MCP_KFP4_Red_AI_Fresh_38157335430.ai'
+          if((Get-FileHash $source -Algorithm SHA256).Hash -ne '25D46AAACC766759D11C920872D9EE1CC26861A145826143161698E97CA14B77'){
+            throw 'RECT2_ARTIFACT_SOURCE_MODIFIED'
+          }
+          New-Item -Path red_ai_two_verified -ItemType Directory -Force|Out-Null
+          foreach($ext in @('ai','png')){
+            $file=Join-Path $root ("MCP_KFP4_Red_AI_Fresh_38157628243_"+$(if($ext -eq 'ai'){'5shapes.ai'}else{'2_verified.png'}))
+            if(-not(Test-Path $file -PathType Leaf)){throw "RECT2_ARTIFACT_MISSING:$ext"}
+            Copy-Item -LiteralPath $file -Destination red_ai_two_verified -ErrorAction Stop
+            Write-Host "RECT2_ARTIFACT_VERIFIED=PASS ext=$ext bytes=$((Get-Item $file).Length) sha256=$((Get-FileHash $file -Algorithm SHA256).Hash)"
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-red-illustrator-two-native-vectors
+          path: red_ai_two_verified/*
+          if-no-files-found: warn
+          retention-days: 14

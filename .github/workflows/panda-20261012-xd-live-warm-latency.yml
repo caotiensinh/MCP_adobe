@@ -1,0 +1,85 @@
+name: Panda XD live warm read-only MCP latency 30 rounds
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-20261012-xd-live-warm-latency.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  bench:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 7
+    steps:
+      - name: Collect 30 pairs of real XD MCP readbacks without checkout or writes
+        shell: powershell
+        env:
+          UV_LINK_MODE: copy
+          PYTHONUTF8: '1'
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_BENCH_WRONG_HOST'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $script=Join-Path $env:RUNNER_TEMP 'panda_xd_20261012_bench.py'
+          @'
+          import asyncio,json,hashlib,os,time,math,statistics
+          from pathlib import Path
+          from mcp import Client
+          source=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"/"MCP_Mode1_Panda_XD_38136531800.xd"
+          sha="3a10e1510abc41eccd4485d6f852ea6ced7acc2cf50109e7c1bd123353589ed1"
+          doc="98d6635b-3767-4254-b200-ec8442b69ad2"
+          def verify_file():
+            if hashlib.sha256(source.read_bytes()).hexdigest()!=sha:raise RuntimeError("XD_BENCH_CHECKPOINT_CHANGED")
+          def stats(values):
+            s=sorted(values)
+            return {"n":len(s),"p50_ms":s[math.ceil(.50*len(s))-1],
+                    "p95_ms":s[math.ceil(.95*len(s))-1],"p99_ms":s[math.ceil(.99*len(s))-1],
+                    "mean_ms":round(statistics.mean(s),2)}
+          async def main():
+            verify_file()
+            measured={"creative.health":[],"creative.scenegraph.list":[]}
+            started=time.perf_counter()
+            async with Client("http://127.0.0.1:8787/mcp") as c:
+              connect_ms=round(1000*(time.perf_counter()-started),2)
+              for i in range(30):
+                for cap in measured:
+                  t=time.perf_counter()
+                  res=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=16)
+                  ms=round(1000*(time.perf_counter()-t),2)
+                  d=res.structured_content or {}
+                  if res.is_error or d.get("ok") is not True:raise RuntimeError("XD_BENCH_FAILED "+cap+" round="+str(i))
+                  data=d.get("result") or {}
+                  if cap=="creative.health":
+                    if data.get("bridge")!="connected" or data.get("pending_count")!=0:raise RuntimeError("XD_BENCH_BRIDGE_NOT_IDLE")
+                  else:
+                    boards=data.get("nodes") or []
+                    if data.get("document_id")!=doc or len(boards)!=1 or len(boards[0].get("children") or [])!=32:raise RuntimeError("XD_BENCH_SCENEGRAPH_CHANGED")
+                    if any(not x.get("bounds") or x["bounds"]["right"]<=x["bounds"]["left"] or x["bounds"]["bottom"]<=x["bounds"]["top"] for x in boards[0]["children"]):
+                      raise RuntimeError("XD_BENCH_INVALID_GEOMETRY")
+                  measured[cap].append(ms)
+                  print("XD_BENCH_SAMPLE="+json.dumps({"round":i+1,"cap":cap,"latency_ms":ms}),flush=True)
+            verify_file()
+            summary={"mode":"real_mcp_readonly","calls":60,"document_id":doc,"connect_ms":connect_ms,
+                     "all":{k:stats(v) for k,v in measured.items()},
+                     "warm_excluding_first":{k:stats(v[1:]) for k,v in measured.items()},
+                     "sample_ms":measured,"native_sha256":sha}
+            Path("panda_xd_20261012_mcp_latency.json").write_text(json.dumps(summary,indent=2),encoding="utf-8")
+            print("XD_BENCH_SUMMARY="+json.dumps({k:v for k,v in summary.items() if k!="sample_ms"}),flush=True)
+            print("XD_BENCH_LIVE_MCP_READ_ONLY=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath $script -Encoding UTF8
+          $sw=[System.Diagnostics.Stopwatch]::StartNew()
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python "$script"
+          $sw.Stop()
+          Write-Host "XD_BENCH_PROCESS_WALL_MS=$($sw.ElapsedMilliseconds)"
+          if($LASTEXITCODE -ne 0){throw 'XD_BENCH_RUNTIME_FAIL'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-xd-real-mcp-latency-20261012
+          path: panda_xd_20261012_mcp_latency.json
+          if-no-files-found: warn
+          retention-days: 14

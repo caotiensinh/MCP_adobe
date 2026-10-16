@@ -1,0 +1,72 @@
+name: Panda C014 exact job journal and effects bounded read-only proof
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-20261012-c014-job-journal-readonly.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  journal:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Inspect retained readonly job effects and journal without host calls
+        shell: powershell
+        env:
+          UV_LINK_MODE: copy
+          PYTHONUTF8: '1'
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'AI_JOURNAL_WRONG_HOST'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $py=Join-Path $env:RUNNER_TEMP 'panda_c014_job_journal_readonly.py'
+          @'
+          import asyncio,json,hashlib,os
+          from pathlib import Path
+          from mcp import Client
+          JOB="job_625f841b04cb"
+          PATH=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"/"MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai"
+          SHA="ec6d2239b3547845c16c80997ca716f50fb8e5f4f5f3f8d57e85079581fa89a2"
+          def check():
+            if hashlib.sha256(PATH.read_bytes()).hexdigest()!=SHA:raise RuntimeError("AI_JOURNAL_NATIVE_SHA_CHANGED")
+          def filtered_events(events):
+            out=[]
+            for e in events if isinstance(events,list) else []:
+              if isinstance(e,dict):
+                out.append({k:e.get(k) for k in ("phase","name","status","event","error","result","timestamp","kind","createdIds","complete") if k in e})
+              else:out.append(str(e)[:150])
+            return out[-32:]
+          async def main():
+            check()
+            async with Client("http://127.0.0.1:8787/mcp") as c:
+              s=await asyncio.wait_for(c.call_tool("creative_read",{
+                "application":"illustrator","capability":"creative.job.status",
+                "arguments":{"jobId":JOB,"detail":"full"}}),timeout=17)
+            payload=s.structured_content or {}
+            j=((((payload.get("result") or {}).get("data") or {}).get("job")) or {})
+            if s.is_error or payload.get("ok") is not True or j.get("jobId")!=JOB:
+              raise RuntimeError("AI_JOURNAL_EXACT_JOB_NOT_RETRIEVED")
+            journal=j.get("journal")
+            effects=j.get("effects")
+            result={
+              "job_id":j.get("jobId"),"status":j.get("status"),"label":j.get("label"),
+              "awaiting_host":j.get("awaitingHost"),"trusted_probe":j.get("trustedProbe"),
+              "host_session_epoch":j.get("hostSessionEpoch"),
+              "request_connection_generation":j.get("requestConnectionGeneration"),
+              "connection_generation":j.get("connectionGeneration"),
+              "outcome_source":j.get("outcomeSource"),"duration_ms":j.get("durationMs"),
+              "error":j.get("error"),"effects":effects,
+              "journal_type":type(journal).__name__,
+              "journal":filtered_events(journal) if isinstance(journal,list) else str(journal)[:4000]
+            }
+            check()
+            print("AI_C014_EXACT_JOB_JOURNAL="+json.dumps(result,ensure_ascii=False,default=str)[:11500],flush=True)
+            print("AI_C014_JOURNAL_READ_ONLY=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath $py -Encoding UTF8
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python "$py"
+          if($LASTEXITCODE -ne 0){throw 'AI_JOURNAL_READ_ONLY_FAILED'}

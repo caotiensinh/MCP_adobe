@@ -1,0 +1,83 @@
+name: Panda Illustrator C014 exact unresolved job read-only forensics no replay
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-20261012-illustrator-c014-exact-job-forensics.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  evidence:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Read disk gateway and callback trace metadata and preserve native SHA only
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'AI_C014_FORENSIC_WRONG_HOST'}
+          $native=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_KFP4_Red_AI_Fresh_38157628243_5shapes.ai'
+          $expected='EC6D2239B3547845C16C80997CA716F50FB8E5F4F5F3F8D57E85079581FA89A2'
+          if((Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash -ne $expected){throw 'AI_C014_FORENSIC_NATIVE_CHANGED'}
+          Write-Host "AI_C014_FORENSIC_NATIVE_SHA=PASS $expected"
+          $logs=@(
+            @{name='gateway';path=(Join-Path $env:LOCALAPPDATA 'MCPAdobe\gateway\logs\local-host.log')},
+            @{name='callback';path=(Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\callback_trace.log')}
+          )
+          foreach($entry in $logs){
+            if(-not(Test-Path -LiteralPath $entry.path -PathType Leaf)){
+              Write-Host "AI_C014_FORENSIC_LOG_MISSING name=$($entry.name)";continue
+            }
+            $all=@(Get-Content -LiteralPath $entry.path -Tail 1400 -ErrorAction Stop)
+            $matches=@($all|Where-Object{$_ -match 'job_625f841b04cb|C014|descriptor|callback|HOST_TRACE|fence|unknown|host_request_unresolved'})
+            Write-Host "AI_C014_FORENSIC_LOG name=$($entry.name) tail_lines=$($all.Count) matching=$($matches.Count)"
+            foreach($line in @($matches|Select-Object -Last 55)){
+              $safe=([string]$line) -replace '(?i)(token|password|secret|authorization|api[_-]?key|cookie)\s*[:=]\s*[^\s,}]+','$1=[REDACTED]'
+              if($safe.Length -gt 550){$safe=$safe.Substring(0,550)}
+              Write-Host "AI_C014_FORENSIC_TRACE name=$($entry.name) $safe"
+            }
+          }
+          Write-Host 'AI_C014_FORENSIC_DISK_ONLY=PASS'
+      - name: Read exact coordinator job status only without host probe or replay
+        shell: powershell
+        env:
+          UV_LINK_MODE: copy
+          PYTHONUTF8: '1'
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          $py=Join-Path $env:RUNNER_TEMP 'panda_c014_exact_job_20261012.py'
+          @'
+          import asyncio,json,time
+          from mcp import Client
+          JOB="job_625f841b04cb"
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  t=time.perf_counter()
+                  try:
+                      result=await asyncio.wait_for(c.call_tool("creative_read",{
+                        "application":"illustrator","capability":"creative.job.status",
+                        "arguments":{"jobId":JOB,"detail":"full"}}),timeout=19)
+                      payload=result.structured_content or {}
+                      data=((payload.get("result") or {}).get("data") or {})
+                      job=data.get("job") or {}
+                      out={"id":JOB,"is_error":result.is_error,"ok":payload.get("ok"),
+                           "status":job.get("status"),"label":job.get("label"),
+                           "error":job.get("error"),"outcome_source":job.get("outcomeSource"),
+                           "completion_source":job.get("completionSource"),
+                           "host_request_unresolved":job.get("hostRequestUnresolved"),
+                           "keys":list(job.keys())[:40],
+                           "content":[str(x)[:350] for x in result.content][:2]}
+                      print("AI_C014_EXACT_JOB="+json.dumps(out,default=str)[:9000],flush=True)
+                  except Exception as e:
+                      print("AI_C014_EXACT_JOB_UNKNOWN="+json.dumps({"id":JOB,
+                        "type":type(e).__name__,"message":str(e)[:450]}),flush=True)
+                  print("AI_C014_EXACT_JOB_ELAPSED_MS="+str(round((time.perf_counter()-t)*1000,2)),flush=True)
+              print("AI_C014_JOB_READ_ONLY_NO_REPLAY=COMPLETE",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath $py -Encoding UTF8
+          uv run --no-project --with 'mcp>=2,<3' --python 3.12 python "$py"
+          if($LASTEXITCODE -ne 0){throw 'AI_C014_JOB_READ_ONLY_RUN_FAILED'}

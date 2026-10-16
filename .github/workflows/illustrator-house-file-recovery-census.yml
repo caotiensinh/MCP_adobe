@@ -1,0 +1,42 @@
+name: Illustrator house file recovery census
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  census:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    steps:
+      - name: Inventory Illustrator house and recovery candidates read only
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Write-Output "RECOVERY_HOST=$env:COMPUTERNAME"
+          $ai=@(Get-Process Illustrator -ErrorAction SilentlyContinue)
+          foreach($p in $ai){Write-Output "RECOVERY_AI pid=$($p.Id) title=$($p.MainWindowTitle)"}
+          $roots=@(
+            (Join-Path $env:USERPROFILE 'Desktop'),
+            (Join-Path $env:USERPROFILE 'Documents'),
+            (Join-Path $env:USERPROFILE 'Downloads'),
+            (Join-Path $env:APPDATA 'Adobe'),
+            (Join-Path $env:LOCALAPPDATA 'Adobe'),
+            'D:\'
+          )
+          $seen=@{}
+          foreach($root in $roots){
+            if(-not(Test-Path -LiteralPath $root)){continue}
+            Write-Output "RECOVERY_ROOT=$root"
+            $candidates=@(Get-ChildItem -LiteralPath $root -File -Recurse -ErrorAction SilentlyContinue |
+              Where-Object { $_.Extension -in @('.ai','.aid','.aip','.tmp','.pdf') -and
+                ($_.Name -match '(?i)house|red.tile|mcpadobe|illustrator|recover|backup|recovery|auto.?save' -or $_.Extension -in @('.aid','.aip')) } |
+              Sort-Object LastWriteTime -Descending | Select-Object -First 35)
+            foreach($f in $candidates){
+              if($seen.ContainsKey($f.FullName)){continue};$seen[$f.FullName]=$true
+              Write-Output ("RECOVERY_CANDIDATE path={0} bytes={1} modified={2:o}" -f $f.FullName,$f.Length,$f.LastWriteTime)
+            }
+          }
+          Write-Output "RECOVERY_CANDIDATES_COUNT=$($seen.Count)"

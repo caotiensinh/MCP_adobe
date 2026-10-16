@@ -24,6 +24,7 @@ _BINDINGS: dict[str, ToolBinding] = {
     "creative.health": ToolBinding("list_fonts", RiskClass.READ),
     "creative.context.get": ToolBinding("get_document_info", RiskClass.READ),
     "creative.document.info": ToolBinding("get_document_info", RiskClass.READ),
+    "creative.document.fast_snapshot": ToolBinding("fast_document_snapshot", RiskClass.READ),
     "creative.document.structure": ToolBinding("get_document_structure", RiskClass.READ),
     "creative.selection.get": ToolBinding("get_selection", RiskClass.READ),
     # These two capabilities intentionally re-read Illustrator selection immediately

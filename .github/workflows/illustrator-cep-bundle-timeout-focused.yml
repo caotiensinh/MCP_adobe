@@ -1,0 +1,39 @@
+name: Illustrator CEP bundle timeout focused scan
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/illustrator-cep-bundle-timeout-focused.yml"]
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  scan:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 2
+    steps:
+      - name: Inspect only active CEP JavaScript bundle
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $dir=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel\dist\assets'
+          $files=@(Get-ChildItem $dir -Filter '*.js' -File)
+          foreach($f in $files){
+            Write-Output "BUNDLE_FILE=$($f.FullName) bytes=$($f.Length)"
+            $s=[System.IO.File]::ReadAllText($f.FullName)
+            foreach($term in @('Illustrator evalScript timeout','evalScript timeout','evalScript','30000','3e4','30e3')){
+              $cursor=0;$count=0
+              while(($cursor=$s.IndexOf($term,$cursor,[StringComparison]::OrdinalIgnoreCase)) -ge 0){
+                $lo=[Math]::Max(0,$cursor-220);$hi=[Math]::Min($s.Length,$cursor+360)
+                $piece=$s.Substring($lo,$hi-$lo) -replace '[\r\n]+',' '
+                $piece=$piece -replace '(?i)(token|password|secret)\s*[:=]\s*\S+','$1=[REDACTED]'
+                Write-Output "BUNDLE_MATCH term=$term offset=$cursor snippet=$piece"
+                $cursor+=$term.Length
+                $count++
+                if($count -ge 5){break}
+              }
+              Write-Output "BUNDLE_TERM_COUNT term=$term sampled=$count"
+            }
+          }
+          Write-Output 'FOCUSED_BUNDLE_SCAN=PASS'

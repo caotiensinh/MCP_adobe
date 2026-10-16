@@ -1,0 +1,21 @@
+name: Illustrator C014 unverified completion fence regression
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - "src/mcp_adobe/illustrator_upstream_trace.py"
+      - "tests/test_illustrator_upstream_trace.py"
+      - ".github/workflows/illustrator-c014-unverified-completion-safety-unit.yml"
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.17"
+      - name: Run real C014, C013, digest and generation fence regressions
+        run: uv run --python 3.12 --with pytest pytest -q tests/test_illustrator_upstream_trace.py

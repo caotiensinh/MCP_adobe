@@ -1,0 +1,54 @@
+name: Panda Illustrator native AI checksum and process forensics no mutation
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-ai-native-change-forensics.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  forensics:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect exact AI PSD original and nearby immutable checkpoints without opening Adobe
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'PAN_AI_NATIVE_FORENSICS_WRONG_DESKTOP'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $native=Join-Path $root 'MCP_KFP4_Red_AI_38146162392.ai'
+          $expected='0EAF49CA76244CD9D19502E2EDF4E8D8B341633862CD650934ACB9C7DFF073A3'
+          if(-not(Test-Path -LiteralPath $native -PathType Leaf)){throw 'PAN_AI_NATIVE_FORENSICS_MISSING_PRIMARY'}
+          $actual=(Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash
+          $file=Get-Item -LiteralPath $native
+          Write-Host "PAN_AI_PRIMARY_NATIVE_SHA actual=$actual expected=$expected match=$($actual -eq $expected) bytes=$($file.Length) lastWriteUTC=$($file.LastWriteTimeUtc.ToString('o'))"
+          $records=@()
+          $files=@(Get-ChildItem -LiteralPath $root -File -Filter 'MCP_KFP4_Red_AI_*.ai' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 12)
+          foreach($f in $files){
+            $sha=(Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash
+            $records+= [ordered]@{
+              file_name=$f.Name;bytes=$f.Length;last_write_utc=$f.LastWriteTimeUtc.ToString('o');
+              sha256=$sha;is_initial_checkpoint=($sha -eq $expected)
+            }
+            Write-Host "PAN_AI_NATIVE_CANDIDATE file=$($f.Name) bytes=$($f.Length) lastWriteUTC=$($f.LastWriteTimeUtc.ToString('o')) sha256=$sha"
+          }
+          $processes=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" -ErrorAction SilentlyContinue)
+          foreach($p in $processes){Write-Host "PAN_AI_NATIVE_PROCESS name=$($p.Name) pid=$($p.ProcessId) session=$($p.SessionId)"}
+          $report=[ordered]@{
+            schema='panda-ai-native-forensics-v1';source_run_id=38146162392;mutations=0;
+            initial_sha256=$expected;current_sha256=$actual;sha_matches_initial=($actual -eq $expected);
+            process_count=$processes.Count;files=$records
+          }
+          $report|ConvertTo-Json -Depth 6|Set-Content -LiteralPath .\panda_ai_native_forensics.json -Encoding UTF8
+          Write-Host "PAN_AI_NATIVE_FORENSICS=PASS changed=$($actual -ne $expected) processes=$($processes.Count) no_writes=1"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: panda-ai-native-sha-process-forensics
+          path: panda_ai_native_forensics.json
+          if-no-files-found: error
+          retention-days: 14

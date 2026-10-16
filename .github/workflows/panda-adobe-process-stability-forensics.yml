@@ -1,0 +1,61 @@
+name: Panda Adobe desktop process stability and Windows crash log audit
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-adobe-process-stability-forensics.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  evidence:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - name: Observe Illustrator Photoshop XD GUI and crash events, no process changes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'PAN_ADOBE_FORENSICS_WRONG_SESSION'}
+          $records=@()
+          foreach($name in @('Illustrator','Photoshop','XD','CEPHtmlEngine','ApplicationFrameHost')){
+            $ps=@(Get-Process -Name $name -ErrorAction SilentlyContinue)
+            foreach($p in $ps){
+              $entry=[ordered]@{name=$name;pid=$p.Id;session=$p.SessionId;
+                responding=$p.Responding;main_title=$p.MainWindowTitle;main_hwnd=[int64]$p.MainWindowHandle;
+                working_set_mb=[math]::Round($p.WorkingSet64/1MB,1)}
+              try{$entry.start_time=$p.StartTime.ToUniversalTime().ToString('o')}catch{}
+              $records+=$entry
+              Write-Host "PAN_ADOBE_PROCESS="+($entry|ConvertTo-Json -Compress)
+            }
+            Write-Host "PAN_ADOBE_PROCESS_COUNT name=$name count=$($ps.Count)"
+          }
+          $events=@()
+          try{
+            $items=@(Get-WinEvent -FilterHashtable @{LogName='Application';StartTime=(Get-Date).AddMinutes(-65);Id=@(1000,1001,1002)} -ErrorAction Stop)
+            foreach($e in $items){
+              $message=[string]$e.Message
+              if($message -notmatch 'Illustrator|Photoshop|Adobe XD|XD.exe|CEPHtmlEngine'){continue}
+              $brief=$message.Substring(0,[Math]::Min($message.Length,700))
+              $entry=[ordered]@{id=$e.Id;provider=$e.ProviderName;time_utc=$e.TimeCreated.ToUniversalTime().ToString('o');message_excerpt=$brief}
+              $events+=$entry
+              Write-Host "PAN_ADOBE_CRASH_EVENT="+($entry|ConvertTo-Json -Compress)
+              if($events.Count -ge 20){break}
+            }
+          }catch{
+            Write-Host "PAN_ADOBE_EVENTLOG_UNAVAILABLE exception=$($_.Exception.GetType().Name)"
+          }
+          $os=Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+          $report=[ordered]@{schema='panda-adobe-process-readonly/v1';mutations=0;
+            available_ram_mb=if($os){[math]::Round($os.FreePhysicalMemory/1024,0)}else{$null};
+            processes=$records;crash_events=$events}
+          ($report|ConvertTo-Json -Depth 5)|Set-Content -LiteralPath .\panda_adobe_process_evidence.json -Encoding UTF8
+          Write-Host "PAN_ADOBE_PROCESS_FORENSICS=PASS events=$($events.Count) processes=$($records.Count) no_writes=1"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: panda-adobe-process-stability-evidence
+          path: panda_adobe_process_evidence.json
+          if-no-files-found: error
+          retention-days: 14

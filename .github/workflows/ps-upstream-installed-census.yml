@@ -1,0 +1,46 @@
+name: Photoshop upstream installed extension and node census readonly
+# 2026-10-13 diagnose actual upstream after health timeout run 38413368042.
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/ps-upstream-installed-census.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Inspect Photoshop process, UXP extension and Node upstream without changing host
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'PS_DIAG_WRONG_SESSION'}
+          foreach($n in @('Photoshop','node','npx','Illustrator','XD')){
+            foreach($p in @(Get-CimInstance Win32_Process -Filter "Name='$n.exe'" -ErrorAction SilentlyContinue)){
+              $cmd=[string]$p.CommandLine
+              Write-Host "PS_DIAG_PROCESS name=$n pid=$($p.ProcessId) session=$($p.SessionId) command_kind=$(if($cmd -match 'photoshop-mcp'){'photoshop-mcp'}elseif($cmd -match 'npx'){'npx'}else{'other'})"
+            }
+          }
+          $external=Join-Path $env:APPDATA 'Adobe\UXP\Plugins\External'
+          if(Test-Path -LiteralPath $external){
+            Get-ChildItem -LiteralPath $external -Directory -ErrorAction SilentlyContinue|ForEach-Object{
+              $manifest=Join-Path $_.FullName 'manifest.json'
+              if(Test-Path -LiteralPath $manifest){
+                try{$m=Get-Content -LiteralPath $manifest -Raw|ConvertFrom-Json}catch{continue}
+                $pluginHost=($m.host | ConvertTo-Json -Compress -Depth 5)
+                if($pluginHost -match 'PHSP|photoshop|PS' -or $_.Name -match 'photoshop|mcp'){
+                  Write-Host "PS_DIAG_UXP_PLUGIN id=$($m.id) version=$($m.version) path=$($_.Name) host=$($pluginHost.Substring(0,[Math]::Min(300,$pluginHost.Length)))"
+                }
+              }
+            }
+          }
+          $cache=Join-Path $env:LOCALAPPDATA 'npm-cache\_npx'
+          Write-Host "PS_DIAG_NPX_CACHE_EXISTS=$([bool](Test-Path -LiteralPath $cache))"
+          $ps=@(Get-Process Photoshop -ErrorAction SilentlyContinue)
+          foreach($p in $ps){Write-Host "PS_DIAG_WINDOW pid=$($p.Id) session=$($p.SessionId) title=$($p.MainWindowTitle)"}
+          Write-Host 'PS_DIAG_READONLY_DONE=PASS'

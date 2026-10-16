@@ -1,0 +1,60 @@
+name: Kung Fu Panda 4 red Illustrator first real editable .ai checkpoint
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-ai-first-real-stroke.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  first-stroke:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 8
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create fresh portrait Illustrator document and first editable red rectangle
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'RED_AI_DRAW_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'RED_AI_DRAW_NOT_DESKTOP'}
+          $ai=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue |Where-Object {$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+          if($ai.Count -ne 1){throw 'RED_AI_LIVE_WINDOW_NOT_UNIQUE_NO_WRITES'}
+          Write-Host "RED_AI_SINGLE_GUI_OWNER=PASS pid=$($ai[0].Id) run=$env:GITHUB_RUN_ID"
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          uv run --python 3.12 python -m py_compile scripts/panda_red_illustrator_first_stroke.py scripts/panda_red_poster_blueprint.py
+          if($LASTEXITCODE -ne 0){throw 'RED_AI_SOURCE_INVALID'}
+          uv run --python 3.12 python scripts/panda_red_illustrator_first_stroke.py
+          if($LASTEXITCODE -ne 0){throw 'RED_AI_FIRST_NATIVE_CHECKPOINT_FAILED_INSPECT_NO_RETRY'}
+      - name: Collect actual Adobe Illustrator document and PNG with matched hashes
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $dest=Join-Path $PWD 'red_ai_first'
+          New-Item -ItemType Directory -Force -Path $dest|Out-Null
+          foreach($ext in @('ai','png')){
+            $src=Join-Path $root "MCP_KFP4_Red_AI_$env:GITHUB_RUN_ID.$ext"
+            if(Test-Path -LiteralPath $src -PathType Leaf){
+              $out=Join-Path $dest "red_poster_stroke_1.$ext"
+              Copy-Item -LiteralPath $src -Destination $out -ErrorAction Stop
+              $a=(Get-FileHash -LiteralPath $src -Algorithm SHA256).Hash
+              $b=(Get-FileHash -LiteralPath $out -Algorithm SHA256).Hash
+              if($a -ne $b){throw 'RED_AI_ARTIFACT_COPY_SHA_FAIL'}
+              Write-Host "RED_AI_REAL_ARTIFACT name=$ext bytes=$((Get-Item $src).Length) sha256=$a"
+            }else{Write-Host "RED_AI_ARTIFACT_NOT_YET_PRESENT=$ext"}
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kung-fu-red-illustrator-first-native-checkpoint
+          path: red_ai_first/*
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,30 @@
+name: Mode 2 XD experimental Connect UIA slow-path probe without invoking commands
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-undo-connect-menu-probe-readonly.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  probe:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Time XD experimental menu discovery with no Connect or Undo mutation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $marker=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\mode2-disposable-native\Mode2_GUID_Fill_Undo_Once.marker'
+          if(Test-Path -LiteralPath $marker){throw 'MODE2_UNDO_ALREADY_INVOKED'}
+          $clock=[Diagnostics.Stopwatch]::StartNew()
+          & .\scripts\mode2_live_fill_undo_ui.ps1 -Action ConnectProbe
+          if($LASTEXITCODE -ne 0){throw 'MODE2_CONNECT_MENU_READONLY_PROBE_FAILED'}
+          Write-Host "MODE2_CONNECT_PROBE_CHILD_WALL_MS=$($clock.ElapsedMilliseconds)"
+          if(Test-Path -LiteralPath $marker){throw 'MODE2_CONNECT_PROBE_UNEXPECTED_UNDO_MARKER'}
+          Write-Host 'MODE2_CONNECT_PROBE_NO_GUI_INVOKE=PASS'

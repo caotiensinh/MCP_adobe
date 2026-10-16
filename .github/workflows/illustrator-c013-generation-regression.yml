@@ -1,0 +1,19 @@
+name: Illustrator C013 generation regression
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: C013 stale epoch and generation regression
+        run: |
+          python -m pip install --disable-pip-version-check pytest
+          PYTHONPATH=src python -m pytest -q tests/test_illustrator_upstream_trace.py
+          echo "C013_GENERATION_AND_EPOCH_REGRESSION=PASS"

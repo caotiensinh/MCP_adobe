@@ -1,0 +1,85 @@
+name: PANDA XD inspect native picker HWND read only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-hwnd-probe.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  probe:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read XD native Save As control handles, bounds and real window text
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_HWND_NOT_MRCAO'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_HWND_WRONG_SESSION'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;
+          using System.Text;
+          using System.Runtime.InteropServices;
+          public class XdWinText {
+            [DllImport("user32.dll")] public static extern IntPtr GetDlgItem(IntPtr hwnd,int nIDDlgItem);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd,StringBuilder buffer,int max);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr hwnd,StringBuilder buffer,int max);
+            [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd,out RectBounds hwndRect);
+            [StructLayout(LayoutKind.Sequential)] public struct RectBounds {public int Left,Top,Right,Bottom;}
+            [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
+          }
+          '@
+          function Describe-Handle($tag,[IntPtr]$handle) {
+            if($handle -eq [IntPtr]::Zero){Write-Host "XD_HWND_CONTROL tag=$tag hwnd=0";return}
+            $name=New-Object System.Text.StringBuilder 512
+            $class=New-Object System.Text.StringBuilder 512
+            [void][XdWinText]::GetWindowText($handle,$name,512)
+            [void][XdWinText]::GetClassName($handle,$class,512)
+            $r=New-Object 'XdWinText+RectBounds'
+            [void][XdWinText]::GetWindowRect($handle,[ref]$r)
+            Write-Host "XD_HWND_CONTROL tag=$tag hwnd=$handle text=$($name.ToString()) class=$($class.ToString()) rect=$($r.Left),$($r.Top),$($r.Right),$($r.Bottom)"
+          }
+          $windows=@(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -match '^Untitled.*Adobe XD$'
+          })
+          if($windows.Count -ne 1){throw "XD_HWND_DOCUMENT_WINDOW_COUNT=$($windows.Count)"}
+          $xd=$windows[0]
+          Describe-Handle 'xd-root' $xd.MainWindowHandle
+          $fg=[XdWinText]::GetForegroundWindow();$owner=[uint32]0
+          if($fg -ne [IntPtr]::Zero){[void][XdWinText]::GetWindowThreadProcessId($fg,[ref]$owner)}
+          Write-Host "XD_HWND_FOREGROUND_PID=$owner"
+          $app=[System.Windows.Automation.AutomationElement]::FromHandle($xd.MainWindowHandle)
+          $desc=$app.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          $saveDialogs=@()
+          foreach($e in $desc){
+            if($e.Current.Name -eq 'Save As' -and $e.Current.ControlType.ProgrammaticName -eq 'ControlType.Window'){$saveDialogs+=,$e}
+          }
+          if($saveDialogs.Count -ne 1){throw "XD_HWND_DIALOG_COUNT=$($saveDialogs.Count)"}
+          $dialog=$saveDialogs[0]
+          $all=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          Describe-Handle 'nested-dialog' ([IntPtr]$dialog.Current.NativeWindowHandle)
+          foreach($e in $all){
+            $id=[string]$e.Current.AutomationId
+            $name=[string]$e.Current.Name
+            if($id -eq 'FileNameControlHost' -or $id -eq '1' -or $id -eq '1001' -or $id -eq '2'){
+              $rect=$e.Current.BoundingRectangle
+              Write-Host "XD_UI_CONTROL name=$name id=$id type=$($e.Current.ControlType.ProgrammaticName) focusable=$($e.Current.IsKeyboardFocusable) hwnd=$($e.Current.NativeWindowHandle) bounds=$($rect.Left),$($rect.Top),$($rect.Width),$($rect.Height)"
+              Describe-Handle "uia-$id-$name" ([IntPtr]$e.Current.NativeWindowHandle)
+            }
+          }
+          $focused=[System.Windows.Automation.AutomationElement]::FocusedElement
+          Write-Host "XD_FOCUSED_NOW name=$($focused.Current.Name) id=$($focused.Current.AutomationId) hwnd=$($focused.Current.NativeWindowHandle) type=$($focused.Current.ControlType.ProgrammaticName)"
+          foreach($handle in @([IntPtr]$dialog.Current.NativeWindowHandle,[IntPtr]$xd.MainWindowHandle)){
+            Describe-Handle 'GetDlgItem1001' ([XdWinText]::GetDlgItem($handle,1001))
+            Describe-Handle 'GetDlgItem1' ([XdWinText]::GetDlgItem($handle,1))
+          }
+          Write-Host 'XD_NATIVE_HWND_READ_ONLY=PASS'

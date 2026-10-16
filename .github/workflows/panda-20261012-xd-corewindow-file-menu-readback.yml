@@ -1,0 +1,83 @@
+name: Panda XD live CoreWindow File menu readback without document edits
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-20261012-xd-corewindow-file-menu-readback.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  menu:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Inspect and expand exact XD.exe File UIA menu once; keep document unchanged
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_CORE_MENU_WRONG_DESKTOP'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $source=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $sha){throw 'XD_CORE_MENU_ORIGINAL_CHANGED'}
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+          $picker=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1})
+          if($xd.Count -ne 1 -or $picker.Count -gt 0){throw 'XD_CORE_MENU_HOST_AMBIGUOUS'}
+          $root=[System.Windows.Automation.AutomationElement]::FromHandle($xd[0].MainWindowHandle)
+          $cond=New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::AutomationIdProperty,'AppMenu_File')
+          $items=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,$cond)
+          if($items.Count -ne 1){throw "XD_CORE_MENU_FILE_NOT_UNIQUE count=$($items.Count)"}
+          $file=$items[0]
+          if([string]$file.Current.Name -ne 'File' -or -not $file.Current.IsEnabled){throw 'XD_CORE_MENU_FILE_CONTROL_NOT_READY'}
+          $expand=$null
+          try{$expand=$file.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)}catch{}
+          if(-not $expand){
+            Write-Host 'XD_CORE_MENU_EXPAND_PATTERN_UNAVAILABLE=TRUE NO_CLICK'
+          }else{
+            $state=$expand.Current.ExpandCollapseState
+            Write-Host "XD_CORE_MENU_INITIAL_STATE=$state"
+            if($state -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){
+              $expand.Expand()
+              Write-Host 'XD_CORE_MENU_EXPAND_ONCE=PASS'
+            }else{Write-Host 'XD_CORE_MENU_ALREADY_EXPANDED=PASS'}
+          }
+          Start-Sleep -Milliseconds 400
+          $all=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          Write-Host "XD_CORE_MENU_DESCENDANTS_AFTER_EXPAND=$($all.Count)"
+          $printed=0
+          for($i=0;$i -lt $all.Count;$i++){
+            $node=$all[$i]
+            $name=[string]$node.Current.Name;$ident=[string]$node.Current.AutomationId
+            $type=[string]$node.Current.ControlType.ProgrammaticName
+            if($i -lt 30 -or $name -match 'New|Create|Document|Recent|Save|Open|Local' -or $ident -match 'New|Create|Document|Save|Open'){
+              Write-Host "XD_CORE_MENU_NODE index=$i type=$type name=$($name.Substring(0,[Math]::Min($name.Length,90))) id=$($ident.Substring(0,[Math]::Min($ident.Length,90)))"
+              $printed++
+            }
+            if($printed -ge 120){break}
+          }
+          $fileChildren=$file.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+          Write-Host "XD_CORE_MENU_FILE_SUBTREE_COUNT=$($fileChildren.Count)"
+          foreach($node in $fileChildren){
+            Write-Host "XD_CORE_MENU_FILE_CHILD name=$($node.Current.Name) id=$($node.Current.AutomationId) type=$($node.Current.ControlType.ProgrammaticName)"
+          }
+          $menus=@($all|Where-Object{$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'})
+          Write-Host "XD_CORE_MENU_TOTAL_ITEMS=$($menus.Count)"
+          foreach($item in $menus){
+            $n=[string]$item.Current.Name;$id=[string]$item.Current.AutomationId
+            Write-Host "XD_CORE_MENU_ITEM name=$($n.Substring(0,[Math]::Min(120,$n.Length))) id=$id enabled=$($item.Current.IsEnabled)"
+          }
+          $t=[System.Windows.Automation.AutomationElement]::RootElement
+          $tops=$t.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          foreach($win in $tops){
+            $name=[string]$win.Current.Name
+            if($name -match 'File|Adobe XD|Menu|New|Save'){
+              Write-Host "XD_CORE_MENU_TOP title=$name class=$($win.Current.ClassName) pid=$($win.Current.ProcessId)"
+            }
+          }
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $sha){throw 'XD_CORE_MENU_SOURCE_CHANGED'}
+          Write-Host 'XD_CORE_MENU_NATIVE_PRESERVED=PASS'

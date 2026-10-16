@@ -1,0 +1,54 @@
+name: Illustrator C014 post-launch CEP
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify restored Illustrator and CEP handshake
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Start-Sleep -Seconds 12
+          $ai=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'")
+          $cep=@(Get-CimInstance Win32_Process -Filter "Name='CEPHtmlEngine.exe'")
+          Write-Output "C014_POST_LAUNCH_AI_COUNT=$($ai.Count)"
+          foreach($a in $ai){Write-Output "C014_POST_LAUNCH_AI_PID=$($a.ProcessId) session=$($a.SessionId)"}
+          foreach($p in $cep){
+            $cmd=[string]$p.CommandLine
+            Write-Output "C014_POST_LAUNCH_CEP pid=$($p.ProcessId) extension=$($cmd -match 'com\.illustrator\.mcp\.panel') session=$($p.SessionId)"
+          }
+          $s=@(Get-NetTCPConnection -RemotePort 8081 -State Established -ErrorAction SilentlyContinue)
+          foreach($conn in $s){
+            $p=Get-CimInstance Win32_Process -Filter "ProcessId=$($conn.OwningProcess)" -ErrorAction SilentlyContinue
+            Write-Output "C014_POST_LAUNCH_SOCKET owner=$($p.Name) pid=$($conn.OwningProcess)"
+          }
+          $manifest=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel\CSXS\manifest.xml'
+          Write-Output "C014_PANEL_MANIFEST_EXISTS=$(Test-Path $manifest)"
+          if(Test-Path $manifest){$xml=Get-Content $manifest -Raw;[regex]::Matches($xml,'<Menu>[^<]+')|ForEach-Object {Write-Output "C014_PANEL_MENU=$($_.Value)"}}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'C014_SETUP_FAILED'}
+          @'
+          import asyncio,json
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":False,"timeout":5}})
+                  if r.is_error or not isinstance(r.structured_content,dict):raise RuntimeError("C014_HEALTH_FAILED")
+                  d=r.structured_content.get("result",{}).get("connection",{}).get("data",{})
+                  print("C014_PANEL_HEALTH="+json.dumps({"panel":(d.get("layers") or {}).get("panel"),"blockedAt":d.get("blockedAt"),"unresolved":(d.get("execution") or {}).get("unresolvedJobs")},default=str)[:4000],flush=True)
+                  if (d.get("layers") or {}).get("panel",{}).get("status")!="ok":
+                      raise RuntimeError("C014_PANEL_NOT_RECONNECTED")
+                  print("C014_PANEL_RECONNECTED=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath verify_panel.py -Encoding UTF8
+          uv run python verify_panel.py
+          if($LASTEXITCODE -ne 0){throw 'C014_POST_LAUNCH_ACCEPTANCE_FAILED'}

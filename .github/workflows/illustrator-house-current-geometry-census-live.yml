@@ -1,0 +1,63 @@
+name: Illustrator house current geometry readback
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inventory:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read existing Illustrator document items without changing artwork
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'GEOMETRY_DEPENDENCIES_FAILED'}
+          @'
+          import asyncio,json,os
+          from pathlib import Path
+          from mcp import Client
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  h=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.health","arguments":{"probe":False,"timeout":5}})
+                  if h.is_error or not isinstance(h.structured_content,dict):raise RuntimeError("HOUSE_HEALTH_NOT_READABLE")
+                  s=h.structured_content["result"]["connection"]["data"]
+                  panel=(s.get("layers") or {}).get("panel") or {}
+                  execution=s.get("execution") or {}
+                  print("HOUSE_GEOMETRY_PREFLIGHT="+json.dumps({"blockedAt":s.get("blockedAt"),"unresolved":execution.get("unresolvedJobs"),"panel":panel},default=str)[:2600],flush=True)
+                  if execution.get("unresolvedJobs") or panel.get("status")!="ok" or panel.get("busy") is not False:
+                      raise RuntimeError("HOUSE_GEOMETRY_CENSUS_HOST_NOT_IDLE")
+                  d=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.document.info","arguments":{}})
+                  if d.is_error or not isinstance(d.structured_content,dict) or not d.structured_content.get("ok"):
+                      raise RuntimeError("HOUSE_DOCUMENT_INFO_UNAVAILABLE")
+                  result=d.structured_content.get("result") or {}
+                  if result.get("execution")!="succeeded":raise RuntimeError("HOUSE_DOCUMENT_READ_FAILED")
+                  data=result.get("data") or {}
+                  doc=data.get("document") or {}
+                  layers=data.get("layers") or []
+                  objects=[]
+                  for layer in layers:
+                      for item in layer.get("items") or []:
+                          objects.append({"name":item.get("name"),"type":item.get("type"),"bounds":item.get("bounds")})
+                  total=sum(int(layer.get("itemCount",0)) for layer in layers)
+                  print("HOUSE_EXISTING_DOC="+json.dumps(doc,ensure_ascii=False,default=str)[:4000],flush=True)
+                  print("HOUSE_EXISTING_LAYER_COUNT="+str(len(layers)),flush=True)
+                  print("HOUSE_EXISTING_OBJECT_COUNT="+str(total),flush=True)
+                  print("HOUSE_EXISTING_OBJECTS="+json.dumps(objects,ensure_ascii=False,default=str)[:10000],flush=True)
+                  if total!=len(objects):
+                      print("HOUSE_CENSUS_WARNING=ITEMS_PARTIALLY_LISTED",flush=True)
+                  target=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"/"Two_Story_Red_Tile_House.ai"
+                  print("HOUSE_FILE_EXISTS="+str(target.is_file()),flush=True)
+                  if target.is_file():
+                      print("HOUSE_FILE_BYTES="+str(target.stat().st_size),flush=True)
+                  print("HOUSE_GEOMETRY_CENSUS=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath house_geometry_census.py -Encoding UTF8
+          uv run python house_geometry_census.py
+          if($LASTEXITCODE -ne 0){throw 'HOUSE_GEOMETRY_CENSUS_FAILED'}

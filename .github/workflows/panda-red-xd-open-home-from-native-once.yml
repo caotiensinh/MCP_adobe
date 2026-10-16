@@ -1,0 +1,54 @@
+name: Panda XD open actual Home once from protected original design
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-open-home-from-native-once.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  home:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Invoke identified Adobe XD CoreWindow Home once without editing any native source
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_HOME_WRONG_DESKTOP'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $source=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\MCP_Mode1_Panda_XD_38136531800.xd'
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $sha){throw 'XD_HOME_SOURCE_DIVERGED'}
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue|Where-Object {$_.SessionId -eq 1 -and $_.MainWindowHandle -ne 0})
+          if($xd.Count -ne 1){throw 'XD_HOME_AMBIGUOUS_XD_PROCESS'}
+          $pickers=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          if($pickers.Count -gt 0){throw 'XD_HOME_PICKER_OPEN_NO_INPUT'}
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $tops=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $old=@($tops|Where-Object{[string]$_.Current.Name -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+          $other=@($tops|Where-Object{[string]$_.Current.Name -match 'Adobe XD$' -and [string]$_.Current.Name -notmatch '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+          Write-Host "XD_HOME_PREFLIGHT source_window=$($old.Count) other_xd=$($other.Count) picker=$($pickers.Count)"
+          if($old.Count -ne 1 -or $other.Count -gt 0){throw 'XD_HOME_UNEXPECTED_ACTIVE_DOCUMENT_NO_CLICK'}
+          $app=[System.Windows.Automation.AutomationElement]::FromHandle($xd[0].MainWindowHandle)
+          $cond=New-Object System.Windows.Automation.PropertyCondition(
+            [System.Windows.Automation.AutomationElement]::AutomationIdProperty,'titlebarHomeButton')
+          $buttons=$app.FindAll([System.Windows.Automation.TreeScope]::Descendants,$cond)
+          if($buttons.Count -ne 1 -or [string]$buttons[0].Current.Name -ne 'Home' -or -not $buttons[0].Current.IsEnabled){throw 'XD_HOME_CONTROL_NOT_UNIQUE'}
+          $invoke=$buttons[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+          try{$invoke.Invoke();Write-Host 'XD_HOME_NATIVE_BUTTON_INVOKED_ONCE=PASS'}catch{throw "XD_HOME_INVOKE_UNKNOWN_NO_REPLAY $($_.Exception.GetType().Name)"}
+          $deadline=(Get-Date).AddSeconds(35);$home=@()
+          do {
+            Start-Sleep -Milliseconds 600
+            $top=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+            $home=@($top|Where-Object{[string]$_.Current.Name -eq 'Adobe XD'})
+            if($home.Count -eq 1){break}
+            if($home.Count -gt 1){throw 'XD_HOME_MULTIPLE_HOME_WINDOWS'}
+          } until((Get-Date)-ge $deadline)
+          if($home.Count -ne 1){throw 'XD_HOME_WINDOW_NOT_VERIFIED_NO_REPLAY'}
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $sha){throw 'XD_HOME_ORIGINAL_SHA_CHANGED'}
+          Write-Host "XD_HOME_GUI_VISIBLE=PASS pid=$($home[0].Current.ProcessId) source_sha256=$sha"

@@ -1,11 +1,11 @@
 const application = require("application");
 const { entrypoints } = require("uxp");
 const scenegraph = require("scenegraph");
-const { Rectangle, Text, Color } = scenegraph;
+const { Rectangle, Ellipse, Path, Text, Color } = scenegraph;
 
 const BRIDGE_URL = "ws://127.0.0.1:8765";
 const STATUS_LIMIT = 200;
-const BRIDGE_BUILD = "xd-canvas-readback-v3";
+const BRIDGE_BUILD = "xd-ellipse-radius-geometry-v4";
 
 let panel;
 let socket;
@@ -85,6 +85,65 @@ function snapshot(selection, rootNode) {
   };
 }
 
+// Read-only scenegraph snapshot. All node bounds are global canvas coordinates.
+// This never calls application.editDocument and never changes selection.
+function xdScenegraphSnapshot() {
+  const root = scenegraph.root;
+  if (!root || !root.guid) {
+    throw new Error("XD root has no stable identity; scenegraph unavailable");
+  }
+  const visited = {};
+  let count = 0;
+  function walk(node, depth) {
+    if (++count > 20000 || depth > 100) throw new Error("XD scenegraph limit exceeded");
+    const id = node && node.guid;
+    if (!id || visited[id]) throw new Error("XD scenegraph missing/duplicate guid");
+    visited[id] = true;
+    let bounds;
+    try {
+      const b = node.globalBounds;
+      if (b && Number.isFinite(b.x) && Number.isFinite(b.y) &&
+          Number.isFinite(b.width) && Number.isFinite(b.height) &&
+          b.width > 0 && b.height > 0) {
+        bounds = {left:b.x, top:b.y, right:b.x+b.width, bottom:b.y+b.height};
+      }
+    } catch (_) {}
+    const children = [];
+    if (node.children) {
+      for (let i=0; i<node.children.length; i++) children.push(walk(node.children.at(i),depth+1));
+    }
+    return {id, name:node.name || "", type:node.constructor && node.constructor.name || "SceneNode",
+      visible:node.visible !== false, locked:node.locked === true,
+      bounds: bounds || null, children};
+  }
+  const nodes = [];
+  for (let i=0; i<root.children.length; i++) nodes.push(walk(root.children.at(i),0));
+  return {document_id:String(root.guid), complete:true, coordinate_space:"global",
+    nodes, node_count:count};
+}
+
+// A document-coordinate frame derived from artboards, not desktop pixels.
+// The preview must be a full-frame image of this rectangle.
+function xdCanvasFrame() {
+  const root=scenegraph.root;
+  if(!root || !root.guid || !root.children)throw new Error("XD root unavailable");
+  let left=Infinity,top=Infinity,right=-Infinity,bottom=-Infinity,count=0;
+  for(let i=0;i<root.children.length;i++){
+    const node=root.children.at(i);
+    if(!node || !node.guid)continue;
+    const type=node.constructor && node.constructor.name || "";
+    if(type!=="Artboard")continue;
+    const b=node.globalBounds;
+    if(!b || ![b.x,b.y,b.width,b.height].every(Number.isFinite) || b.width<=0 || b.height<=0)continue;
+    count++;
+    left=Math.min(left,b.x);top=Math.min(top,b.y);
+    right=Math.max(right,b.x+b.width);bottom=Math.max(bottom,b.y+b.height);
+  }
+  if(!count)throw new Error("XD artboard frame unavailable");
+  return {document_id:String(root.guid),coordinate_space:"global",
+    left,top,right,bottom,width:right-left,height:bottom-top,artboard_count:count};
+}
+
 function rememberOperation(operationId, value) {
   operationStatus[operationId] = value;
   operationOrder.push(operationId);
@@ -138,8 +197,185 @@ function applyMutation(item, selection) {
     node.fill = new Color(params.fill || "#4F7CFF");
     if (params.name) node.name = String(params.name);
     selection.insertionParent.addChild(node);
-    node.moveInParentCoordinates(safeNumber(params.x, 0), safeNumber(params.y, 0));
+    // MCP x/y are global canvas positions, not insertion-parent offsets.
+    // Artboards may be located away from (0,0); absolute placement is required.
+    const desiredX = safeNumber(params.x, NaN);
+    const desiredY = safeNumber(params.y, NaN);
+    const before = node.globalBounds;
+    if (![desiredX, desiredY].every(Number.isFinite) ||
+        !before || ![before.x, before.y, before.width, before.height].every(Number.isFinite) ||
+        !(before.width > 0) || !(before.height > 0)) {
+      throw new Error("XD shape has invalid global placement geometry");
+    }
+    node.moveInParentCoordinates(desiredX - before.x, desiredY - before.y);
+    const placed = node.globalBounds;
+    if (!placed || Math.abs(placed.x - desiredX) > 2 ||
+        Math.abs(placed.y - desiredY) > 2) {
+      throw new Error("XD shape global placement verification failed");
+    }
     return nodeInfo(node);
+  }
+
+  if (item.method === "xd.queue.path_create") {
+    // A single editable vector component per queued MCP write. Never accept
+    // imported SVG documents or arbitrary script/markup as pathData.
+    const data = params.pathData;
+    const x = Number(params.x);
+    const y = Number(params.y);
+    if (typeof data !== "string" || data.length < 6 || data.length > 8192 ||
+        !/^M[ ,.0-9+-]/i.test(data) ||
+        !/^[-+0-9eE., MmLlHhVvCcSsQqTtAaZz]+$/.test(data) ||
+        ![x,y].every(Number.isFinite) ||
+        Math.abs(x) > 100000 || Math.abs(y) > 100000) {
+      throw new Error("XD path requires bounded SVG path commands and finite global position");
+    }
+    const node = new Path();
+    node.pathData = data;
+    node.fill = new Color(params.fill || "#FFFFFF");
+    if (params.name) node.name = String(params.name).slice(0, 160);
+    selection.insertionParent.addChild(node);
+    const initial = node.globalBounds;
+    if (!initial || ![initial.x, initial.y, initial.width, initial.height].every(Number.isFinite) ||
+        !(initial.width > 0) || !(initial.height > 0) ||
+        initial.width > 20000 || initial.height > 20000) {
+      throw new Error("XD vector path has invalid or degenerate bounds");
+    }
+    node.moveInParentCoordinates(x - initial.x, y - initial.y);
+    const actual = node.globalBounds;
+    if (!actual || Math.abs(actual.x - x) > 2 || Math.abs(actual.y - y) > 2) {
+      throw new Error("XD path global bounds could not be verified");
+    }
+    return { ...nodeInfo(node), globalBounds: {
+      left:actual.x, top:actual.y, right:actual.x+actual.width,
+      bottom:actual.y+actual.height
+    } };
+  }
+
+  if (item.method === "xd.queue.ellipse_create") {
+    const node = new Ellipse();
+    // Adobe XD's Ellipse API exposes radii, not writable width/height.
+    const width = Math.max(1, safeNumber(params.width, 100));
+    const height = Math.max(1, safeNumber(params.height, 100));
+    node.radiusX = width / 2;
+    node.radiusY = height / 2;
+    node.fill = new Color(params.fill || "#FFFFFF");
+    if (params.name) node.name = String(params.name);
+    selection.insertionParent.addChild(node);
+    const initial = node.globalBounds;
+    if (!initial || !(initial.width > 0) || !(initial.height > 0)) {
+      throw new Error("XD Ellipse has zero visible geometry after radius assignment");
+    }
+    node.moveInParentCoordinates(
+      safeNumber(params.x, 0) - initial.x,
+      safeNumber(params.y, 0) - initial.y
+    );
+    const measured = node.globalBounds;
+    if (!measured || Math.abs(measured.width - width) > 1 ||
+        Math.abs(measured.height - height) > 1) {
+      throw new Error("XD Ellipse rendered size differs from requested size");
+    }
+    return nodeInfo(node);
+  }
+
+  if (item.method === "xd.queue.rectangle_position_repair") {
+    // Read-before-write optimistic concurrency: repair one known shifted
+    // Rectangle GUID only. Repeated or stale commands fail closed.
+    const documentId = String(params.document_id || "");
+    const guid = String(params.guid || "");
+    const name = String(params.name || "");
+    const x = Number(params.x), y = Number(params.y);
+    const beforeX = Number(params.beforeX), beforeY = Number(params.beforeY);
+    if (!/^[a-f0-9-]{36}$/.test(guid) || !documentId || !name ||
+        !scenegraph.root || scenegraph.root.guid !== documentId ||
+        ![x,y,beforeX,beforeY].every(Number.isFinite) ||
+        Math.abs(x)>100000 || Math.abs(y)>100000) {
+      throw new Error("XD rectangle repair document identity or input is invalid");
+    }
+    const matches = [];
+    function find(node) {
+      if (!node) return;
+      if (node.guid === guid) matches.push(node);
+      if (node.children) {
+        for (let i=0; i<node.children.length; i++) find(node.children.at(i));
+      }
+    }
+    find(scenegraph.root);
+    if (matches.length!==1 || !(matches[0] instanceof Rectangle) ||
+        matches[0].name!==name) {
+      throw new Error("XD rectangle repair target GUID/name/type mismatch");
+    }
+    const node=matches[0];
+    const actualBefore=node.globalBounds;
+    if (!actualBefore || ![actualBefore.x,actualBefore.y,
+        actualBefore.width,actualBefore.height].every(Number.isFinite) ||
+        !(actualBefore.width>0) || !(actualBefore.height>0) ||
+        Math.abs(actualBefore.x-beforeX)>1 || Math.abs(actualBefore.y-beforeY)>1 ||
+        (Math.abs(actualBefore.x-x)<=1 && Math.abs(actualBefore.y-y)<=1)) {
+      throw new Error("XD rectangle repair source changed or already fixed; no replay");
+    }
+    node.moveInParentCoordinates(x-actualBefore.x,y-actualBefore.y);
+    const after=node.globalBounds;
+    if (!after || Math.abs(after.x-x)>2 || Math.abs(after.y-y)>2 ||
+        Math.abs(after.width-actualBefore.width)>1 ||
+        Math.abs(after.height-actualBefore.height)>1) {
+      throw new Error("XD rectangle repair readback mismatch");
+    }
+    return {guid:node.guid,name:node.name,
+      before:{x:actualBefore.x,y:actualBefore.y},after:{x:after.x,y:after.y},
+      width:after.width,height:after.height,repaired:true};
+  }
+
+  if (item.method === "xd.queue.ellipse_geometry_repair") {
+    const guid = String(params.guid || "");
+    const name = String(params.name || "");
+    const expectedDocument = String(params.document_id || "");
+    if (!/^[a-f0-9-]{36}$/.test(guid) || !name || !expectedDocument ||
+        !scenegraph.root || scenegraph.root.guid !== expectedDocument) {
+      throw new Error("XD geometry repair requires exact node/document identity");
+    }
+    const matches = [];
+    function visit(parent) {
+      if (!parent) return;
+      if (parent.guid === guid) matches.push(parent);
+      if (parent.children) {
+        for (let i = 0; i < parent.children.length; i += 1) {
+          visit(parent.children.at(i));
+        }
+      }
+    }
+    visit(scenegraph.root);
+    if (matches.length !== 1 || !(matches[0] instanceof Ellipse) ||
+        matches[0].name !== name) {
+      throw new Error("XD repair target is missing, ambiguous or not an Ellipse");
+    }
+    const node = matches[0];
+    if (node.radiusX !== 0 || node.radiusY !== 0) {
+      throw new Error("XD target already has nonzero radii: read state, do not repeat repair");
+    }
+    const width = safeNumber(params.width, NaN);
+    const height = safeNumber(params.height, NaN);
+    const x = safeNumber(params.x, NaN);
+    const y = safeNumber(params.y, NaN);
+    if (![width, height, x, y].every(Number.isFinite) ||
+        !(width > 0) || !(height > 0) || width > 1500 || height > 1500) {
+      throw new Error("XD ellipse geometry repair has invalid bounded dimensions");
+    }
+    node.radiusX = width / 2;
+    node.radiusY = height / 2;
+    const beforeMove = node.globalBounds;
+    if (!beforeMove || beforeMove.width < 1 || beforeMove.height < 1) {
+      throw new Error("XD repair did not produce visible ellipse geometry");
+    }
+    node.moveInParentCoordinates(x - beforeMove.x, y - beforeMove.y);
+    const after = node.globalBounds;
+    if (!after || Math.abs(after.width - width) > 1 ||
+        Math.abs(after.height - height) > 1 ||
+        Math.abs(after.x - x) > 2 || Math.abs(after.y - y) > 2) {
+      throw new Error("XD repaired ellipse bounds differ from intended canvas geometry");
+    }
+    return {guid: node.guid, name: node.name, bounds: {
+      left: after.x, top: after.y, width: after.width, height: after.height
+    }, repaired: true};
   }
 
   if (item.method === "xd.queue.text_create") {
@@ -149,7 +385,22 @@ function applyMutation(item, selection) {
     node.fill = new Color(params.fill || "#000000");
     if (params.name) node.name = String(params.name);
     selection.insertionParent.addChild(node);
-    node.moveInParentCoordinates(safeNumber(params.x, 0), safeNumber(params.y, 0));
+    // MCP x/y are global canvas positions, not insertion-parent offsets.
+    // Artboards may be located away from (0,0); absolute placement is required.
+    const desiredX = safeNumber(params.x, NaN);
+    const desiredY = safeNumber(params.y, NaN);
+    const before = node.globalBounds;
+    if (![desiredX, desiredY].every(Number.isFinite) ||
+        !before || ![before.x, before.y, before.width, before.height].every(Number.isFinite) ||
+        !(before.width > 0) || !(before.height > 0)) {
+      throw new Error("XD shape has invalid global placement geometry");
+    }
+    node.moveInParentCoordinates(desiredX - before.x, desiredY - before.y);
+    const placed = node.globalBounds;
+    if (!placed || Math.abs(placed.x - desiredX) > 2 ||
+        Math.abs(placed.y - desiredY) > 2) {
+      throw new Error("XD shape global placement verification failed");
+    }
     return nodeInfo(node);
   }
 
@@ -282,10 +533,20 @@ function dispatch(method, params) {
     return latestSnapshot.document || { rootChildren: 0, insertionParent: null };
   }
 
+  if (method === "xd.canvas.frame") {
+    return xdCanvasFrame();
+  }
+
+  if (method === "xd.scenegraph.snapshot") {
+    return xdScenegraphSnapshot();
+  }
+
   if (method === "xd.selection.get") {
     try { snapshot(scenegraph.selection, scenegraph.root); } catch (_) {}
     return { items: latestSnapshot.selection || [] };
   }
+
+  if (method === "xd.export.png") return exportPandaPng(params || {});
 
   if (method === "xd.queue.clear") {
     return clearPending(params && params.reason ? String(params.reason) : "MCP queue reset");
@@ -299,6 +560,10 @@ function dispatch(method, params) {
 
   if (
     method === "xd.queue.rectangle_create" ||
+    method === "xd.queue.path_create" ||
+    method === "xd.queue.ellipse_create" ||
+    method === "xd.queue.rectangle_position_repair" ||
+    method === "xd.queue.ellipse_geometry_repair" ||
     method === "xd.queue.text_create" ||
     method === "xd.queue.selection_resize" ||
     method === "xd.queue.selection_fill"
@@ -307,6 +572,34 @@ function dispatch(method, params) {
   }
 
   throw new Error(`unsupported Adobe XD bridge method: ${method}`);
+}
+
+async function exportPandaPng(params) {
+  // A real XD rendition from its actual scenegraph, never an imported image.
+  const filename = String((params && params.filename) || "");
+  if (!/^MCP_Mode1_Panda_XD_[A-Za-z0-9_-]+\.png$/.test(filename)) {
+    throw new Error("export filename must be a bounded unique panda PNG");
+  }
+  const root = scenegraph.root;
+  let artboard = null;
+  for (let i = 0; root && root.children && i < root.children.length; i += 1) {
+    const node = root.children.at(i);
+    if (node && node.constructor && node.constructor.name === "Artboard") {
+      artboard = node;
+      break;
+    }
+  }
+  if (!artboard) throw new Error("XD has no artboard for PNG rendition");
+  const fs = require("uxp").storage.localFileSystem;
+  const folder = await fs.getDataFolder();
+  const file = await folder.createFile(filename, {overwrite: false});
+  await application.createRenditions([{
+    node: artboard,
+    outputFile: file,
+    type: application.RenditionType.PNG,
+    scale: 1
+  }]);
+  return {status: "exported", filename, nativePath: file.nativePath, artboardGuid: artboard.guid};
 }
 
 function send(payload) {
@@ -344,8 +637,10 @@ function connect() {
     let request;
     try {
       request = JSON.parse(event.data);
-      const result = dispatch(request.method, request.params || {});
-      send({ id: request.id, ok: true, result });
+      Promise.resolve(dispatch(request.method, request.params || {}))
+        .then(result => send({ id: request.id, ok: true, result }))
+        .catch(error => send({ id: request.id, ok: false,
+          error: error && error.message ? error.message : String(error) }));
     } catch (error) {
       send({
         id: request && request.id ? request.id : null,

@@ -1,0 +1,69 @@
+name: XD restore repaired native panda document once without gateway restart
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-xd-restore-repaired-native-once.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  restore:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 6
+    env:
+      PYTHONUTF8: '1'
+      UV_LINK_MODE: copy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse and reopen hash-verified repaired XD once, keeping gateway and backup untouched
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_NATIVE_REOPEN_WRONG_HOST'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_NATIVE_REOPEN_WRONG_DESKTOP'}
+          $src=Join-Path $PWD 'scripts/panda_xd_restore_repaired_native_gui.ps1'
+          $tokens=$null;$errors=$null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($src,[ref]$tokens,[ref]$errors)
+          if(@($errors).Count -gt 0){throw 'XD_NATIVE_REOPEN_SCRIPT_PARSE_FAILED'}
+          powershell -NoProfile -ExecutionPolicy Bypass -File $src
+          if($LASTEXITCODE -ne 0){throw 'XD_NATIVE_REOPEN_FAILED_NO_SECOND_START'}
+      - name: Verify XD real MCP health, native SHA and 32 live visible shapes read-only
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
+          @'
+          import asyncio,hashlib,os,json
+          from pathlib import Path
+          from mcp import Client
+          p=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"/"MCP_Mode1_Panda_XD_38136531800.xd"
+          expected="3a10e1510abc41eccd4485d6f852ea6ced7acc2cf50109e7c1bd123353589ed1"
+          async def main():
+              if hashlib.sha256(p.read_bytes()).hexdigest()!=expected:raise RuntimeError("XD_REOPEN_NATIVE_FILE_CHANGED")
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  async def read(cap):
+                      r=await asyncio.wait_for(c.call_tool("creative_read",{"application":"xd","capability":cap,"arguments":{}}),timeout=9)
+                      if r.is_error or not isinstance(r.structured_content,dict) or r.structured_content.get("ok") is not True:
+                          raise RuntimeError("XD_REOPEN_MCP_READ_NOT_READY "+cap+" "+str(r.content)[:250])
+                      return r.structured_content["result"]
+                  h=await read("creative.health")
+                  if h.get("bridge")!="connected" or h.get("pending_count")!=0:
+                      raise RuntimeError("XD_REOPEN_BRIDGE_BUSY")
+                  s=await read("creative.scenegraph.list")
+                  if s.get("document_id")!="98d6635b-3767-4254-b200-ec8442b69ad2":raise RuntimeError("XD_REOPEN_WRONG_DOCUMENT")
+                  nodes=s.get("nodes") or []
+                  if len(nodes)!=1 or len(nodes[0].get("children") or [])!=32:
+                      raise RuntimeError("XD_REOPEN_SCENEGRAPH_32_NOT_PRESENT")
+                  shapes=nodes[0]["children"]
+                  bad=[x["name"] for x in shapes if not x.get("bounds") or
+                      x["bounds"]["right"]<=x["bounds"]["left"] or x["bounds"]["bottom"]<=x["bounds"]["top"]]
+                  if bad:raise RuntimeError("XD_REOPEN_INVALID_SHAPES "+str(bad))
+                  print("XD_REOPEN_NATIVE_AND_LIVE=PASS "+json.dumps({"native_sha256":expected,
+                       "document_id":s["document_id"],"objects":len(shapes),"invalid":len(bad),"bridge":h.get("bridge_build")}),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath .\xd_reopen_check.py -Encoding UTF8
+          uv run --python 3.12 python .\xd_reopen_check.py
+          if($LASTEXITCODE -ne 0){throw 'XD_REOPEN_READBACK_FAIL_NO_MUTATION'}

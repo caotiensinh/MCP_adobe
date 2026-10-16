@@ -1,0 +1,76 @@
+name: Mode 2 batched multi-lane acceptance
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-batched-multilane.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  guard-and-transaction:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: All edit guards and transaction tests in one operation
+        env:
+          PYTHONPATH: src
+        run: |
+          python3 -m unittest discover -s tests -p 'test_mode2_edit_guard.py' -v
+          python3 -m unittest discover -s tests -p 'test_mode2_edit_simulation.py' -v
+          python3 -m unittest discover -s tests -p 'test_mode2_xd_transaction.py' -v
+          python3 -m unittest discover -s tests -p 'test_mode2_native_provenance.py' -v
+  uxp-and-ui-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: XD UXP experimental syntax and protected contract
+        run: |
+          node --check experimental/mode2-xd-uxp/main.js
+          node tests/xd_mode2_guarded_plugin_contract.cjs
+          node --check adobe-xd-plugin/main.js
+          python3 -m compileall -q src/mcp_adobe/mode2_edit_guard.py src/mcp_adobe/mode2_edit_simulation.py src/mcp_adobe/mode2_xd_transaction.py src/mcp_adobe/mode2_native_provenance.py
+  mrcao-safe-provenance:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    concurrency:
+      group: adobe-panda-desktop-exclusive
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect copy, original, active XD and isolated host session in a single task
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $source=Join-Path $root 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $copy=Join-Path $root 'mode2-isolated\Panda_Mode2_Editable_Experiment.xd'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          foreach($path in @($source,$copy)){
+            if(!(Test-Path -LiteralPath $path -PathType Leaf)){throw "MODE2_NATIVE_MISSING_$path"}
+            if((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $expected){throw "MODE2_NATIVE_SHA_MISMATCH_$path"}
+          }
+          Write-Host 'MODE2_BATCH_SOURCE_AND_COPY_HASH_PASS'
+          Add-Type -AssemblyName UIAutomationClient
+          $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $titles=@($windows | Where-Object {[string]$_.Current.Name -match 'Adobe XD$'} | ForEach-Object {[string]$_.Current.Name})
+          Write-Host "MODE2_BATCH_XD_WINDOW_COUNT=$($titles.Count)"
+          foreach($title in $titles){Write-Host "MODE2_BATCH_XD_WINDOW=$title"}
+          $other=@('Illustrator','Photoshop')
+          foreach($app in $other){$procs=@(Get-Process -Name $app -ErrorAction SilentlyContinue);Write-Host "MODE2_BATCH_OTHER_APP name=$app count=$($procs.Count)"}
+          $socket=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+          Write-Host "MODE2_BATCH_XD_CONNECTED_SOCKETS=$($socket.Count)"
+          $originalWindows=@($titles | Where-Object {$_ -match '^MCP_Mode1_Panda_XD_38136531800.*Adobe XD$'})
+          $copyWindows=@($titles | Where-Object {$_ -match '^Panda_Mode2_Editable_Experiment.*Adobe XD$'})
+          Write-Host "MODE2_BATCH_ORIGINAL_OPEN=$($originalWindows.Count) ISOLATED_COPY_OPEN=$($copyWindows.Count)"
+          if($copyWindows.Count -eq 1 -and $originalWindows.Count -eq 0){
+            Write-Host 'MODE2_ACTIVE_COPY_WINDOW=OBSERVED_NOT_HOST_ATTESTED'
+          }elseif($originalWindows.Count -eq 1 -and $copyWindows.Count -eq 0){
+            Write-Host 'MODE2_MUTATION_GATE=BLOCKED_ACTIVE_ORIGINAL'
+          }else{
+            Write-Host 'MODE2_MUTATION_GATE=BLOCKED_UNCERTAIN_DOCUMENT_OWNERSHIP'
+          }
+          if((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne $expected){throw 'MODE2_ORIGINAL_CHANGED_DURING_INSPECTION'}
+          Write-Host 'MODE2_BATCH_HOST_READONLY_PASS'

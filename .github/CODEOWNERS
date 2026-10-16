@@ -1,0 +1,13 @@
+# Protected Adobe MCP surfaces. Effective CODEOWNER approval requires GitHub repo
+# settings: Require a pull request and Require review from Code Owners.
+# Source SHA tests also run on a protected CI check; neither control alone
+# verifies what is installed on the MRCAO Adobe host.
+/src/mcp_adobe/xd.py @caotiensinh
+/src/mcp_adobe/photoshop.py @caotiensinh
+/src/mcp_adobe/illustrator.py @caotiensinh
+/src/mcp_adobe/illustrator_cep.py @caotiensinh
+/src/mcp_adobe/illustrator_upstream_trace.py @caotiensinh
+/src/mcp_adobe/server.py @caotiensinh
+/adobe-xd-plugin/ @caotiensinh
+/contracts/adobe_connection_goldens.json @caotiensinh
+/.github/workflows/adobe-connection-golden-contract.yml @caotiensinh

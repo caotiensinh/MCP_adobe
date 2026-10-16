@@ -1,0 +1,94 @@
+name: Panda Illustrator C014 installed CEP payload-v1 contract read-only audit
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-20261012-c014-installed-payload-contract-audit.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Inspect installed JSX source, CEP bundle and manifest without host calls or mutations
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'C014_CONTRACT_WRONG_DESKTOP'}
+          $panel=Join-Path $env:APPDATA 'Adobe\CEP\extensions\com.illustrator.mcp.panel'
+          $pinned=Join-Path $env:LOCALAPPDATA 'MCPAdobe\illustrator-mcp\source\cep-extension'
+          $root=Join-Path $env:RUNNER_TEMP 'panda_c014_contract_readonly'
+          New-Item -ItemType Directory -Path $root -Force|Out-Null
+          function Read-Source([string]$path,[string]$label) {
+            if(-not(Test-Path -LiteralPath $path -PathType Leaf)){
+              return @{label=$label;exists=$false}
+            }
+            $file=Get-Item -LiteralPath $path
+            $source=[IO.File]::ReadAllText($path)
+            $checks=@{}
+            foreach($marker in @('mcp_handle_request','mcp_payload_execute','mcp_payload_read','mcp_payload_release','payloadDescriptor','payloadError','transport.bindingPrelude','completion_ack')){
+              $checks[$marker]=$source.Contains($marker)
+            }
+            return @{label=$label;exists=$true;sha256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash;bytes=$file.Length;modified=$file.LastWriteTimeUtc.ToString('o');markers=$checks}
+          }
+          $files=@()
+          foreach($rel in @('jsx\host.jsx','CSXS\manifest.xml','dist\index.html','bootstrap\index.html')){
+            $files+=Read-Source -path (Join-Path $panel $rel) -label "installed/$rel"
+            $files+=Read-Source -path (Join-Path $pinned $rel) -label "pinned/$rel"
+          }
+          $jsDir=Join-Path $panel 'dist\assets'
+          $js=@()
+          if(Test-Path -LiteralPath $jsDir) {
+            foreach($f in @(Get-ChildItem -LiteralPath $jsDir -File -Filter '*.js' | Select-Object -First 12)){
+              $js+=Read-Source -path $f.FullName -label "installed/dist/assets/$($f.Name)"
+            }
+          }
+          $files+=$js
+          $a=@($files|Where-Object{$_.label -eq 'installed/jsx\host.jsx'})[0]
+          $b=@($files|Where-Object{$_.label -eq 'pinned/jsx\host.jsx'})[0]
+          $same=$a.exists -and $b.exists -and $a.sha256 -eq $b.sha256
+          $hostPayload=$a.exists -and $a.markers['mcp_payload_execute'] -and $a.markers['mcp_payload_read']
+          $compiledPayload=@($js|Where-Object{$_.markers['payloadDescriptor']}).Count -gt 0
+          $manifest=Join-Path $panel 'CSXS\manifest.xml'
+          $scripts=@()
+          if(Test-Path -LiteralPath $manifest){
+            $raw=[IO.File]::ReadAllText($manifest)
+            foreach($match in [regex]::Matches($raw,'<ScriptPath>([^<]+)</ScriptPath>')){
+              $scripts+=$match.Groups[1].Value
+            }
+          }
+          $cep=@(Get-Process -Name CEPHtmlEngine -ErrorAction SilentlyContinue)
+          $ai=@(Get-Process -Name Illustrator -ErrorAction SilentlyContinue)
+          $ws=@(Get-NetTCPConnection -LocalPort 8081 -State Established -ErrorAction SilentlyContinue)
+          $result=@{
+            job='job_625f841b04cb';operation='inspect_installed_runtime_files_only'
+            read_only=$true;host_requests=0;new_draws=0;fence_mutations=0
+            installed_host_matches_pinned=$same
+            installed_jsx_payload_functions_present=$hostPayload
+            compiled_panel_has_descriptor_branch=$compiledPayload
+            manifest_script_paths=$scripts
+            illustrator_process_count=$ai.Count
+            cep_process_count=$cep.Count
+            websocket_8081_established=$ws.Count
+            files=$files
+          }
+          $json=Join-Path $root 'panda_c014_installed_contract.json'
+          $result|ConvertTo-Json -Depth 10|Set-Content -LiteralPath $json -Encoding UTF8
+          Write-Host "C014_CONTRACT_READONLY=PASS host_matches_pinned=$same jsx_payload_functions=$hostPayload compiled_descriptor_branch=$compiledPayload manifest_script_paths=$($scripts -join ',') ai=$($ai.Count) cep=$($cep.Count) established=$($ws.Count)"
+          foreach($f in $files){
+            Write-Host "C014_CONTRACT_FILE label=$($f.label) exists=$($f.exists) sha256=$($f.sha256) bytes=$($f.bytes)"
+          }
+          if(-not $hostPayload){Write-Host 'C014_CONTRACT_WARNING=INSTALLED_HOST_PAYLOAD_HANDLER_MISSING'}
+          if(-not $compiledPayload){Write-Host 'C014_CONTRACT_WARNING=INSTALLED_PANEL_DESCRIPTOR_BRANCH_MISSING'}
+          Write-Host 'C014_CONTRACT_AUDIT_FINISHED_NO_HOST_MUTATION=PASS'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: panda-c014-cep-installed-contract-readonly
+          path: ${{ runner.temp }}/panda_c014_contract_readonly/panda_c014_installed_contract.json
+          if-no-files-found: warn
+          retention-days: 14

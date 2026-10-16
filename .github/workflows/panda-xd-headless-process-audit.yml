@@ -1,0 +1,70 @@
+name: PANDA XD inspect headless UWP process and recovery state
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/panda-xd-headless-process-audit.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read XD process thread state, UWP window ownership and recent app events
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'XD_HEADLESS_NOT_MRCAO'}
+          if([System.Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_HEADLESS_NOT_SESSION1'}
+          $xd=@(Get-Process -Name XD -ErrorAction SilentlyContinue)
+          Write-Host "XD_HEADLESS_PROCESS_COUNT=$($xd.Count)"
+          foreach($p in $xd){
+            $responding=$null
+            try{$responding=$p.Responding}catch{}
+            Write-Host "XD_HEADLESS_PROCESS pid=$($p.Id) session=$($p.SessionId) responding=$responding cpu=$($p.CPU) memory=$($p.WorkingSet64) handles=$($p.HandleCount) start=$($p.StartTime) window=$($p.MainWindowHandle) title=$($p.MainWindowTitle) threads=$($p.Threads.Count)"
+            $cim=Get-CimInstance Win32_Process -Filter "ProcessId=$($p.Id)" -ErrorAction SilentlyContinue
+            if($cim){Write-Host "XD_HEADLESS_IMAGE path=$($cim.ExecutablePath) parent=$($cim.ParentProcessId) commandLine=$($cim.CommandLine)"}
+            $reasons=@{}
+            foreach($th in $p.Threads){
+              try{$k=[string]$th.WaitReason}catch{$k='running_or_unknown'}
+              if(-not $reasons.ContainsKey($k)){$reasons[$k]=0}
+              $reasons[$k]++
+            }
+            foreach($k in $reasons.Keys){Write-Host "XD_HEADLESS_WAIT_REASON reason=$k count=$($reasons[$k])"}
+          }
+          foreach($name in @('PickerHost','ApplicationFrameHost')){
+            foreach($p in @(Get-Process -Name $name -ErrorAction SilentlyContinue)){
+              Write-Host "XD_HEADLESS_RELATED_PROCESS name=$name pid=$($p.Id) session=$($p.SessionId) window=$($p.MainWindowHandle) title=$($p.MainWindowTitle)"
+            }
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,
+                                [System.Windows.Automation.Condition]::TrueCondition)
+          foreach($element in $top){
+            $title=[string]$element.Current.Name
+            $ownerPid=[int]$element.Current.ProcessId
+            if($title -match 'Adobe XD|Untitled|Save As' -or
+              (@($xd | Select-Object -ExpandProperty Id) -contains $ownerPid)){
+              Write-Host "XD_HEADLESS_TOP_WINDOW name=$title pid=$ownerPid class=$($element.Current.ClassName)"
+            }
+          }
+          foreach($logName in @('Microsoft-Windows-AppModel-Runtime/Admin','Microsoft-Windows-TWinUI/Operational')){
+            try{
+              $found=@(Get-WinEvent -FilterHashtable @{LogName=$logName;StartTime=(Get-Date).AddHours(-1)} -MaxEvents 200 -ErrorAction Stop |
+                Where-Object {$_.Message -match 'Adobe.XD|PickerHost|pc75e8sa7ep4e'})
+              Write-Host "XD_HEADLESS_EVENTS log=$logName count=$($found.Count)"
+              foreach($e in @($found | Select-Object -First 10)){
+                $msg=([string]$e.Message) -replace '[\r\n]+',' '
+                Write-Host "XD_HEADLESS_EVENT id=$($e.Id) time=$($e.TimeCreated.ToString('o')) text=$($msg.Substring(0,[Math]::Min($msg.Length,750)))"
+              }
+            }catch{Write-Host "XD_HEADLESS_EVENT_LOG_UNAVAILABLE name=$logName"}
+          }
+          Write-Host 'XD_HEADLESS_READ_ONLY_AUDIT=PASS'

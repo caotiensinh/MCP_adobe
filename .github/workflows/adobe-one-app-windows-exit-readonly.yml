@@ -1,0 +1,69 @@
+name: Adobe lost application process Windows crash and runner ownership read-only
+# 2026-10-13 read-only process diagnostics after PS health timeout run 38413368042.
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/adobe-one-app-windows-exit-readonly.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect_exit:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - name: Read process crash events and runner timestamps, no host changes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'ADOBE_EXIT_WRONG_HOST_OR_SESSION'}
+          foreach($app in @('Illustrator','XD','Photoshop')){
+            $p=@(Get-Process -Name $app -ErrorAction SilentlyContinue)
+            Write-Host "ADOBE_EXIT_PROCESS app=$app count=$($p.Count)"
+            foreach($q in $p){
+              Write-Host "ADOBE_EXIT_OWNERSHIP app=$app pid=$($q.Id) session=$($q.SessionId) startUTC=$($q.StartTime.ToUniversalTime().ToString('o')) hwnd=$($q.MainWindowHandle)"
+            }
+          }
+          $since=(Get-Date).AddHours(-5)
+          $events=@()
+          try {
+            $events=@(Get-WinEvent -FilterHashtable @{
+              LogName='Application';StartTime=$since;Id=@(1000,1001,1002,1026)
+            } -MaxEvents 250 -ErrorAction Stop)
+          }catch{
+            Write-Host "ADOBE_EXIT_EVENTLOG_STATUS=UNAVAILABLE_OR_EMPTY; type=$($_.Exception.GetType().Name)"
+          }
+          $matched=0
+          foreach($item in $events){
+            $msg=[string]$item.Message
+            if($msg -notmatch '(?i)Illustrator\.exe|Photoshop\.exe|XD\.exe|Adobe Illustrator|Adobe XD'){continue}
+            $matched++
+            $appType=if($msg -match '(?i)Illustrator'){ 'illustrator' }
+                     elseif($msg -match '(?i)Photoshop'){ 'photoshop' }
+                     else {'xd'}
+            Write-Host "ADOBE_EXIT_APP_EVENT utc=$($item.TimeCreated.ToUniversalTime().ToString('o')) id=$($item.Id) provider=$($item.ProviderName) application=$appType"
+            if($matched -ge 20){break}
+          }
+          Write-Host "ADOBE_EXIT_APP_EVENT_COUNT=$matched"
+          $runnerRoot='D:\actions-runner-adobe'
+          $diag=Join-Path $runnerRoot '_diag'
+          if(Test-Path -LiteralPath $diag -PathType Container){
+            $logs=@(Get-ChildItem -LiteralPath $diag -Filter 'Runner_*.log' -File -ErrorAction SilentlyContinue |
+               Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 3)
+            foreach($item in $logs){
+              Write-Host "ADOBE_EXIT_RUNNER_DIAG name=$($item.Name) utc=$($item.LastWriteTimeUtc.ToString('o')) bytes=$($item.Length)"
+            }
+          }
+          $runner=@(Get-Process -Name 'Runner.Listener','Runner.Worker' -ErrorAction SilentlyContinue)
+          foreach($p in $runner){
+            Write-Host "ADOBE_EXIT_RUNNER_PROCESS name=$($p.ProcessName) pid=$($p.Id) session=$($p.SessionId)"
+          }
+          foreach($port in @(8787,8765,8081)){
+            $l=@(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue)
+            $est=@(Get-NetTCPConnection -State Established -LocalPort $port -ErrorAction SilentlyContinue)
+            Write-Host "ADOBE_EXIT_BRIDGE port=$port listen=$($l.Count) established=$($est.Count)"
+          }
+          Write-Host 'ADOBE_EXIT_DIAG_READONLY_COMPLETE=PASS'

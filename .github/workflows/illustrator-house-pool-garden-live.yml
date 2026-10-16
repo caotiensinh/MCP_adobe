@@ -1,0 +1,161 @@
+name: Illustrator live house pool and garden 8 to 14
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: illustrator-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  draw:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add six garden and pool objects to verified 8-object house, save each stroke
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO'){throw 'WRONG_HOST'}
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          uv sync --python 3.12
+          if($LASTEXITCODE -ne 0){throw 'DEPENDENCIES_FAILED'}
+          @'
+          import asyncio,hashlib,json,os,shutil,time
+          from pathlib import Path
+          from mcp import Client
+
+          DOC="Two_Story_Red_Tile_House.ai"
+          HOME=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"
+          AI=HOME/DOC
+          # Stay clear of the 175..715 house footprint; garden along the baseline,
+          # pool in the right-hand margin (x >= 720).
+          def rect(name,x,y,w,h,rgb):
+              return name,{"name":name,"x":x,"y":y,"width":w,"height":h,
+                           "fill":{"r":rgb[0],"g":rgb[1],"b":rgb[2]}}
+          STEPS=[
+              rect("09 Garden Lawn",25,621,860,25,(98,163,88)),
+              rect("10 Pool Stone Deck",720,446,168,121,(204,195,174)),
+              rect("11 Pool White Coping",726,452,156,109,(234,235,224)),
+              rect("12 Pool Turquoise Water",734,459,140,95,(56,177,221)),
+              rect("13 Pool Light Reflection",752,483,96,13,(170,229,245)),
+              rect("14 Garden Front Walkway",433,619,55,27,(180,160,139)),
+          ]
+          def expect(result,label):
+              p=result.structured_content
+              if result.is_error or not isinstance(p,dict) or p.get("ok") is not True:
+                  raise RuntimeError("OUTCOME_UNVERIFIED_"+label+"_DO_NOT_REPLAY")
+              data=p.get("result") or {}
+              if data.get("execution") in ("unknown","failed"):
+                  raise RuntimeError("OUTCOME_UNKNOWN_"+label+"_DO_NOT_REPLAY")
+              return p
+          async def call(c,tool,cap,args):
+              return expect(await c.call_tool(tool,{"application":"illustrator","capability":cap,"arguments":args}),cap)
+          async def idle(c):
+              p=await call(c,"creative_read","creative.health",{"probe":False,"timeout":5})
+              s=p["result"]["connection"]["data"]
+              e=s.get("execution") or {}
+              panel=(s.get("layers") or {}).get("panel") or {}
+              if (e.get("unresolvedJobs") or e.get("activeJob") is not None
+                  or e.get("waiting")!=0 or s.get("blocking")
+                  or panel.get("status")!="ok" or panel.get("busy") is not False
+                  or panel.get("activeRequestId") is not None or panel.get("heartbeatStale") is True):
+                  raise RuntimeError("HOST_NOT_IDLE_NO_MUTATION")
+              return s
+          async def readback(c):
+              p=await call(c,"creative_read","creative.document.info",{})
+              r=p.get("result") or {}
+              if r.get("execution")!="succeeded":raise RuntimeError("DOCUMENT_INFO_UNPROVEN")
+              data=r.get("data") or {}
+              document=data.get("document") or {}
+              layers=data.get("layers") or []
+              count=sum(int(layer.get("itemCount",0)) for layer in layers)
+              # API lists only a subset of items even if count is higher.
+              visible=[it.get("name") for layer in layers for it in (layer.get("items") or [])]
+              return document,count,visible
+          async def main():
+              if not AI.is_file() or AI.stat().st_size<1024:
+                  raise RuntimeError("SAVED_HOUSE_FILE_MISSING")
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  await idle(c)
+                  doc,count,names=await readback(c)
+                  print("POOL_GARDEN_PREFLIGHT="+json.dumps({
+                      "doc":doc.get("name"),"width":doc.get("width"),
+                      "height":doc.get("height"),"count":count,
+                      "savedFlag":doc.get("saved"),"listedNames":names},default=str),flush=True)
+                  # Earlier workflow failed due to savedFlag=false despite
+                  # a nonempty .ai file and successful per-stroke disk writes.
+                  if doc.get("name")!=DOC or doc.get("width")!=900 or doc.get("height")!=650 or count!=8:
+                      raise RuntimeError("HOUSE_EXPECTED_8_OBJECTS_NO_MUTATION")
+                  if "08 Second Floor Right Blue Glass" not in names:
+                      raise RuntimeError("HOUSE_LAST_KNOWN_STROKE_MISSING")
+                  backup=HOME/("Two_Story_Red_Tile_House_before_pool_"+time.strftime("%Y%m%d_%H%M%S")+".ai")
+                  shutil.copy2(AI,backup)
+                  assert backup.is_file() and hashlib.sha256(backup.read_bytes()).digest()==hashlib.sha256(AI.read_bytes()).digest()
+                  print("POOL_GARDEN_BACKUP=PASS bytes="+str(backup.stat().st_size),flush=True)
+                  for index,(name,args) in enumerate(STEPS,1):
+                      await idle(c)
+                      print("POOL_GARDEN_STROKE_BEGIN="+json.dumps({"step":index,"name":name,"before":count}),flush=True)
+                      w=await call(c,"creative_write","creative.shape.rectangle",args)
+                      if (w.get("result") or {}).get("execution")!="succeeded":
+                          raise RuntimeError("STROKE_NOT_PROVEN_"+name+"_NO_REPLAY")
+                      doc,new_count,visible=await readback(c)
+                      print("POOL_GARDEN_STROKE_READBACK="+json.dumps({
+                          "step":index,"name":name,"count":new_count,"nameFound":name in visible},default=str),flush=True)
+                      if doc.get("name")!=DOC or new_count!=count+1 or name not in visible:
+                          raise RuntimeError("STROKE_READBACK_MISMATCH_"+name+"_NO_REPLAY")
+                      count=new_count
+                      await idle(c)
+                      save=await call(c,"creative_write","creative.document.save",{})
+                      if (save.get("result") or {}).get("execution")!="succeeded":
+                          raise RuntimeError("SAVE_RESULT_UNKNOWN_"+name+"_NO_REPLAY")
+                      if not AI.is_file() or AI.stat().st_size<1024:
+                          raise RuntimeError("CHECKPOINT_FILE_NOT_FOUND")
+                      print("POOL_GARDEN_STROKE_SAVED="+json.dumps({
+                          "step":index,"count":count,"bytes":AI.stat().st_size,
+                          "sha256":hashlib.sha256(AI.read_bytes()).hexdigest()},default=str),flush=True)
+                      await asyncio.sleep(0.8)
+                  if count!=14:raise RuntimeError("EXPECTED_14_GOT_"+str(count))
+                  print("POOL_GARDEN_14_OBJECTS=PASS",flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath garden_pool_live.py -Encoding UTF8
+          uv run python garden_pool_live.py
+          if($LASTEXITCODE -ne 0){throw 'POOL_GARDEN_LIVE_ACCEPTANCE_FAILED'}
+      - name: Export verified Illustrator artboard directly, not desktop screenshot
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object {$_}) -join ';'
+          @'
+          import asyncio,json,os,shutil,hashlib,time
+          from pathlib import Path
+          from mcp import Client
+          folder=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"
+          out=folder/("Two_Story_Red_Tile_House_pool_garden_"+time.strftime("%Y%m%d_%H%M%S")+".png")
+          async def main():
+              async with Client("http://127.0.0.1:8787/mcp") as c:
+                  r=await c.call_tool("creative_read",{"application":"illustrator","capability":"creative.document.info","arguments":{}})
+                  if r.is_error or not isinstance(r.structured_content,dict) or not r.structured_content.get("ok"):
+                      raise RuntimeError("EXPORT_READBACK_FAILED")
+                  d=r.structured_content["result"]["data"]
+                  count=sum(int(x.get("itemCount",0)) for x in d.get("layers",[]))
+                  print("POOL_GARDEN_EXPORT_PREFLIGHT="+str(count),flush=True)
+                  if d.get("document",{}).get("name")!="Two_Story_Red_Tile_House.ai" or count!=14:
+                      raise RuntimeError("EXPORT_WRONG_DOCUMENT_OR_COUNT")
+                  x=await c.call_tool("creative_write",{"application":"illustrator","capability":"creative.document.export","arguments":{"output_path":str(out),"format":"png","overwrite":False,"scale":1}})
+                  if x.is_error or not isinstance(x.structured_content,dict) or not x.structured_content.get("ok") or (x.structured_content.get("result") or {}).get("execution")!="succeeded":
+                      raise RuntimeError("EXPORT_UNVERIFIED_NO_RETRY")
+                  if not out.is_file() or out.stat().st_size<1000:raise RuntimeError("EXPORT_IMAGE_MISSING")
+                  shutil.copyfile(out,Path.cwd()/"house_pool_garden_actual.png")
+                  print("POOL_GARDEN_REAL_ARTBOARD_PNG=PASS bytes="+str(out.stat().st_size)+" sha256="+hashlib.sha256(out.read_bytes()).hexdigest(),flush=True)
+          asyncio.run(main())
+          '@ | Set-Content -LiteralPath export_garden_pool.py -Encoding UTF8
+          uv run python export_garden_pool.py
+          if($LASTEXITCODE -ne 0){throw 'POOL_GARDEN_EXPORT_FAILED'}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: illustrator-pool-garden-real-artboard
+          path: house_pool_garden_actual.png
+          if-no-files-found: ignore
+          retention-days: 14

@@ -1,0 +1,30 @@
+name: Illustrator desktop CEP read-only diagnostic
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths:
+      - ".github/workflows/illustrator-desktop-diagnostic.yml"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  desktop:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Inspect running Illustrator and CEP without launching or changing document
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          $session=[System.Diagnostics.Process]::GetCurrentProcess().SessionId
+          Write-Host "ILLUSTRATOR_RUNNER_SESSION=$session"
+          Write-Host "ILLUSTRATOR_INTERACTIVE=$([Environment]::UserInteractive)"
+          $apps=@(Get-CimInstance Win32_Process -Filter "Name='Illustrator.exe'" -ErrorAction SilentlyContinue)
+          foreach($app in $apps){ Write-Host "ILLUSTRATOR_PROCESS pid=$($app.ProcessId) session=$($app.SessionId) parent=$($app.ParentProcessId)" }
+          $inSession=@($apps | Where-Object {$_.SessionId -eq $session})
+          Write-Host "ILLUSTRATOR_PROCESS_IN_SESSION=$($inSession.Count)"
+          $ws=@(Get-NetTCPConnection -State Established -LocalPort 8081 -ErrorAction SilentlyContinue)
+          Write-Host "ILLUSTRATOR_CEP_ESTABLISHED=$($ws.Count)"
+          if($inSession.Count -eq 0){throw 'Illustrator process not present in runner desktop session'}
+          if($ws.Count -eq 0){throw 'Illustrator process exists but CEP socket 8081 not established'}
+          Write-Host 'ILLUSTRATOR_PROCESS_AND_CEP=PASS'

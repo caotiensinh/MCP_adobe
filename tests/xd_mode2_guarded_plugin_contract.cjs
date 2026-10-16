@@ -1,0 +1,18 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const js = fs.readFileSync("experimental/mode2-xd-uxp/main.js", "utf8");
+assert.match(js, /function mode2InspectSelectedNode\(params\)/);
+assert.match(js, /MODE2_DOCUMENT_ID_MISMATCH/);
+assert.match(js, /MODE2_SELECTION_NOT_UNIQUE/);
+assert.match(js, /MODE2_NODE_ID_MISMATCH/);
+assert.match(js, /MODE2_NODE_BOUNDS_CHANGED/);
+assert.match(js, /MODE2_NODE_NOT_EDITABLE/);
+assert.match(js, /method === "xd.mode2.node.inspect"/);
+assert.match(js, /method === "xd.queue.mode2_fill"/);
+assert.match(js, /params\.isolated_test_copy !== true/);
+assert.match(js, /params\.user_confirmed !== true/);
+assert.match(js, /target\.fill=new Color\(params\.fill\)/);
+assert.match(js, /function applyPending\(\)/);
+assert.match(js, /application\.editDocument\(/);
+assert.match(js, /approval_required: true/);
+console.log("MODE2_XD_GUARDED_PLUGIN_CONTRACT_PASS");

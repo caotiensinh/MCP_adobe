@@ -1,0 +1,101 @@
+name: Panda red XD after blocked BM_CLICK runtime reconcile read only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: [".github/workflows/panda-red-xd-after-bmclick-timeout-inspect.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Inspect PickerHost, filename, Save button, windows and file after cancelled job
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'XD_POST_TIMEOUT_WRONG_DESKTOP'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          Add-Type @'
+          using System;using System.Runtime.InteropServices;using System.Text;
+          public class XdPostTimeout {
+            public delegate bool EnumProc(IntPtr h,IntPtr arg);
+            [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb,IntPtr arg);
+            [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint pid);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h,StringBuilder s,int max);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+            [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr SendMessage(IntPtr h,uint m,IntPtr w,StringBuilder b);
+            [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
+          }
+          '@
+          $dir=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $original=Join-Path $dir 'MCP_Mode1_Panda_XD_38136531800.xd'
+          $target=Join-Path $dir 'MCP_KFP4_Red_XD_38205166138.xd'
+          $sha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          if((Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash -ne $sha){throw 'XD_POST_TIMEOUT_ORIGINAL_SHA_CHANGED'}
+          $targetPresent=Test-Path -LiteralPath $target -PathType Leaf
+          Write-Host "XD_POST_TIMEOUT_TARGET_EXISTS=$targetPresent"
+          if($targetPresent){Write-Host "XD_POST_TIMEOUT_TARGET_SHA=$((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash)"}
+          $desktop=[System.Windows.Automation.AutomationElement]::RootElement
+          $top=$desktop.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          foreach($w in $top){
+            $title=[string]$w.Current.Name
+            if($title -match 'Adobe XD|Save As|Save a File'){Write-Host "XD_POST_TIMEOUT_WINDOW title=$title class=$($w.Current.ClassName) pid=$($w.Current.ProcessId)"}
+          }
+          $pickers=@(Get-Process -Name PickerHost -ErrorAction SilentlyContinue|Where-Object{$_.SessionId -eq 1})
+          Write-Host "XD_POST_TIMEOUT_PICKERS=$($pickers.Count)"
+          if($pickers.Count -eq 1){
+            $owner=[uint32]$pickers[0].Id
+            $list=New-Object System.Collections.Generic.List[System.IntPtr]
+            $cb=[XdPostTimeout+EnumProc]{
+              param([IntPtr]$handle,[IntPtr]$arg)
+              $p=[uint32]0
+              [void][XdPostTimeout]::GetWindowThreadProcessId($handle,[ref]$p)
+              $b=New-Object System.Text.StringBuilder(100)
+              [void][XdPostTimeout]::GetClassName($handle,$b,100)
+              if($p -eq $owner -and $b.ToString() -eq '#32770' -and [XdPostTimeout]::IsWindowVisible($handle)){$list.Add($handle)}
+              return $true
+            }
+            [void][XdPostTimeout]::EnumWindows($cb,[IntPtr]::Zero)
+            Write-Host "XD_POST_TIMEOUT_DIALOGS=$($list.Count)"
+            foreach($dialogHandle in $list){
+              $item=[System.Windows.Automation.AutomationElement]::FromHandle($dialogHandle)
+              Write-Host "XD_POST_TIMEOUT_DIALOG hwnd=$dialogHandle title=$($item.Current.Name) class=$($item.Current.ClassName) pid=$($item.Current.ProcessId)"
+              $allNodes=$item.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+              Write-Host "XD_POST_TIMEOUT_DIALOG_ELEMENTS hwnd=$dialogHandle count=$($allNodes.Count)"
+              $shown=0
+              foreach($element in $allNodes){
+                $label=[string]$element.Current.Name
+                $ident=[string]$element.Current.AutomationId
+                $type=[string]$element.Current.ControlType.ProgrammaticName
+                if($label -match 'Save|Cancel|Confirm|Replace|Already|exists|Yes|No|Untitled|File name|Error|Retry|OK' -or $ident -match '^1$|^2$|1001|FileName'){
+                  Write-Host "XD_POST_TIMEOUT_DIALOG_CONTROL dialog=$dialogHandle type=$type name=$($label.Substring(0,[Math]::Min(120,$label.Length))) id=$ident enabled=$($element.Current.IsEnabled)"
+                  $shown++
+                }
+                if($shown -ge 45){break}
+              }
+            }
+
+            if($list.Count -eq 1){
+              $dialog=[System.Windows.Automation.AutomationElement]::FromHandle($list[0])
+              $all=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+              $edits=@($all|Where-Object{[string]$_.Current.AutomationId -eq '1001' -and [string]$_.Current.ClassName -eq 'Edit'})
+              $buttons=@($all|Where-Object{[string]$_.Current.AutomationId -eq '1' -and [string]$_.Current.Name -eq 'Save'})
+              Write-Host "XD_POST_TIMEOUT_CONTROL_COUNTS edit=$($edits.Count) button=$($buttons.Count)"
+              if($edits.Count -eq 1){
+                $hwnd=[IntPtr]$edits[0].Current.NativeWindowHandle
+                $len=[XdPostTimeout]::SendMessage($hwnd,[uint32]14,[IntPtr]::Zero,[IntPtr]::Zero).ToInt64()
+                $b=New-Object System.Text.StringBuilder(4096)
+                $copied=[XdPostTimeout]::SendMessage($hwnd,[uint32]13,[IntPtr]4096,$b).ToInt64()
+                Write-Host "XD_POST_TIMEOUT_FILENAME length=$len copied=$copied targetMatch=$($b.ToString() -eq $target)"
+              }
+              if($buttons.Count -eq 1){Write-Host "XD_POST_TIMEOUT_SAVE_ENABLED=$($buttons[0].Current.IsEnabled) saveHwnd=$($buttons[0].Current.NativeWindowHandle)"}
+            }
+          }
+          if((Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash -ne $sha){throw 'XD_POST_TIMEOUT_ORIGINAL_CHANGED_AFTER_AUDIT'}
+          Write-Host 'XD_POST_TIMEOUT_READONLY=PASS'

@@ -1,0 +1,138 @@
+name: Mode 2 XD experimental Fill inspector upgrade staging only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-experimental-fill-inspector-stage-once.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  stage:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Transactional replacement of experimental UXP main.js only, without XD reload
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if ($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1) {
+            throw 'MODE2_WRONG_DESKTOP'
+          }
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $base='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          $disposableSha='1E15162107A64E3D7D4CAF8C12B88FE24B64488DA9788854E6D300DDBAE88C2F'
+          $protected=@('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd')
+          foreach($rel in $protected) {
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $base) {
+              throw "MODE2_PROTECTED_FILE_CHANGED $rel"
+            }
+          }
+          $disposable=Join-Path $root 'mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd'
+          if((Get-FileHash -LiteralPath $disposable -Algorithm SHA256).Hash -ne $disposableSha) {
+            throw 'MODE2_DISPOSABLE_NOT_SAVED_RECTANGLE_BASELINE'
+          }
+          $receipt=Get-Content -LiteralPath (Join-Path $root 'mode2-disposable-native\mode2_fill_rect_guid_receipt.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+          if($receipt.state -ne 'applied' -or
+             $receipt.document_id -ne '98d6635b-3767-4254-b200-ec8442b69ad2' -or
+             $receipt.node_id -ne '9989e92f-7c9b-4721-9cdc-b5b5ea33cdf2') {
+             throw 'MODE2_RECEIPT_NOT_ATTESTED'
+          }
+          if(@(Get-Process -Name Illustrator,Photoshop,PickerHost -ErrorAction SilentlyContinue).Count -gt 0) {
+            throw 'MODE2_OTHER_ADOBE_APP_RUNNING'
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $tops=[System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+            [System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $xd=@($tops | Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $test=@($xd | Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          if($xd.Count -ne 1 -or $test.Count -ne 1) {throw 'MODE2_NOT_SOLE_DISPOSABLE_WINDOW'}
+          if(@(Get-NetTCPConnection -LocalPort 8766 -State Established -ErrorAction SilentlyContinue).Count -gt 0) {
+            throw 'MODE2_EXPERIMENTAL_BRIDGE_ACTIVE_NOT_SAFE_TO_STAGE'
+          }
+          $develop=Join-Path $env:LOCALAPPDATA 'Packages\Adobe.XD_pc75e8sa7ep4e\LocalState\develop'
+          $directory=Join-Path $develop 'MCPAdobeMode2Experiment'
+          $dest=Join-Path $directory 'main.js'
+          $manifest=Join-Path $directory 'manifest.json'
+          $src='experimental/mode2-xd-uxp/main.js'
+          $sourceManifest='experimental/mode2-xd-uxp/manifest.json'
+          $production=Join-Path $develop 'MCPAdobeBridge\main.js'
+          $git=(Get-Command git -ErrorAction Stop).Source
+          function GitBlob([string]$p) {
+            $result=(& $git hash-object -- $p).Trim()
+            if($LASTEXITCODE -ne 0) {throw 'MODE2_GIT_HASH_FAILURE'}
+            return $result
+          }
+          if(!(Test-Path -LiteralPath $production -PathType Leaf)) {throw 'MODE2_PRODUCTION_PLUGIN_NOT_PRESENT'}
+          $productionBefore=GitBlob $production
+          $manifestBefore=GitBlob $manifest
+          if($manifestBefore -ne (GitBlob $sourceManifest)) {throw 'MODE2_EXPERIMENTAL_MANIFEST_MISMATCH'}
+          $m=Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json
+          if($m.id -ne 'MCPADM2E') {throw 'MODE2_WRONG_PLUGIN_ID'}
+          $old='d72c5f595fb5637387b0f918dc1e9c136d7d868c'
+          $new='d47edb15284ff4653da919513815fe4f9d846a70'
+          if((GitBlob $src) -ne $new) {throw 'MODE2_CHECKOUT_SOURCE_UNEXPECTED'}
+          $installed=GitBlob $dest
+          if($installed -eq $new) {
+            Write-Host 'MODE2_FILL_INSPECTOR_ALREADY_STAGED=PASS'
+          } else {
+            if($installed -ne $old) {throw "MODE2_UNKNOWN_INSTALLED_PLUGIN_BLOB=$installed"}
+            $backupRoot=Join-Path $root 'mode2-disposable-native\experimental-uxp-backups'
+            if(!(Test-Path -LiteralPath $backupRoot)) {
+              New-Item -ItemType Directory -Path $backupRoot -ErrorAction Stop|Out-Null
+            }
+            $backup=Join-Path $backupRoot ("main-"+$old+".js")
+            if(Test-Path -LiteralPath $backup) {
+              if((GitBlob $backup) -ne $old) {throw 'MODE2_BACKUP_COLLISION'}
+            } else {
+              Copy-Item -LiteralPath $dest -Destination $backup -ErrorAction Stop
+              if((GitBlob $backup) -ne $old) {throw 'MODE2_BACKUP_VERIFICATION_FAILED'}
+            }
+            Write-Host "MODE2_EXPERIMENTAL_ROLLBACK_COPY=$backup"
+            $temp=Join-Path $directory ('.main.stage.'+$PID+'.js')
+            $previous=Join-Path $directory ('.main.previous.'+$PID+'.js')
+            if((Test-Path -LiteralPath $temp) -or (Test-Path -LiteralPath $previous)) {
+              throw 'MODE2_TEMPORARY_PATH_COLLISION'
+            }
+            try {
+              Copy-Item -LiteralPath $src -Destination $temp -ErrorAction Stop
+              if((GitBlob $temp) -ne $new) {throw 'MODE2_STAGE_COPY_MISMATCH'}
+              Move-Item -LiteralPath $dest -Destination $previous -ErrorAction Stop
+              try {
+                Move-Item -LiteralPath $temp -Destination $dest -ErrorAction Stop
+                if((GitBlob $dest) -ne $new) {throw 'MODE2_AFTER_REPLACE_BLOB_MISMATCH'}
+              } catch {
+                if(Test-Path -LiteralPath $dest) {Remove-Item -LiteralPath $dest -Force}
+                Move-Item -LiteralPath $previous -Destination $dest -ErrorAction Stop
+                throw
+              }
+              if((GitBlob $previous) -ne $old) {throw 'MODE2_OLD_VERSION_RECOVERY_BLOB_MISMATCH'}
+              Remove-Item -LiteralPath $previous -Force -ErrorAction Stop
+            } finally {
+              if(Test-Path -LiteralPath $temp) {Remove-Item -LiteralPath $temp -Force}
+            }
+            Write-Host 'MODE2_EXPERIMENTAL_ONLY_STAGED_NEW_FILL_INSPECTOR=PASS'
+          }
+          if((GitBlob $dest) -ne $new -or (GitBlob $manifest) -ne $manifestBefore) {
+            throw 'MODE2_EXPERIMENTAL_STAGE_POSTCHECK_FAILED'
+          }
+          if((GitBlob $production) -ne $productionBefore) {
+            throw 'MODE2_PRODUCTION_PLUGIN_CHANGED'
+          }
+          foreach($rel in $protected) {
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $base) {
+              throw 'MODE2_PROTECTED_CHANGED_BY_STAGING'
+            }
+          }
+          if((Get-FileHash -LiteralPath $disposable -Algorithm SHA256).Hash -ne $disposableSha) {
+            throw 'MODE2_DISPOSABLE_CHANGED_BY_STAGING'
+          }
+          Write-Host "MODE2_NEW_UXP_BLOB=$new"
+          Write-Host 'MODE2_PRODUCTION_PLUGIN_PRESERVED=PASS'
+          Write-Host 'MODE2_NATIVE_PANDA_AND_DISPOSABLE_SHA_PRESERVED=PASS'
+          Write-Host 'MODE2_XD_RELOAD_PERFORMED=False'
+          Write-Host 'MODE2_ADOBE_DOCUMENT_MUTATION_PERFORMED=False'
