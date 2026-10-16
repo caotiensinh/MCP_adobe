@@ -1,0 +1,78 @@
+name: Mode 2 XD UXP active-source and plugin registration audit read-only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-uxp-loaded-source-readonly-audit.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enumerate actual XD plugin registrations, hashes and host process read-only
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){
+            throw 'MODE2_WRONG_HOST'
+          }
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $base='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          $saved='1E15162107A64E3D7D4CAF8C12B88FE24B64488DA9788854E6D300DDBAE88C2F'
+          foreach($rel in @('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd')){
+            if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $base){throw 'MODE2_SOURCE_CHANGED'}
+          }
+          if((Get-FileHash -LiteralPath (Join-Path $root 'mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd') -Algorithm SHA256).Hash -ne $saved){
+            throw 'MODE2_DISPOSABLE_NATIVE_CHANGED'
+          }
+          $git=(Get-Command git -ErrorAction Stop).Source
+          $packages=Join-Path $env:LOCALAPPDATA 'Packages'
+          $registry=@()
+          $locations=@(Get-ChildItem -LiteralPath $packages -Directory |
+            Where-Object {$_.Name -match '^Adobe\.(CC\.)?XD_'})
+          foreach($pkg in $locations){
+            $develop=Join-Path $pkg.FullName 'LocalState\develop'
+            if(!(Test-Path -LiteralPath $develop -PathType Container)){continue}
+            $dirs=@(Get-ChildItem -LiteralPath $develop -Directory -ErrorAction Stop)
+            foreach($dir in $dirs){
+              $manifest=Join-Path $dir.FullName 'manifest.json'
+              $main=Join-Path $dir.FullName 'main.js'
+              if(!(Test-Path -LiteralPath $manifest -PathType Leaf) -or
+                 !(Test-Path -LiteralPath $main -PathType Leaf)){continue}
+              try{$m=Get-Content -LiteralPath $manifest -Raw -Encoding UTF8 | ConvertFrom-Json}catch{continue}
+              if($m.id -eq 'MCPADM2E'){
+                $blob=(& $git hash-object -- $main).Trim()
+                $entry=[pscustomobject]@{path=$dir.FullName;blob=$blob;size=(Get-Item $main).Length;modified=(Get-Item $main).LastWriteTimeUtc.ToString('o')}
+                $registry+=,$entry
+                Write-Host "MODE2_REGISTERED_EXPERIMENT_PATH=$($entry.path)"
+                Write-Host "MODE2_REGISTERED_EXPERIMENT_BLOB=$($entry.blob)"
+                Write-Host "MODE2_REGISTERED_EXPERIMENT_MODIFIED=$($entry.modified)"
+              }
+            }
+          }
+          Write-Host "MODE2_EXPERIMENT_REGISTRATION_COUNT=$($registry.Count)"
+          if($registry.Count -ne 1){throw 'MODE2_UXP_REGISTRATION_MISSING_OR_DUPLICATE'}
+          if($registry[0].blob -ne 'd47edb15284ff4653da919513815fe4f9d846a70'){throw 'MODE2_REGISTERED_UXP_STILL_OLD'}
+          $procs=@(Get-CimInstance Win32_Process | Where-Object {
+            $_.Name -match 'XD|Adobe|UXP' -and $_.Name -notmatch 'AdobeIPCBroker|AdobeUpdate|AdobeNotification'
+          })
+          foreach($p in $procs | Select-Object -First 20){
+            Write-Host "MODE2_PROCESS_NAME=$($p.Name) PID=$($p.ProcessId) SESSION=$($p.SessionId) STARTED=$($p.CreationDate)"
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $wins=[System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+            [System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $xd=@($wins|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          Write-Host "MODE2_CURRENT_XD_WINDOW_COUNT=$($xd.Count) TEST_COUNT=$($test.Count)"
+          if($xd.Count -ne 1 -or $test.Count -ne 1){throw 'MODE2_ACTIVE_WINDOW_UNVERIFIED'}
+          Write-Host 'MODE2_DISK_UXP_UPDATED_BUT_LIVE_METHOD_MISSING=CONFIRMED_BY_RUN_38913999712'
+          Write-Host 'MODE2_NEXT_GATE=INVESTIGATE_LEGACY_UXP_RELOAD_CACHE_OR_SAFE_COLD_REOPEN'
+          Write-Host 'MODE2_AUDIT_NO_DOCUMENT_MUTATION_OR_RELOAD=PASS'
