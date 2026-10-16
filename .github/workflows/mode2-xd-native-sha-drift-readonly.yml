@@ -1,0 +1,64 @@
+name: Mode 2 XD native SHA drift diagnostics READ ONLY
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-native-sha-drift-readonly.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Inspect three protected XD native hashes and current desktop session WITHOUT writing
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_SHA_WRONG_HOST'}
+          $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
+          $expected='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
+          $files=@(
+            @{name='ORIGINAL'; rel='MCP_Mode1_Panda_XD_38136531800.xd'},
+            @{name='PANDA_COPY'; rel='mode2-isolated\Panda_Mode2_Editable_Experiment.xd'},
+            @{name='DISPOSABLE'; rel='mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd'}
+          )
+          $drift=@()
+          foreach($item in $files){
+            $path=Join-Path $root $item.rel
+            if(!(Test-Path -LiteralPath $path -PathType Leaf)){
+              Write-Host "MODE2_SHA_FILE=$($item.name) MISSING=True"
+              $drift+= $item.name
+              continue
+            }
+            $hash=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
+            $f=Get-Item -LiteralPath $path
+            $match=$hash -eq $expected
+            Write-Host "MODE2_SHA_FILE=$($item.name) MATCH_BASELINE=$match SHA256=$hash BYTES=$($f.Length) MODIFIED_UTC=$($f.LastWriteTimeUtc.ToString('o'))"
+            if(!$match){$drift+=$item.name}
+          }
+          $dirname=Join-Path $root 'mode2-disposable-native'
+          foreach($mark in @('mode2_fill_rect_guid_receipt.json','Mode2_Consume_Expired_StagedRect_TicketOnce.marker','Mode2_NewRect_StagedSelection_Invoked_Once.marker','Mode2_StagedGUIDSelectionV2_ReloadOnce.marker')){
+            $p=Join-Path $dirname $mark
+            Write-Host "MODE2_SHA_RECEIPT_OR_MARKER=$mark EXISTS=$(Test-Path -LiteralPath $p -PathType Leaf)"
+            if($mark -eq 'mode2_fill_rect_guid_receipt.json' -and (Test-Path -LiteralPath $p -PathType Leaf)){
+              $receipt=Get-Content -LiteralPath $p -Raw -Encoding UTF8|ConvertFrom-Json
+              Write-Host "MODE2_SHA_RECT_RECEIPT_STATE=$($receipt.state) NODE_ID=$($receipt.node_id)"
+            }
+          }
+          foreach($port in @(8765,8766,8787)){
+            $listening=@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+            $connected=@(Get-NetTCPConnection -LocalPort $port -State Established -ErrorAction SilentlyContinue)
+            Write-Host "MODE2_SHA_PORT=$port LISTEN=$($listening.Count) ESTABLISHED=$($connected.Count)"
+          }
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $top=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $xd=@($top|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          Write-Host "MODE2_SHA_XD_WINDOWS=$($xd.Count) DISPOSABLE_WINDOWS=$($test.Count)"
+          Write-Host "MODE2_SHA_DRIFT_FILES=$($drift -join ',')"
+          Write-Host 'MODE2_NATIVE_DRIFT_DIAGNOSTIC_READONLY=PASS'
