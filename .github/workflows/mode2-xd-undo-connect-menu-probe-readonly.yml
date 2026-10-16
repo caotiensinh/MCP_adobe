@@ -23,7 +23,7 @@ jobs:
           $marker=Join-Path $env:USERPROFILE 'Documents\MCPAdobe\mode2-disposable-native\Mode2_GUID_Fill_Undo_Once.marker'
           if(Test-Path -LiteralPath $marker){throw 'MODE2_UNDO_ALREADY_INVOKED'}
           $clock=[Diagnostics.Stopwatch]::StartNew()
-          & powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/mode2_live_fill_undo_ui.ps1 -Action ConnectProbe
+          & .\scripts\mode2_live_fill_undo_ui.ps1 -Action ConnectProbe
           if($LASTEXITCODE -ne 0){throw 'MODE2_CONNECT_MENU_READONLY_PROBE_FAILED'}
           Write-Host "MODE2_CONNECT_PROBE_CHILD_WALL_MS=$($clock.ElapsedMilliseconds)"
           if(Test-Path -LiteralPath $marker){throw 'MODE2_CONNECT_PROBE_UNEXPECTED_UNDO_MARKER'}
