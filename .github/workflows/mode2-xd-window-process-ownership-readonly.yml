@@ -1,0 +1,46 @@
+name: Mode 2 XD UWP window process ownership read-only
+on:
+  push:
+    branches: [feat/canvas-region-targeting]
+    paths: ['.github/workflows/mode2-xd-window-process-ownership-readonly.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: adobe-panda-desktop-exclusive
+  cancel-in-progress: false
+jobs:
+  inspect:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 3
+    steps:
+      - name: Read Adobe XD top-level window owner and related Windows processes
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $top=[System.Windows.Automation.AutomationElement]::RootElement.FindAll(
+            [System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          $xd=@($top|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+          $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+          Write-Host "MODE2_XD_WIN_COUNT=$($xd.Count) TEST=$($test.Count)"
+          if($xd.Count -ne 1 -or $test.Count -ne 1){throw 'MODE2_WINDOW_NOT_UNIQUE'}
+          $win=$test[0]
+          $winPid=$win.Current.ProcessId
+          $winHandle=$win.Current.NativeWindowHandle
+          Write-Host "MODE2_UIA_WINDOW_PID=$winPid HANDLE=$winHandle"
+          $xdproc=@(Get-Process -Name XD -ErrorAction SilentlyContinue)
+          Write-Host "MODE2_XD_PROCESS_COUNT=$($xdproc.Count)"
+          $all=@(Get-CimInstance Win32_Process | Where-Object {
+            $_.Name -match '^(XD|ApplicationFrameHost|Adobe\S*XD|RuntimeBroker|PickerHost)\.exe$'
+          })
+          foreach($p in $all){
+            Write-Host "MODE2_ASSOCIATED_PROCESS_NAME=$($p.Name) PID=$($p.ProcessId) PPID=$($p.ParentProcessId) SESSION=$($p.SessionId) PATH=$($p.ExecutablePath)"
+          }
+          $windowProc=Get-CimInstance Win32_Process -Filter "ProcessId = $winPid"
+          if(-not $windowProc){throw 'MODE2_WINDOW_PID_NOT_RESOLVABLE'}
+          Write-Host "MODE2_UIA_PROCESS_NAME=$($windowProc.Name) SESSION=$($windowProc.SessionId)"
+          Write-Host 'MODE2_DIAGNOSTIC_PROCESS_READONLY=PASS'
+          Write-Host 'MODE2_NO_WINDOW_CLOSED_OR_PLUGIN_RELOADED=True'
