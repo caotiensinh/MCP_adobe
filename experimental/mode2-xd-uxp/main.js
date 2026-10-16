@@ -320,6 +320,38 @@ function mode2InspectSelectedNode(params) {
     locked:false,visible:true,selection_count:1};
 }
 
+// Exact, read-only native color proof for the single disposable Rectangle.
+// This runs without editDocument and can be called both before/after Apply.
+// An unknown fill type or an unrelated Panda layer must never be reported
+// as a successful Mode 2 color readback.
+function inspectDisposableRectFill(params) {
+  if (!params || Object.keys(params).sort().join(",") !==
+      "bounds,document_id,name,node_id" ||
+      params.name !== MODE2_DISPOSABLE_RECT_NAME) {
+    throw new Error("MODE2_FILL_READ_TARGET_NOT_EXACT");
+  }
+  const node = attestDisposableRect({
+    document_id: params.document_id, node_id: params.node_id,
+    name: params.name, isolated_test_copy: true, bounds: params.bounds
+  });
+  const selected = mode2InspectSelectedNode(params);
+  if (pendingWrites.length !== 0) throw new Error("MODE2_FILL_READ_PENDING_QUEUE");
+  const fill = node.fill;
+  if (node.fillEnabled === false || !fill || typeof fill.toHex !== "function") {
+    throw new Error("MODE2_FILL_READ_NOT_SOLID_COLOR");
+  }
+  const hex = fill.toHex(true);
+  if (typeof hex !== "string" || !/^#[0-9a-fA-F]{6}$/.test(hex)) {
+    throw new Error("MODE2_FILL_READ_BAD_HEX");
+  }
+  return {
+    document_id: selected.document_id, node_id: selected.node_id,
+    name: node.name, bounds: selected.bounds,
+    fill: hex.toUpperCase(), fill_type: "Color",
+    selected_count: 1, pending_count: 0
+  };
+}
+
 function applyMutation(item, selection) {
   const params = item.params || {};
 
@@ -686,6 +718,7 @@ function dispatch(method, params) {
   }
 
   if (method === "xd.mode2.node.inspect") return mode2InspectSelectedNode(params || {});
+  if (method === "xd.mode2.node.fill.inspect") return inspectDisposableRectFill(params || {});
   if (method === "xd.mode2.selection.stage_disposable") return stageDisposableSelection(params || {});
   if (method === "xd.mode2.selection.status") return stagedDisposableSelectionStatus();
 
