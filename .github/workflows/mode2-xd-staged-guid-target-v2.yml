@@ -1,4 +1,4 @@
-name: Mode 2 XD stage guided GUID targeting UXP v2
+name: Mode 2 XD stage ticket-recovery experimental UXP v3
 on:
   push:
     branches: [feat/canvas-region-targeting]
@@ -22,8 +22,16 @@ jobs:
           if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
           $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
           $nativeHash='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
-          $rels=@('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd','mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd')
+          $rels=@('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd')
           foreach($p in $rels){if((Get-FileHash -LiteralPath (Join-Path $root $p) -Algorithm SHA256).Hash -ne $nativeHash){throw 'MODE2_PROTECTED_NATIVE_HASH_MISMATCH'}}
+          $disposable=Join-Path $root 'mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd'
+          $savedRectHash='1E15162107A64E3D7D4CAF8C12B88FE24B64488DA9788854E6D300DDBAE88C2F'
+          if((Get-FileHash -LiteralPath $disposable -Algorithm SHA256).Hash -ne $savedRectHash){throw 'MODE2_PINNED_34_NODE_DISPOSABLE_HASH_CHANGED'}
+          Add-Type -AssemblyName UIAutomationClient
+          Add-Type -AssemblyName UIAutomationTypes
+          $windows=[System.Windows.Automation.AutomationElement]::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+          if(@($windows|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'}).Count -ne 0){throw 'MODE2_XD_WINDOW_OPEN_NO_HOT_PLUGIN_STAGE'}
+          Write-Host 'MODE2_SAVED_RECT_34_NODE_NATIVE_HASH=PASS'
           $develop=Join-Path $env:LOCALAPPDATA 'Packages\Adobe.XD_pc75e8sa7ep4e\LocalState\develop'
           $prodMain=Join-Path $develop 'MCPAdobeBridge\main.js'
           $prodManifest=Join-Path $develop 'MCPAdobeBridge\manifest.json'
@@ -42,15 +50,15 @@ jobs:
           $oldMain=(& $git hash-object -- $expMain).Trim()
           $oldManifest=(& $git hash-object -- $expManifest).Trim()
           Write-Host "MODE2_STAGED_PREV_BLOBS=$oldMain / $oldManifest"
-          if($sourceMainSha -ne '7fde12a16a13cd1b79c236a62ee874ea0b3f60d0' -or
+          if($sourceMainSha -ne 'd72c5f595fb5637387b0f918dc1e9c136d7d868c' -or
              $sourceManifestSha -ne '873d9fb1de76612e6e48375e8ad8933d2eaeb83d'){
             throw 'MODE2_UNEXPECTED_NEW_UXP_SOURCE'
           }
           if($oldMain -eq $sourceMainSha -and $oldManifest -eq $sourceManifestSha){
             Write-Host 'MODE2_STAGED_GUID_PLUGIN_ALREADY_CURRENT=PASS'
-          }elseif($oldMain -eq '33f99aff6ab0467cab90da7a9fb4bf0838dcc955' -and
-                 $oldManifest -eq '74d0f81a4a26d71e3bb22401e455a58ab40635d3'){
-            $backup=Join-Path $root 'mode2-disposable-native\staged-guid-selection-previous-uxp'
+          }elseif($oldMain -eq '7fde12a16a13cd1b79c236a62ee874ea0b3f60d0' -and
+                 $oldManifest -eq '873d9fb1de76612e6e48375e8ad8933d2eaeb83d'){
+            $backup=Join-Path $root 'mode2-disposable-native\staged-ticket-recovery-previous-uxp'
             if(Test-Path -LiteralPath $backup){throw 'MODE2_GUID_STAGE_BACKUP_ALREADY_EXISTS_NO_REPLAY'}
             New-Item -ItemType Directory -Path $backup -ErrorAction Stop|Out-Null
             Copy-Item -LiteralPath $expMain -Destination (Join-Path $backup 'main.js') -ErrorAction Stop
@@ -63,5 +71,6 @@ jobs:
           }else{throw 'MODE2_UNKNOWN_EXPERIMENTAL_BUILD_NO_OVERWRITE'}
           foreach($p in @($prodMain,$prodManifest)){if((Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash -ne $prodHash[$p]){throw 'MODE2_PRODUCTION_PLUGIN_CHANGED'}}
           foreach($rel in $rels){if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $nativeHash){throw 'MODE2_NATIVE_CHANGED_AFTER_GUID_STAGING'}}
+          if((Get-FileHash -LiteralPath $disposable -Algorithm SHA256).Hash -ne $savedRectHash){throw 'MODE2_SAVED_RECT_DISPOSABLE_CHANGED_AFTER_STAGE'}
           Write-Host 'MODE2_PRODUCTION_PLUGIN_AND_ALL_NATIVE_FILES_PRESERVED=PASS'
           Write-Host 'MODE2_GUID_PLUGIN_RELOAD_NOT_PERFORMED=True'
