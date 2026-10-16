@@ -9,6 +9,7 @@ on:
       - 'src/mcp_adobe/region_targeting.py'
       - 'src/mcp_adobe/xd_scenegraph_targeting.py'
       - 'tests/test_mode2_*.py'
+      - 'scripts/mode2_staged_rect_select_watch.py'
       - 'tests/test_xd_mode2_experimental_adapter.py'
       - 'tests/test_mode2_xd_experimental_readback.py'
       - 'scripts/mode2_xd_experimental_readback.py'
@@ -48,6 +49,7 @@ jobs:
             tests.test_mode2_edit_simulation \
             tests.test_mode2_xd_transaction \
             tests.test_mode2_native_provenance \
+            tests.test_mode2_staged_rect_ticket_recovery \
             tests.test_xd_mode2_experimental_adapter \
             tests.test_mode2_xd_experimental_readback \
             tests.test_region_targeting \
