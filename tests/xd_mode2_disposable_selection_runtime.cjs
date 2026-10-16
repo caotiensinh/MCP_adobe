@@ -21,6 +21,9 @@ const nodes=[...old,shape];
 const root={guid:DOC,children:{length:nodes.length,at:i=>nodes[i]}};
 const selection={items:[],insertionParent:root};
 let registered,editCalls=0;
+let now=1700000000000;
+class FakeDate extends Date { static now(){return now;} }
+
 const messages=[];
 class Socket{
   constructor(){this.readyState=1;Socket.current=this}
@@ -28,7 +31,7 @@ class Socket{
 }
 const graph={root,selection,getNodeByGUID:guid=>nodes.find(n=>n.guid===guid)};
 const context={
- console,WebSocket:Socket,setTimeout:()=>0,clearTimeout(){},
+ console,WebSocket:Socket,Date:FakeDate,setTimeout:()=>0,clearTimeout(){},
  require(id){
    if(id==="scenegraph")return {...graph,Rectangle:class {},Ellipse:class {},Path:class {},Text:class {},Color:class {}};
    if(id==="application")return {version:"mock",appLanguage:"en",editDocument(){editCalls++}};
@@ -100,5 +103,20 @@ const args={
   assert.equal(editCalls,0);
   assert.equal(shape.fill,"#445566");
   assert.throws(()=>registered.commands.mcpAdobeMode2SelectStagedRect(selection,root),/MODE2_STAGED_SELECTION_EXPIRED_OR_WRONG_DOC/);
+  // A crashed sidecar can leave a ticket behind. An unexpired ticket must
+  // remain protected; at 90+ seconds a new read-only stage must replace it.
+  response=await call("xd.mode2.selection.stage_disposable",args);
+  assert.equal(response.ok,true);
+  response=await call("xd.mode2.selection.stage_disposable",args);
+  assert.equal(response.ok,false,"unexpired staging remains immutable");
+  now+=90001;
+  response=await call("xd.mode2.selection.stage_disposable",args);
+  assert.equal(response.ok,true,"expired staging should not block forever");
+  assert.equal(selection.items.length,1);
+  const renewed=registered.commands.mcpAdobeMode2SelectStagedRect(selection,root);
+  assert.equal(renewed.selected,true);
+  assert.equal(renewed.node_id,GUID);
+  assert.equal(shape.fill,"#445566");
+  assert.equal(editCalls,0,"expired-ticket replacement must not edit native node");
   console.log("MODE2_STAGED_DISPOSABLE_GUID_SELECTION_RUNTIME_PASS");
 })().catch(e=>{console.error(e);process.exitCode=1});
