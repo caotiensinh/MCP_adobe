@@ -6,8 +6,7 @@ from mcp_adobe.xd_bridge import XdWebSocketBridgeClient
 from mcp_adobe.xd_mode2_experimental import ExperimentalXdMode2Adapter,EXPERIMENTAL_BRIDGE_BUILD
 DOC="98d6635b-3767-4254-b200-ec8442b69ad2"
 NAME="MODE2_DISPOSABLE_FILL_RECT_GUID_E2E"
-ROOT=Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"/"mode2-disposable-native"
-RECEIPT=ROOT/"mode2_fill_rect_guid_receipt.json"
+# Resolve the Windows-only native receipt inside main(), never during test import.
 
 def walk(nodes):
     for node in nodes:
@@ -45,7 +44,11 @@ def main():
     ap.add_argument("--wait-seconds",type=int,default=85)
     opt=ap.parse_args()
     if opt.wait_seconds<20 or opt.wait_seconds>90:raise ValueError("bad timeout")
-    intent=json.loads(RECEIPT.read_text(encoding="utf-8"))
+    if not os.environ.get("USERPROFILE"):
+        raise RuntimeError("MODE2_WINDOWS_USERPROFILE_MISSING")
+    receipt=(Path(os.environ["USERPROFILE"])/"Documents"/"MCPAdobe"/
+             "mode2-disposable-native"/"mode2_fill_rect_guid_receipt.json")
+    intent=json.loads(receipt.read_text(encoding="utf-8"))
     if (intent.get("state")!="applied" or intent.get("document_id")!=DOC or
         intent.get("name")!=NAME or not isinstance(intent.get("node_id"),str)):
         raise RuntimeError("MODE2_RECT_CREATION_RECEIPT_NOT_ATTESTED")
