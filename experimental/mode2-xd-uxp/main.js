@@ -260,6 +260,20 @@ function stageDisposableSelection(params) {
     node_id:params.node_id, expires_in_seconds:90};
 }
 
+// Read-only inspection of the in-memory selection ticket. Does not clear it,
+// alter selection, or enqueue a mutation. Used before any explicit menu click.
+function stagedDisposableSelectionStatus() {
+  const ticket = stagedDisposableSelection;
+  if (!ticket) return {status: "none", node_id: null, expires_in_seconds: 0};
+  const remaining = Math.max(0, ticket.expires_at - Date.now());
+  return {
+    status: remaining === 0 ? "expired" : "awaiting_user_menu",
+    node_id: ticket.node_id,
+    document_id: ticket.document_id,
+    expires_in_seconds: Math.ceil(remaining / 1000)
+  };
+}
+
 function selectStagedDisposableCommand(selection, documentRoot) {
   const request = stagedDisposableSelection;
   stagedDisposableSelection = null; // one-shot, including failed requests
@@ -673,6 +687,7 @@ function dispatch(method, params) {
 
   if (method === "xd.mode2.node.inspect") return mode2InspectSelectedNode(params || {});
   if (method === "xd.mode2.selection.stage_disposable") return stageDisposableSelection(params || {});
+  if (method === "xd.mode2.selection.status") return stagedDisposableSelectionStatus();
 
   if (method === "xd.selection.get") {
     try { snapshot(scenegraph.selection, scenegraph.root); } catch (_) {}
