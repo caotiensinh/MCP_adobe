@@ -67,11 +67,17 @@ jobs:
           $test=@($xd|Where-Object{[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
           if($xd.Count -ne 1 -or $test.Count -ne 1){throw 'MODE2_NOT_ONLY_SAVED_DISPOSABLE_WINDOW'}
           $win=$test[0]
-          $oldPid=$win.Current.ProcessId
+          $framePid=$win.Current.ProcessId
+          $frame=Get-CimInstance Win32_Process -Filter "ProcessId = $framePid"
+          if(-not $frame -or $frame.Name -ne 'ApplicationFrameHost.exe' -or $frame.SessionId -ne 1){
+            throw 'MODE2_UNTRUSTED_UWP_WINDOW_OWNER'
+          }
           $running=@(Get-Process -Name XD -ErrorAction SilentlyContinue)
-          if($running.Count -ne 1 -or $running[0].Id -ne $oldPid){
+          if($running.Count -ne 1 -or $running[0].SessionId -ne 1){
             throw 'MODE2_XD_PROCESS_OWNERSHIP_AMBIGUOUS'
           }
+          $oldPid=$running[0].Id
+          Write-Host "MODE2_ATTESTED_UWP_FRAME_PID=$framePid XD_APP_PID=$oldPid"
           $wp=$win.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
           if($wp.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Minimized){
             $wp.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Normal)
