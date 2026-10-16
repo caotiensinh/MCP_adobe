@@ -177,15 +177,8 @@ jobs:
             if(Test-Path -LiteralPath $stdout){Get-Content -LiteralPath $stdout|ForEach-Object {Write-Host $_}}
             if(Test-Path -LiteralPath $stderr){Get-Content -LiteralPath $stderr -Tail 12|ForEach-Object {Write-Host "MODE2_EXPERIMENTAL_STDERR=$_"}}
             if(-not (Select-String -LiteralPath $stdout -Pattern '^MODE2_NEW_RECT_EXPLICIT_SELECT_AND_INSPECT=PASS$' -Quiet)){throw 'MODE2_EXPERIMENTAL_SELECTION_NOT_ATTESTED'}
-            if(-not (Select-String -LiteralPath $stdout -Pattern '^MODE2_SAVED_RECT_INITIAL_FILL_READBACK=PASS
-          }finally{
-            if(-not $child.HasExited){Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue}
-          }
-          foreach($rel in $rels){if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $nativeSha){throw 'MODE2_NATIVE_CHANGED_BY_SELECTION'}}
-          if((Get-FileHash -LiteralPath $disposable -Algorithm SHA256).Hash -ne $savedRectSha){throw 'MODE2_SAVED_RECT_CHANGED_BY_SELECTION'}
-          Write-Host 'MODE2_NEW_RECT_SELECT_ALL_NATIVE_DISK_HASHES_UNCHANGED=PASS'
- -Quiet)){throw 'MODE2_REAL_SAVED_RECT_INITIAL_FILL_UNVERIFIED'}
-          Write-Host 'MODE2_NATIVE_NEW_RECT_SELECT_AND_INITIAL_FILL=PASS'
+            if(-not (Select-String -LiteralPath $stdout -Pattern '^MODE2_SAVED_RECT_INITIAL_FILL_READBACK=PASS$' -Quiet)){throw 'MODE2_REAL_SAVED_RECT_INITIAL_FILL_UNVERIFIED'}
+            Write-Host 'MODE2_NATIVE_NEW_RECT_SELECT_AND_INITIAL_FILL=PASS'
           }finally{
             if(-not $child.HasExited){Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue}
           }
