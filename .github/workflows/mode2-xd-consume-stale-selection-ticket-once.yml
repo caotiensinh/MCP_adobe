@@ -43,25 +43,43 @@ jobs:
           $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
           if($xd.Count -ne 1 -or $test.Count -ne 1){throw 'MODE2_WRONG_DISPOSABLE_WINDOW'}
           $w=$test[0]
-          $wp=$w.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
-          if($wp.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Minimized){$wp.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Normal)}
-          try{$w.SetFocus()}catch{}
-          [void][Mode2ExpiredTicketFocus]::SetForegroundWindow([IntPtr]$w.Current.NativeWindowHandle)
-          Start-Sleep -Milliseconds 600
-          $p=$w.FindFirst($desc,(New-Object System.Windows.Automation.PropertyCondition($id,'AppMenuBar_Plugins')))
-          if(-not $p){throw 'MODE2_PLUGINS_MENU_MISSING'}
-          $px=$p.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
-          if($px.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$px.Expand()}
-          Start-Sleep -Milliseconds 250
-          $menuItems=$w.FindAll($desc,$cond)
-          $roots=@($menuItems|Where-Object {[string]$_.Current.Name -eq 'MCP Adobe Mode 2 Experimental' -and [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'})
-          if($roots.Count -ne 1){throw 'MODE2_EXPERIMENT_ROOT_NOT_UNIQUE'}
-          $rx=$roots[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
-          if($rx.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$rx.Expand()}
-          Start-Sleep -Milliseconds 300
-          $items=$w.FindAll($desc,$cond)
-          $select=@($items|Where-Object {[string]$_.Current.Name -eq 'MCP Mode 2 Select Staged Disposable Rectangle' -and [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and $_.Current.IsEnabled})
-          if($select.Count -ne 1){throw 'MODE2_STALE_SELECT_MENU_NOT_UNIQUE'}
+          # UIA menus disappear when Adobe XD is minimized. Re-attest the only
+          # disposable window and bring it to foreground before each probe.
+          $select=@()
+          for($attempt=1;$attempt -le 12;$attempt++){
+            $top=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($children,$cond)
+            $xd=@($top|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+            $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+            if($xd.Count -ne 1 -or $test.Count -ne 1){throw 'MODE2_STALE_TICKET_FOREIGN_WINDOW'}
+            $w=$test[0]
+            $wp=$w.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
+            if($wp.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Minimized){$wp.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Normal)}
+            try{$w.SetFocus()}catch{}
+            [void][Mode2ExpiredTicketFocus]::SetForegroundWindow([IntPtr]$w.Current.NativeWindowHandle)
+            Start-Sleep -Milliseconds 500
+            $p=$w.FindFirst($desc,(New-Object System.Windows.Automation.PropertyCondition($id,'AppMenuBar_Plugins')))
+            if(-not $p){
+              Write-Host "MODE2_STALE_MENU_RETRY=$attempt PLUGINS_MISSING"
+              continue
+            }
+            $px=$p.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+            if($px.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$px.Expand()}
+            Start-Sleep -Milliseconds 250
+            $menuItems=$w.FindAll($desc,$cond)
+            $roots=@($menuItems|Where-Object {[string]$_.Current.Name -eq 'MCP Adobe Mode 2 Experimental' -and [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'})
+            Write-Host "MODE2_STALE_MENU_RETRY=$attempt ROOTS=$($roots.Count) CONTROLS=$($menuItems.Count)"
+            if($roots.Count -gt 1){throw 'MODE2_STALE_EXPERIMENTAL_MENU_AMBIGUOUS'}
+            if($roots.Count -ne 1){continue}
+            $rx=$roots[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
+            if($rx.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$rx.Expand()}
+            Start-Sleep -Milliseconds 300
+            $items=$w.FindAll($desc,$cond)
+            $select=@($items|Where-Object {[string]$_.Current.Name -eq 'MCP Mode 2 Select Staged Disposable Rectangle' -and [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and $_.Current.IsEnabled})
+            Write-Host "MODE2_STALE_SELECT_MENU_RETRY=$attempt COUNT=$($select.Count)"
+            if($select.Count -gt 1){throw 'MODE2_STALE_SELECT_MENU_AMBIGUOUS'}
+            if($select.Count -eq 1){break}
+          }
+          if($select.Count -ne 1){throw 'MODE2_STALE_SELECT_MENU_NOT_FOUND'}
           # The UXP handler consumes the ticket before checking expiration; it
           # may throw its expected 'expired' error. No native write is requested.
           "run=$env:GITHUB_RUN_ID at=$([DateTime]::UtcNow.ToString('o'))" | Set-Content -LiteralPath $marker -Encoding ASCII -NoNewline
