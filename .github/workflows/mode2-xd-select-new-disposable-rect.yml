@@ -25,8 +25,16 @@ jobs:
           if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){throw 'MODE2_WRONG_HOST'}
           $root=Join-Path $env:USERPROFILE 'Documents\MCPAdobe'
           $nativeSha='3A10E1510ABC41ECCD4485D6F852EA6CED7ACC2CF50109E7C1BD123353589ED1'
-          $rels=@('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd','mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd')
+          $savedRectSha='1E15162107A64E3D7D4CAF8C12B88FE24B64488DA9788854E6D300DDBAE88C2F'
+          $rels=@('MCP_Mode1_Panda_XD_38136531800.xd','mode2-isolated\Panda_Mode2_Editable_Experiment.xd')
           foreach($rel in $rels){if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $nativeSha){throw 'MODE2_PROTECTED_NATIVE_NOT_BASELINE'}}
+          $disposable=Join-Path $root 'mode2-disposable-native\Mode2_Undo_E2E_38584984023.xd'
+          if((Get-FileHash -LiteralPath $disposable -Algorithm SHA256).Hash -ne $savedRectSha){throw 'MODE2_SAVED_34_NODE_DISPOSABLE_SHA_MISMATCH'}
+          $develop=Join-Path $env:LOCALAPPDATA 'Packages\Adobe.XD_pc75e8sa7ep4e\LocalState\develop'
+          $git=(Get-Command git -ErrorAction Stop).Source
+          $plugin=Join-Path $develop 'MCPAdobeMode2Experiment\main.js'
+          if((& $git hash-object -- $plugin).Trim() -ne 'd72c5f595fb5637387b0f918dc1e9c136d7d868c'){throw 'MODE2_INSTALLED_TICKET_RECOVERY_PLUGIN_NOT_PINNED'}
+          Write-Host 'MODE2_NATIVE_34_NODE_AND_UXP_BUILD_PINNED=PASS'
           $reload=Join-Path $root 'mode2-disposable-native\Mode2_FixtureSelection_PluginReload_Once.marker'
           $selectionMarker=Join-Path $root 'mode2-disposable-native\Mode2_NewRect_StagedSelection_Invoked_Once.marker'
           if(!(Test-Path -LiteralPath $reload -PathType Leaf)){throw 'MODE2_FIXTURE_PLUGIN_NOT_RELOADED'}
@@ -44,7 +52,22 @@ jobs:
           $top=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,$cond)
           $xd=@($top|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
           $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
-          if($xd.Count -ne 1 -or $test.Count -ne 1){throw 'MODE2_NOT_SINGLE_DISPOSABLE_WINDOW'}
+          if($xd.Count -eq 0){
+            $tracking=$env:RUNNER_TRACKING_ID
+            try{$env:RUNNER_TRACKING_ID='';Start-Process -FilePath $disposable -ErrorAction Stop}finally{$env:RUNNER_TRACKING_ID=$tracking}
+            Write-Host 'MODE2_SAVED_RECT_DISPOSABLE_OPENED_ONCE'
+          }elseif($xd.Count -ne 1 -or $test.Count -ne 1){throw 'MODE2_FOREIGN_XD_WINDOW_NOT_ALLOWED'}
+          $ready=$false
+          for($i=1;$i -le 16;$i++){
+            Start-Sleep -Seconds 3
+            $top=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,$cond)
+            $xd=@($top|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
+            $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+            $prod=@(Get-NetTCPConnection -LocalPort 8765 -State Established -ErrorAction SilentlyContinue)
+            Write-Host "MODE2_GUID_SELECTION_HOST_POLL=$i XD=$($xd.Count) TEST=$($test.Count) PRODUCTION=$($prod.Count)"
+            if($xd.Count -eq 1 -and $test.Count -eq 1 -and $prod.Count -ge 1){$ready=$true;break}
+          }
+          if(-not $ready){throw 'MODE2_NEW_RECT_NATIVE_HOST_OR_PRODUCTION_BRIDGE_NOT_READY'}
           $win=$test[0]
           $wp=$win.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
           if($wp.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Minimized){
@@ -58,10 +81,10 @@ jobs:
           $fileXp=$file.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
           $fileXp.Expand();Start-Sleep -Milliseconds 200
           $nodes=$win.FindAll($desc,$cond)
-          $save=@($nodes|Where-Object {[string]$_.Current.AutomationId -eq 'AppMenu_Save' -and $_.Current.IsEnabled})
+          $save=@($nodes|Where-Object {[string]$_.Current.AutomationId -eq 'AppMenu_Save' -and [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'})
           $fileXp.Collapse()
-          if($save.Count -ne 1){throw 'MODE2_EXPECT_NEW_RECT_DIRTY_STATE'}
-          Write-Host 'MODE2_NEW_RECT_ISOLATED_UNSAVED_NATIVE=PASS'
+          if($save.Count -ne 1 -or $save[0].Current.IsEnabled){throw 'MODE2_SAVED_34_NODE_DISPOSABLE_NOT_CLEAN'}
+          Write-Host 'MODE2_NEW_RECT_SAVED_NATIVE_CLEAN=PASS'
           $env:Path=(@([Environment]::GetEnvironmentVariable('Path','Machine'),[Environment]::GetEnvironmentVariable('Path','User'),$env:Path)|Where-Object{$_}) -join ';'
           $uv=(Get-Command uv -ErrorAction Stop).Source
           if(@(Get-NetTCPConnection -LocalPort 8766 -State Listen -ErrorAction SilentlyContinue).Count -gt 0){throw 'MODE2_8766_UNOWNED_LISTENER'}
@@ -159,4 +182,5 @@ jobs:
             if(-not $child.HasExited){Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue}
           }
           foreach($rel in $rels){if((Get-FileHash -LiteralPath (Join-Path $root $rel) -Algorithm SHA256).Hash -ne $nativeSha){throw 'MODE2_NATIVE_CHANGED_BY_SELECTION'}}
+          if((Get-FileHash -LiteralPath $disposable -Algorithm SHA256).Hash -ne $savedRectSha){throw 'MODE2_SAVED_RECT_CHANGED_BY_SELECTION'}
           Write-Host 'MODE2_NEW_RECT_SELECT_ALL_NATIVE_DISK_HASHES_UNCHANGED=PASS'
