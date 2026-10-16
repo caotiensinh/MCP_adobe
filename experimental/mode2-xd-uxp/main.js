@@ -239,6 +239,12 @@ function stageDisposableSelection(params) {
       "bounds,document_id,isolated_test_copy,name,node_id") {
     throw new Error("MODE2_STAGED_SELECTION_UNTRUSTED_KEYS");
   }
+  // A stale preparation may outlive its listener. Expiration must not leave
+  // a permanent in-memory lock, but an unexpired ticket cannot be replaced.
+  // Neither branch changes XD selection or node content.
+  if (stagedDisposableSelection && Date.now() > stagedDisposableSelection.expires_at) {
+    stagedDisposableSelection = null;
+  }
   if (stagedDisposableSelection) throw new Error("MODE2_SELECTION_ALREADY_STAGED");
   // A preparation does not change XD selection or native scenegraph.
   attestDisposableRect(params);
