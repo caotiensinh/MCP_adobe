@@ -1,9 +1,11 @@
 param(
   [Parameter(Mandatory=$true)]
-  [ValidateSet('Connect','Undo')]
+  [ValidateSet('Connect','Undo','ConnectProbe')]
   [string]$Action
 )
 $ErrorActionPreference='Stop'
+$script:Mode2MenuClock=[Diagnostics.Stopwatch]::StartNew()
+Write-Host "MODE2_UNDO_UI_ACTION=$Action START"
 if($env:COMPUTERNAME -ne 'MRCAO' -or [Diagnostics.Process]::GetCurrentProcess().SessionId -ne 1){
   throw 'MODE2_UNDO_WRONG_WINDOWS_DESKTOP'
 }
@@ -37,6 +39,7 @@ function XDWindow {
   return $test[0]
 }
 $win=XDWindow
+Write-Host "MODE2_UNDO_UI_WINDOW_MS=$($script:Mode2MenuClock.ElapsedMilliseconds)"
 $wp=$win.GetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern)
 if($wp.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualState]::Minimized){
   $wp.SetWindowVisualState([System.Windows.Automation.WindowVisualState]::Normal)
@@ -44,10 +47,11 @@ if($wp.Current.WindowVisualState -eq [System.Windows.Automation.WindowVisualStat
 try{$win.SetFocus()}catch{}
 [void][Mode2FillUndoForeground]::SetForegroundWindow([IntPtr]$win.Current.NativeWindowHandle)
 Start-Sleep -Milliseconds 500
-if($Action -eq 'Connect'){
-  if(@(Get-NetTCPConnection -LocalPort 8766 -State Listen -ErrorAction SilentlyContinue).Count -ne 1){
+if($Action -in @('Connect','ConnectProbe')){
+  if($Action -eq 'Connect' -and @(Get-NetTCPConnection -LocalPort 8766 -State Listen -ErrorAction SilentlyContinue).Count -ne 1){
     throw 'MODE2_UNDO_EXPERIMENTAL_BRIDGE_LISTENER_NOT_UNIQUE'
   }
+  Write-Host "MODE2_UNDO_UI_BEFORE_PLUGIN_MENU_MS=$($script:Mode2MenuClock.ElapsedMilliseconds)"
   $plugins=$win.FindFirst($desc,(New-Object System.Windows.Automation.PropertyCondition($aid,'AppMenuBar_Plugins')))
   if(-not $plugins){throw 'MODE2_UNDO_PLUGIN_MENU_MISSING'}
   $px=$plugins.GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
@@ -58,6 +62,7 @@ if($Action -eq 'Connect'){
     [string]$_.Current.Name -eq 'MCP Adobe Mode 2 Experimental' -and
     [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem'
   })
+  Write-Host "MODE2_UNDO_UI_EXPERIMENTAL_ROOT_MS=$($script:Mode2MenuClock.ElapsedMilliseconds) COUNT=$($exp.Count)"
   if($exp.Count -ne 1){throw 'MODE2_UNDO_EXPERIMENTAL_MENU_NOT_UNIQUE'}
   $ep=$exp[0].GetCurrentPattern([System.Windows.Automation.ExpandCollapsePattern]::Pattern)
   if($ep.Current.ExpandCollapseState -ne [System.Windows.Automation.ExpandCollapseState]::Expanded){$ep.Expand()}
@@ -67,7 +72,13 @@ if($Action -eq 'Connect'){
     [string]$_.Current.Name -eq 'MCP Adobe Mode 2 Connect' -and
     [string]$_.Current.ControlType.ProgrammaticName -eq 'ControlType.MenuItem' -and $_.Current.IsEnabled
   })
+  Write-Host "MODE2_UNDO_UI_CONNECT_ITEM_MS=$($script:Mode2MenuClock.ElapsedMilliseconds) COUNT=$($connect.Count)"
   if($connect.Count -ne 1){throw 'MODE2_UNDO_CONNECT_NOT_EXACT'}
+  if($Action -eq 'ConnectProbe'){
+    Write-Host 'MODE2_UNDO_CONNECT_MENU_READONLY_DIAGNOSTIC=PASS'
+    return
+  }
+  Write-Host 'MODE2_UNDO_CONNECT_NATIVE_MENU_INVOKE_BEGIN'
   $connect[0].GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
   Write-Host 'MODE2_UNDO_EXPERIMENTAL_CONNECT_INVOKED_ONCE'
   return
