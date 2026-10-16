@@ -26,7 +26,9 @@ if(@(Get-Process -Name Illustrator,Photoshop,PickerHost -ErrorAction SilentlyCon
 }
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
-Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class Mode2FillUndoForeground { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }'
+if(-not ('Mode2FillUndoForeground' -as [type])){
+  Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class Mode2FillUndoForeground { [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h); }'
+}
 $scope=[System.Windows.Automation.TreeScope]::Children
 $desc=[System.Windows.Automation.TreeScope]::Descendants
 $cond=[System.Windows.Automation.Condition]::TrueCondition
@@ -35,6 +37,7 @@ function XDWindow {
   $all=[System.Windows.Automation.AutomationElement]::RootElement.FindAll($scope,$cond)
   $xd=@($all|Where-Object {[string]$_.Current.Name -match 'Adobe XD$'})
   $test=@($xd|Where-Object {[string]$_.Current.Name -match '^Mode2_Undo_E2E_38584984023.*Adobe XD$'})
+  Write-Host "MODE2_UI_DESKTOP_WINDOW_COUNT_XD=$($xd.Count) TEST=$($test.Count) ACTION=$Action"
   if($xd.Count -ne 1 -or $test.Count -ne 1){throw 'MODE2_UNDO_FOREIGN_OR_AMBIGUOUS_WINDOW'}
   return $test[0]
 }
